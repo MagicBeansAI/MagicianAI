@@ -207,22 +207,24 @@ export async function runSlashAction(action: SlashAction, deps: SlashActionDeps 
 		case 'chat-engine': {
 			const composer = deps.chatHarness && deps.chatHarness !== chatHarnessPreferenceStore ? deps.chatHarness : null;
 			if (action.scope === 'device') {
-				chatHarnessPreferenceStore.select(action.engine, action.model);
-				// Open chats that inherit the browser pick follow it; the chat
-				// the command came from takes it as its own.
-				notifyChatHarnessDefaultChanged({ engine: action.engine, model: action.model });
-				composer?.select(action.engine, action.model);
-				if (action.selection && deps.chatProfiles) {
-					// As the composer dropdown does: the engine first, then the
-					// model from that engine's catalog.
-					const profiles = deps.chatProfiles;
+				// Check the model against that engine's catalog before writing
+				// anything: a failed pick leaves the engine and model unchanged.
+				const profiles = action.selection ? deps.chatProfiles : null;
+				if (profiles && action.selection) {
 					const selection = action.selection;
 					await profiles.ensureLoaded(action.engine);
 					if (!get(profiles).models.some((model) => model.id === selection.model_id)) {
 						throw new Error(get(profiles).selectionError ?? 'That model is no longer offered. Choose another one.');
 					}
-					profiles.selectModel(selection);
 				}
+				chatHarnessPreferenceStore.select(action.engine, action.model);
+				// Open chats that inherit the browser pick follow it; the chat
+				// the command came from takes it as its own.
+				notifyChatHarnessDefaultChanged({ engine: action.engine, model: action.model });
+				composer?.select(action.engine, action.model);
+				// As the composer dropdown does: the engine first, then the
+				// model from that engine's catalog.
+				if (profiles && action.selection) profiles.selectModel(action.selection);
 				return {
 					title: `Chat engine: ${engineLabel(action.engine, action.model, action.modelLabel)}`,
 					message: 'For this browser. Other clients keep their own choice.'

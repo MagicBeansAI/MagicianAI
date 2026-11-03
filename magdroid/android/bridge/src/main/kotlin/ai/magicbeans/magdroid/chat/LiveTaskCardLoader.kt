@@ -123,6 +123,9 @@ data class LiveTaskCardFeed(
     val activityLines: List<String> = emptyList(),
     /** The store record shows a plan (`TaskPlanMarker.hasPlan`). */
     val storeHasPlan: Boolean = false,
+    /** The store record's created and updated times (epoch ms), when fetched ([TaskStoreRecord]). */
+    val storeCreatedAtMs: Long? = null,
+    val storeUpdatedAtMs: Long? = null,
 )
 
 /**
@@ -332,6 +335,8 @@ class LiveTaskCardLoader(
                         storeHasPlan = TaskPlanMarker.hasPlan(task) ||
                             TaskPlanMarker.hasPlan(task?.get("state").jObj()) ||
                             TaskPlanMarker.hasPlan(task?.get("manifest").jObj()),
+                        storeCreatedAtMs = record.createdAtMs ?: _feed.value.storeCreatedAtMs,
+                        storeUpdatedAtMs = record.updatedAtMs ?: _feed.value.storeUpdatedAtMs,
                     )
                 }
             } finally {

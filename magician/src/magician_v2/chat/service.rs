@@ -962,6 +962,9 @@ const TUTOR_ACTION_RESULT_MAX_JSON_NODES: usize = 1_024;
 /// malformed or unrelated row while looking for delegate lifecycle events.
 const CHAT_TURN_EVENT_RECOVERY_MAX_RECORD_BYTES: usize = 4 * 1024 * 1024;
 const CHAT_TURN_EVENT_RECOVERY_MAX_RECORD_NODES: usize = 250_000;
+/// How many of a session's newest messages the restart sweep reads to tell
+/// whether a cut-off turn answered and whether it is still the newest.
+const RESTART_SWEEP_LATEST_TURN_WINDOW: usize = 200;
 const CHAT_TASK_TOTAL_TIMEOUT_SECS: u64 = 3 * 60 * 60;
 /// A server capture authorizes a new mutation-capable App Copilot run only
 /// briefly. Durable active runs may continue without another capture.
@@ -2840,6 +2843,25 @@ struct OrphanDelegate {
     chat_session_id: Option<String>,
 }
 
+/// The synthetic turn a run resumed after a restart reports into its chat
+/// under: the launching turn's id is not stored with the task.
+fn rearmed_chat_turn_id(task_id: &str, chat_session_id: &str) -> String {
+    format!("chat-task-{task_id}-{chat_session_id}")
+}
+
+/// The tool result for a run refused because Magician is shutting down
+/// (`runtime::startup::is_shutting_down`). The supervisor kills the process
+/// seconds later, so the turn reports this instead of starting a run that
+/// would be cut off mid-step.
+fn runtime_draining_tool_result(tool_name: &str) -> Value {
+    json!({
+        "status": "error",
+        "tool": tool_name,
+        "error_code": crate::magician_v2::runtime::startup::RUNTIME_DRAINING,
+        "reason": crate::magician_v2::runtime::startup::RUNTIME_DRAINING_MESSAGE,
+    })
+}
+
 /// Invoke `visit` for every complete line that fits `max_line_bytes`, using a
 /// fixed read buffer. Oversized lines are discarded through their newline
 /// without ever growing a payload-sized allocation. A final line without a
@@ -2900,13 +2922,33 @@ where
     Ok(())
 }
 
-/// Stream a complete `chat_turn_events/<turn>.jsonl` history for delegate
-/// status rows. Only the latest unresolved descriptor per
-/// `(task_id, execution_id)` is retained: terminal rows remove the key, so
-/// memory grows with live orphan candidates rather than journal length.
-fn orphan_delegate_update_from_jsonl_line(
-    line: &[u8],
-) -> Option<(String, String, String, OrphanDelegate)> {
+/// A turn's `chat.turn.state_changed` row: the state plus its session.
+#[derive(Debug, Clone)]
+struct JournaledTurnState {
+    state: super::turn_state::ChatTurnState,
+    chat_session_id: String,
+}
+
+/// What the startup sweep keeps from one `chat_turn_events/<turn>.jsonl`.
+#[derive(Debug, Default)]
+struct ChatTurnJournalScan {
+    /// Delegates whose latest status row is not terminal.
+    orphans: Vec<OrphanDelegate>,
+    /// The turn's last state row. Still `running` after a restart means the
+    /// process that ran the turn died before settling it.
+    latest_turn_state: Option<JournaledTurnState>,
+}
+
+/// One row of a turn journal the startup sweep reads.
+enum ChatTurnJournalRow {
+    /// `(task_id, execution_id, status, descriptor)` of a delegate status row.
+    Delegate(String, String, String, OrphanDelegate),
+    TurnState(JournaledTurnState),
+}
+
+/// Classify one `chat_turn_events/<turn>.jsonl` line for the startup sweep:
+/// a delegate status row or a turn state row, parsed once.
+fn chat_turn_journal_row_from_line(line: &[u8]) -> Option<ChatTurnJournalRow> {
     if line.iter().all(u8::is_ascii_whitespace) {
         return None;
     }
@@ -2922,9 +2964,23 @@ fn orphan_delegate_update_from_jsonl_line(
     };
     let update = (|| {
         let inner = value.pointer("/data/event")?;
-        if inner.get("event_type").and_then(serde_json::Value::as_str)
-            != Some("chat.delegate.status_changed")
-        {
+        let event_type = inner.get("event_type").and_then(serde_json::Value::as_str)?;
+        if event_type == super::turn_state::CHAT_TURN_STATE_EVENT {
+            let payload = inner.get("payload")?;
+            let state =
+                <super::turn_state::ChatTurnState as serde::Deserialize>::deserialize(payload)
+                    .ok()?;
+            let chat_session_id = payload
+                .get("chat_session_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty())?
+                .to_string();
+            return Some(ChatTurnJournalRow::TurnState(JournaledTurnState {
+                state,
+                chat_session_id,
+            }));
+        }
+        if event_type != "chat.delegate.status_changed" {
             return None;
         }
         let payload = inner.get("payload")?;
@@ -2961,48 +3017,61 @@ fn orphan_delegate_update_from_jsonl_line(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string),
         };
-        Some((task_id, execution_id, status, descriptor))
+        Some(ChatTurnJournalRow::Delegate(
+            task_id,
+            execution_id,
+            status,
+            descriptor,
+        ))
     })();
     discard_json_iteratively(std::mem::take(&mut value));
     update
 }
 
-fn find_orphan_delegates_in_jsonl_reader<R: std::io::Read>(
+/// Stream a complete `chat_turn_events/<turn>.jsonl` history for delegate
+/// status rows and the turn's last state row. Only the latest unresolved
+/// descriptor per `(task_id, execution_id)` is retained: terminal rows remove
+/// the key, so memory grows with live orphan candidates rather than journal
+/// length.
+fn scan_chat_turn_journal_reader<R: std::io::Read>(
     reader: R,
-) -> std::io::Result<Vec<OrphanDelegate>> {
+) -> std::io::Result<ChatTurnJournalScan> {
     let mut unresolved: HashMap<(String, String), OrphanDelegate> = HashMap::new();
+    let mut latest_turn_state = None;
 
     visit_bounded_lines(
         reader,
         CHAT_TURN_EVENT_RECOVERY_MAX_RECORD_BYTES,
-        |line| {
-            let Some((task_id, execution_id, status, descriptor)) =
-                orphan_delegate_update_from_jsonl_line(line)
-            else {
-                return;
-            };
-            if matches!(
-                status.as_str(),
-                "completed" | "failed" | "cancelled" | "archived"
-            ) {
-                unresolved.remove(&(task_id, execution_id));
-            } else {
-                unresolved.insert((task_id, execution_id), descriptor);
-            }
+        |line| match chat_turn_journal_row_from_line(line) {
+            Some(ChatTurnJournalRow::Delegate(task_id, execution_id, status, descriptor)) => {
+                if matches!(
+                    status.as_str(),
+                    "completed" | "failed" | "cancelled" | "archived"
+                ) {
+                    unresolved.remove(&(task_id, execution_id));
+                } else {
+                    unresolved.insert((task_id, execution_id), descriptor);
+                }
+            },
+            Some(ChatTurnJournalRow::TurnState(row)) => latest_turn_state = Some(row),
+            None => {},
         },
         |_| {},
     )?;
-    Ok(unresolved.into_values().collect())
+    Ok(ChatTurnJournalScan {
+        orphans: unresolved.into_values().collect(),
+        latest_turn_state,
+    })
 }
 
-async fn find_orphan_delegates_in_jsonl_path(
+async fn scan_chat_turn_journal_path(
     workspace: &ArtifactV2Workspace,
     path: &Path,
-) -> Result<Vec<OrphanDelegate>, ArtifactV2Error> {
+) -> Result<ChatTurnJournalScan, ArtifactV2Error> {
     let canonical_path = workspace.canonicalize_path(path).await?;
     tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(canonical_path)?;
-        find_orphan_delegates_in_jsonl_reader(file).map_err(ArtifactV2Error::Io)
+        scan_chat_turn_journal_reader(file).map_err(ArtifactV2Error::Io)
     })
     .await
     .map_err(|error| {
@@ -6788,6 +6857,10 @@ pub struct ChatService {
     /// reconnecting client reads to show a turn as running, completed,
     /// stopped or failed. In-memory like `active_chat_runs`.
     chat_turn_states: Arc<DashMap<String, super::turn_state::ChatTurnState>>,
+    /// Unix ms when this service was built. A turn state is stamped with its
+    /// start, so a `running` turn that began before this is not this
+    /// process's: the restart sweep settles it as interrupted.
+    started_at_ms: i64,
     /// Per-session FIFO pending-message queue. Filled when an inbound
     /// chat message arrives while the session has an active run; drained
     /// after the in-flight turn settles (success or `/stop`). Bounded at
@@ -7254,6 +7327,7 @@ impl ChatService {
             chat_runtime_tools: build_chat_runtime_tools(),
             active_chat_runs: Arc::new(DashMap::new()),
             chat_turn_states: Arc::new(DashMap::new()),
+            started_at_ms: Utc::now().timestamp_millis(),
             pending_messages: Arc::new(DashMap::new()),
             pending_queue_credentials: DashMap::new(),
             current_tailed_task_id: Arc::new(DashMap::new()),
@@ -9252,7 +9326,21 @@ impl ChatService {
                 slot.insert(state.clone());
             },
         }
-        let mut payload = serde_json::to_value(&state).unwrap_or_else(|_| json!({}));
+        self.emit_chat_turn_state(session_id, agent_id, principal, workspace, &state);
+    }
+
+    /// Emit one turn state change without touching the session's snapshot.
+    /// The event carries `chat_turn_id`, so it is also a row in that turn's
+    /// event file.
+    fn emit_chat_turn_state(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        principal: &str,
+        workspace: &str,
+        state: &super::turn_state::ChatTurnState,
+    ) {
+        let mut payload = serde_json::to_value(state).unwrap_or_else(|_| json!({}));
         if let Some(object) = payload.as_object_mut() {
             object.insert("chat_session_id".to_string(), json!(session_id));
         }
@@ -12990,6 +13078,9 @@ Write a concise owner-facing result with:
                 }
             };
 
+        // The linked-files hint names `activate_skill`, which refuses a skill
+        // that is no longer in this agent's allowlist.
+        let mut active_skill_allowlisted = false;
         if let Some(workspace_skills_dir) = workspace_skills_dir.as_ref() {
             if let Some(spec) = chat_runtime_specs
                 .iter_mut()
@@ -13004,6 +13095,9 @@ Write a concise owner-facing result with:
                 workspace_skills_dir,
                 &agent_tools,
             );
+            active_skill_allowlisted = active_skill
+                .as_ref()
+                .is_some_and(|skill| catalog.iter().any(|(name, _)| name == &skill.name));
             let block = render_activate_skill_descriptor_block(
                 &catalog,
                 active_skill.as_ref().map(|s| s.name.as_str()),
@@ -13217,10 +13311,15 @@ Write a concise owner-facing result with:
         // the system prompt when one is set.
         let active_playbook_block = match active_skill.as_ref() {
             Some(skill) => format!(
-                "## Active Playbook: {name}\n\n{body}\n\n(Reminder: call deactivate_skill when \
+                "## Active Playbook: {name}\n\n{body}\n\n{files}(Reminder: call deactivate_skill when \
                  this playbook is no longer relevant — it competes for context.)",
                 name = skill.name,
                 body = skill.body.trim(),
+                files = active_skill_allowlisted
+                    .then(|| skill.linked_files_hint())
+                    .flatten()
+                    .map(|hint| format!("{hint}\n\n"))
+                    .unwrap_or_default(),
             ),
             None => String::new(),
         };
@@ -20640,6 +20739,12 @@ Write a concise owner-facing result with:
             },
             None => {},
         }
+        // Only chat-launched work is refused: the owner reads the refusal in
+        // this turn. Runs already executing keep launching children, which
+        // restart recovery resumes with them.
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result(tool_name);
+        }
 
         let Some(router) = self.operation_llm_router.as_ref() else {
             return json!({
@@ -21760,6 +21865,9 @@ Write a concise owner-facing result with:
         description: String,
         reference_task_ids: Vec<String>,
     ) -> Value {
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result("create_task");
+        }
         let Some(service) = self.artifact_v2_service.as_ref() else {
             return json!({
                 "status": "error",
@@ -21909,6 +22017,12 @@ Write a concise owner-facing result with:
         // Project outputs (Phase 2 idempotent projection).
         let output_files =
             project_task_outputs_for_chat_session(service.as_ref(), session, &task_id).await;
+        let delivered_files = service
+            .delivered_file_links_for_task(
+                &ScopeRef::system_internal_unauthenticated(&session.principal, &session.workspace),
+                &task_id,
+            )
+            .await;
 
         match terminal_status {
             Some(status) => json!({
@@ -21917,6 +22031,7 @@ Write a concise owner-facing result with:
                 "title": title,
                 "output_files_count": output_files.len(),
                 "output_files": output_files,
+                "delivered_files": delivered_files,
             }),
             None => json!({
                 "status": "timeout",
@@ -22374,6 +22489,13 @@ impl ChatService {
     ///
     /// Idempotent: a follow-up sweep observes the catch-up row and
     /// classifies it as terminal, no re-emit.
+    ///
+    /// The same pass settles turns a dead process left running. A turn's
+    /// state lives in memory, so a turn cut off by a restart keeps
+    /// `running` as its last state row, the server reports no state for
+    /// it, and clients guess it is still working. Such a turn is published
+    /// again as failed (`interrupted`), which restores its `turn_state`
+    /// and appends the row a later sweep reads as settled.
     pub async fn recover_orphan_delegate_terminals(&self) {
         let Some(v3) = self.artifact_v2_service.as_ref() else {
             return;
@@ -22392,6 +22514,7 @@ impl ChatService {
 
         let mut recovered = 0usize;
         let mut checked = 0usize;
+        let mut interrupted_turns: Vec<JournaledTurnState> = Vec::new();
         for (principal, workspace_name) in scopes {
             let turn_events_dir =
                 workspace_layout.chat_turn_events_dir(&principal, &workspace_name);
@@ -22421,18 +22544,23 @@ impl ChatService {
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_default();
-                let orphans =
-                    match find_orphan_delegates_in_jsonl_path(&workspace_layout, &path).await {
-                        Ok(orphans) => orphans,
-                        Err(error) => {
-                            warn!(
-                                path = %path.display(),
-                                error = %error,
-                                "[CHAT-INLINE] orphan sweep: failed to read chat-turn jsonl"
-                            );
-                            continue;
-                        },
-                    };
+                let scan = match scan_chat_turn_journal_path(&workspace_layout, &path).await {
+                    Ok(scan) => scan,
+                    Err(error) => {
+                        warn!(
+                            path = %path.display(),
+                            error = %error,
+                            "[CHAT-INLINE] orphan sweep: failed to read chat-turn jsonl"
+                        );
+                        continue;
+                    },
+                };
+                if let Some(turn) = scan.latest_turn_state {
+                    if self.chat_turn_left_running_by_a_dead_process(&turn) {
+                        interrupted_turns.push(turn);
+                    }
+                }
+                let orphans = scan.orphans;
                 if orphans.is_empty() {
                     continue;
                 }
@@ -22462,8 +22590,16 @@ impl ChatService {
                     // Repair the durable display transcript as well as the
                     // per-turn activity stream. Without this second half the
                     // Steps projection settles, but TaskStatusCard keeps its
-                    // last stored `running` row forever after a restart.
-                    if let Some(chat_session_id) = orphan.chat_session_id.as_deref() {
+                    // last stored `running` row forever after a restart. A
+                    // watcher re-armed for a resumed run posts that card
+                    // itself; posting here too would race it into a duplicate.
+                    if let Some(chat_session_id) = orphan
+                        .chat_session_id
+                        .as_deref()
+                        .filter(|session_id| {
+                            !self.rearmed_watcher_active(session_id, &orphan.task_id)
+                        })
+                    {
                         Self::emit_delegate_terminal_chat_snapshot(
                             self.chat_store.as_ref(),
                             self.event_broadcaster.as_ref(),
@@ -22489,13 +22625,251 @@ impl ChatService {
                 }
             }
         }
+        let settled_turns = self.settle_interrupted_chat_turns(interrupted_turns).await;
 
         if checked > 0 {
             debug!(
                 recovered,
-                checked, "[CHAT-INLINE] orphan delegate terminal sweep complete"
+                settled_turns, checked, "[CHAT-INLINE] orphan delegate terminal sweep complete"
             );
         }
+    }
+
+    /// Whether the watcher `rearm_chat_delivery_for_recovered_tasks` started
+    /// for this task is still running (its registry key names the synthetic
+    /// turn it watches under).
+    fn rearmed_watcher_active(&self, chat_session_id: &str, task_id: &str) -> bool {
+        self.active_synthesis_watchers.contains_key(&format!(
+            "{}::{}::{}",
+            chat_session_id,
+            task_id,
+            rearmed_chat_turn_id(task_id, chat_session_id)
+        ))
+    }
+
+    /// Whether a turn whose journal ends in `running` was left so by a dead
+    /// process. Every turn this process runs began after it started and
+    /// stamps that start on its state, so only an earlier `running` turn is
+    /// orphaned. A live turn's row, however late the sink writes the settled
+    /// one, can never match.
+    /// The session's `turn_state` naming the same turn backs this up should
+    /// the clock step back: a turn this process began is in that map.
+    fn chat_turn_left_running_by_a_dead_process(&self, turn: &JournaledTurnState) -> bool {
+        turn.state.status == super::turn_state::ChatTurnStatus::Running
+            && turn.state.started_at < self.started_at_ms
+            && !self
+                .chat_turn_states
+                .get(&turn.chat_session_id)
+                .is_some_and(|current| current.chat_turn_id == turn.state.chat_turn_id)
+    }
+
+    /// Settle each turn a dead process left running: as failed
+    /// (`interrupted`), or as completed when its reply was saved and only the
+    /// settled row was lost. The event appends the settled row to the turn
+    /// file. Only a turn still its session's newest (no later user message
+    /// of another turn) also becomes the session's `turn_state`: the
+    /// snapshot names the latest turn, and an old turn cut off months ago
+    /// must not stand in for later answered ones. Turns of a deleted session
+    /// are left alone. Returns the count settled.
+    async fn settle_interrupted_chat_turns(&self, mut turns: Vec<JournaledTurnState>) -> usize {
+        // Newest first, so a session's newest interrupted turn takes the
+        // vacant `turn_state` slot before any older one is published.
+        turns.sort_by(|left, right| right.state.started_at.cmp(&left.state.started_at));
+        let now_ms = Utc::now().timestamp_millis();
+        // One session and message read per session, however many of its
+        // turns were cut off. `None`: deleted or unreadable, left as is.
+        let mut sessions: HashMap<String, Option<(ChatSession, Vec<ChatMessage>)>> =
+            HashMap::new();
+        let mut count = 0usize;
+        for turn in turns {
+            if !sessions.contains_key(&turn.chat_session_id) {
+                let loaded = self.load_session_for_restart_sweep(&turn).await;
+                sessions.insert(turn.chat_session_id.clone(), loaded);
+            }
+            let Some(Some((session, messages))) = sessions.get(&turn.chat_session_id) else {
+                continue;
+            };
+            let turn_id = turn.state.chat_turn_id.as_str();
+            // The reply was saved but the settled row was lost (the sink is
+            // asynchronous): the turn answered.
+            let answered = messages.iter().any(|message| {
+                message.direction == ChatMessageDirection::Assistant
+                    && message.chat_turn_id.as_deref() == Some(turn_id)
+            });
+            // Still the newest turn when no user message of another turn came
+            // after it. Cards, notices and display copies are not turns.
+            let latest = !messages.iter().any(|message| {
+                message.direction == ChatMessageDirection::User
+                    && message.created_at > turn.state.started_at
+                    && message.chat_turn_id.as_deref() != Some(turn_id)
+            });
+            let outcome = if answered {
+                super::turn_state::ChatTurnOutcome::Answered
+            } else {
+                super::turn_state::ChatTurnOutcome::Interrupted
+            };
+            let settled = turn.state.settled(outcome, now_ms);
+            if latest {
+                self.publish_chat_turn_state(
+                    &session.id,
+                    &session.agent_id,
+                    &session.principal,
+                    &session.workspace,
+                    settled,
+                );
+            } else {
+                self.emit_chat_turn_state(
+                    &session.id,
+                    &session.agent_id,
+                    &session.principal,
+                    &session.workspace,
+                    &settled,
+                );
+            }
+            count += 1;
+        }
+        if count > 0 {
+            info!(
+                count,
+                "[CHAT-INLINE] settled chat turns a restart left running"
+            );
+        }
+        count
+    }
+
+    /// The session of a turn the restart sweep settles, with its newest
+    /// messages. `None` for a deleted or unreadable session.
+    async fn load_session_for_restart_sweep(
+        &self,
+        turn: &JournaledTurnState,
+    ) -> Option<(ChatSession, Vec<ChatMessage>)> {
+        let session = match self.chat_store.get_session(&turn.chat_session_id).await {
+            Ok(Some(session)) => session,
+            Ok(None) => return None,
+            Err(error) => {
+                warn!(
+                    chat_session_id = %turn.chat_session_id,
+                    chat_turn_id = %turn.state.chat_turn_id,
+                    error = %error,
+                    "[CHAT-INLINE] restart sweep: chat session unreadable; turn left as is"
+                );
+                return None;
+            },
+        };
+        let messages = match self
+            .chat_store
+            .get_messages(&session.id, RESTART_SWEEP_LATEST_TURN_WINDOW)
+            .await
+        {
+            Ok(messages) => messages,
+            Err(error) => {
+                warn!(
+                    chat_session_id = %session.id,
+                    error = %error,
+                    "[CHAT-INLINE] restart sweep: chat messages unreadable; turn left as is"
+                );
+                return None;
+            },
+        };
+        Some((session, messages))
+    }
+
+    /// Re-attach chat delivery to the task runs startup recovery resumed.
+    ///
+    /// A task a chat turn launched (a chat pack call, a delegate, a handover:
+    /// `created_by: chat_*`) reports back only through in-memory
+    /// pieces: the turn's own await, its watcher, its chat fan-out. A restart
+    /// mid-run loses all three, so the resumed run finishes and its result
+    /// never reaches the chat. For each such run whose chat session still
+    /// exists, this registers the fan-out again and starts the delegate
+    /// watcher, under the synthetic `chat-task-<task>-<session>` turn (the
+    /// launching turn's id is not stored with the task): live steps reach the
+    /// chat, a hung run surfaces as failed after the delegate deadline, and
+    /// the end posts the terminal card and answer, then drops the fan-out.
+    /// The watcher is single-flight per (session, task) and
+    /// skips a result the chat already shows, so a repeated pass posts
+    /// nothing twice. Returns the number re-armed.
+    pub async fn rearm_chat_delivery_for_recovered_tasks(
+        &self,
+        runs: &[crate::magician_v2::orchestrator::RecoveredTaskRun],
+    ) -> usize {
+        let Some(v3) = self.artifact_v2_service.as_ref() else {
+            return 0;
+        };
+        // The watcher needs the agentic runtime; without it a registered
+        // fan-out would never be released.
+        if self.agentic_runtime.is_none() {
+            return 0;
+        }
+        let mut rearmed = 0usize;
+        for run in runs {
+            let scope = ScopeRef::system_internal_unauthenticated(&run.principal, &run.workspace);
+            let task = match v3.get_task(&scope, &run.task_id).await {
+                Ok(task) => task,
+                Err(error) => {
+                    warn!(
+                        task_id = %run.task_id,
+                        execution_id = %run.execution_id,
+                        error = %error,
+                        "[CHAT-INLINE] recovered run: task unreadable; chat delivery not re-armed"
+                    );
+                    continue;
+                },
+            };
+            // Only a task the chat itself launched (`chat_pack_dispatch`,
+            // `chat_delegate`, …) reported into the chat. A child a run
+            // spawned reports to that run, and a persistent task's scheduled
+            // runs never posted there.
+            if !task.manifest.created_by.starts_with("chat_") {
+                continue;
+            }
+            let Some(chat_session_id) = task.manifest.chat_session_id.clone() else {
+                continue;
+            };
+            let session = match self.chat_store.get_session(&chat_session_id).await {
+                Ok(Some(session)) => session,
+                Ok(None) => continue,
+                Err(error) => {
+                    warn!(
+                        task_id = %run.task_id,
+                        chat_session_id = %chat_session_id,
+                        error = %error,
+                        "[CHAT-INLINE] recovered run: chat session unreadable; chat delivery not re-armed"
+                    );
+                    continue;
+                },
+            };
+            let chat_turn_id = rearmed_chat_turn_id(&run.task_id, &session.id);
+            self.event_broadcaster.register_chat_fanout_for_task(
+                &run.task_id,
+                crate::magician_v2::realtime_events::ChatFanoutTarget {
+                    chat_session_id: session.id.clone(),
+                    chat_agent_id: session.agent_id.clone(),
+                    principal: session.principal.clone(),
+                    workspace: session.workspace.clone(),
+                    chat_turn_id: Some(chat_turn_id.clone()),
+                },
+            );
+            self.spawn_delegate_teardown_watcher(
+                run.execution_id.clone(),
+                run.task_id.clone(),
+                None,
+                session.id.clone(),
+                run.principal.clone(),
+                run.workspace.clone(),
+                Some(chat_turn_id),
+                None,
+                true,
+            );
+            rearmed += 1;
+        }
+        if rearmed > 0 {
+            info!(
+                rearmed,
+                "[CHAT-INLINE] re-armed chat delivery for task runs resumed after restart"
+            );
+        }
+        rearmed
     }
 
     fn emit_synthetic_delegate_terminal(
@@ -22880,6 +23254,7 @@ impl ChatService {
                             target_agent_id.as_deref(),
                             Some(&terminal_status_str),
                             preview,
+                            &[],
                         );
                     } else {
                         Self::emit_delegate_output_failed_synthetic(
@@ -23069,6 +23444,7 @@ impl ChatService {
                                 target_agent_id.as_deref(),
                                 Some(&terminal_status_str),
                                 preview,
+                                &[],
                             );
                         } else if saw_terminal_with_pending {
                             Self::emit_delegate_output_failed_synthetic(
@@ -23570,6 +23946,14 @@ impl ChatService {
             tutor_continuation_service,
         )
         .await;
+        // The files the delegate delivered, by served URL, so the mouth
+        // links the real files instead of the summary or a host path.
+        let delivered_files = v3
+            .delivered_file_links_for_task(
+                &ScopeRef::system_internal_unauthenticated(principal, workspace),
+                task_id,
+            )
+            .await;
         Self::emit_delegate_output_ready_with_preview(
             broadcaster,
             chat_session_id,
@@ -23581,6 +23965,7 @@ impl ChatService {
             target_agent_id,
             terminal_task_status,
             preview,
+            &delivered_files,
         );
     }
 
@@ -23600,6 +23985,7 @@ impl ChatService {
         target_agent_id: Option<&str>,
         terminal_task_status: Option<&str>,
         preview: Option<String>,
+        delivered_files: &[crate::magician_v2::artifact_v2::delivered_links::DeliveredFileLink],
     ) {
         let mut payload = Self::build_delegate_synthesis_payload(
             chat_session_id,
@@ -23614,6 +24000,9 @@ impl ChatService {
                 "summary_preview".to_string(),
                 serde_json::Value::String(preview),
             );
+        }
+        if !delivered_files.is_empty() {
+            payload.insert("delivered_files".to_string(), json!(delivered_files));
         }
         let envelope = crate::magician_v2::realtime_events::AgentEventEnvelope::new_scoped(
             "chat.delegate.output_ready",
@@ -24169,6 +24558,9 @@ impl ChatService {
         // `dispatch_delegate_to_agent`). `None` → no chat-driven cancellation.
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Value {
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result("orchestrate_pipeline");
+        }
         let Some(service) = self.artifact_v2_service.as_ref() else {
             return json!({
                 "status": "error",
@@ -24363,6 +24755,9 @@ impl ChatService {
         cancel_token: Option<tokio_util::sync::CancellationToken>,
         allowed_delegation_target_ids: &HashSet<String>,
     ) -> Value {
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result("delegate_to_agent");
+        }
         let Some(runtime) = self.agentic_runtime.as_ref() else {
             return json!({
                 "status": "error",
@@ -25140,6 +25535,9 @@ impl ChatService {
         cancel_token: Option<tokio_util::sync::CancellationToken>,
         allowed_handover_target_ids: &HashSet<String>,
     ) -> Value {
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result("handover_to_agent");
+        }
         let Some(runtime) = self.agentic_runtime.as_ref() else {
             return json!({
                 "status": "error",
@@ -25509,6 +25907,9 @@ impl ChatService {
             &crate::magician_v2::execution::agentic::EffectiveToolPolicySnapshot,
         >,
     ) -> Value {
+        if crate::magician_v2::runtime::startup::is_shutting_down() {
+            return runtime_draining_tool_result("spawn_sub_goal");
+        }
         let Some(runtime) = self.agentic_runtime.as_ref() else {
             return json!({
                 "status": "error",
@@ -39499,6 +39900,15 @@ pub async fn build_get_task_details_response(
             } else {
                 Vec::new()
             };
+            let delivered_files = service
+                .delivered_file_links_for_task(
+                    &ScopeRef::system_internal_unauthenticated(
+                        &session.principal,
+                        &session.workspace,
+                    ),
+                    task_id,
+                )
+                .await;
             let outputs_json = task_outputs
                 .as_ref()
                 .map(|outputs| {
@@ -39554,7 +39964,8 @@ pub async fn build_get_task_details_response(
                 "executions": executions_json,
                 "execution_artifacts": execution_artifact_previews,
                 "projected_chat_output_files": projected_chat_output_files,
-                "guidance": "Use primary_user_summary first for user-facing answers. For continuation work, read continuation_context_previews/outputs first; they index prior output/artifact/query pointers. If those are missing or insufficient, read output_previews and execution_artifacts previews. Cite output/artifact download_url or relative_path when the full file is needed.",
+                "delivered_files": delivered_files,
+                "guidance": "Use primary_user_summary first for user-facing answers. delivered_files lists the files the task delivered (name, url, size, primary); link those urls, never host paths or file:// links. For continuation work, read continuation_context_previews/outputs first; they index prior output/artifact/query pointers. If those are missing or insufficient, read output_previews and execution_artifacts previews. Cite output/artifact download_url or relative_path when the full file is needed.",
             })
         },
         Err(error) => json!({
@@ -39630,6 +40041,19 @@ pub async fn project_task_outputs_for_chat_session(
             .iter()
             .find(|output| output.output_id == *primary_output_id)
         {
+            selected.push(output.clone());
+        }
+    }
+    // The primary deliverable file rides right after the answer, so the cap
+    // never drops it.
+    let primary_deliverable_output_id = task_outputs.primary_deliverable_output_id.clone();
+    if let Some(primary_deliverable_id) = primary_deliverable_output_id.as_ref() {
+        if let Some(output) = task_outputs.outputs.iter().find(|output| {
+            output.output_id == *primary_deliverable_id
+                && !selected
+                    .iter()
+                    .any(|candidate| candidate.output_id == output.output_id)
+        }) {
             selected.push(output.clone());
         }
     }
@@ -39766,6 +40190,8 @@ pub async fn project_task_outputs_for_chat_session(
                 absolute_path: Some(existing_path.to_string_lossy().into_owned()),
                 label: existing.label.clone(),
                 size: existing.size,
+                primary: primary_deliverable_output_id.as_deref()
+                    == Some(output.output_id.as_str()),
             });
             continue;
         }
@@ -39885,6 +40311,7 @@ pub async fn project_task_outputs_for_chat_session(
             source: ContentFileSource::SessionOutput,
             relative_path: stored_name,
             display_name,
+            primary: primary_deliverable_output_id.as_deref() == Some(output.output_id.as_str()),
             mime_type: output.media_type,
             absolute_path: Some(session_file_path.to_string_lossy().into_owned()),
             label: None,
@@ -40303,7 +40730,9 @@ mod tests {
             inner: std::io::Cursor::new(journal.as_bytes()),
             chunk_bytes: 7,
         };
-        let orphans = find_orphan_delegates_in_jsonl_reader(reader).expect("stream scan");
+        let orphans = scan_chat_turn_journal_reader(reader)
+            .expect("stream scan")
+            .orphans;
 
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].task_id, "task-old");
@@ -40318,25 +40747,80 @@ mod tests {
             delegate_status_event("task-after", "exec-after", "running").as_bytes(),
         );
 
-        let orphans = find_orphan_delegates_in_jsonl_reader(std::io::Cursor::new(journal))
-            .expect("stream scan");
+        let orphans = scan_chat_turn_journal_reader(std::io::Cursor::new(journal))
+            .expect("stream scan")
+            .orphans;
 
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].task_id, "task-after");
+    }
+
+    fn turn_state_event(chat_turn_id: &str, status: &str) -> String {
+        serde_json::json!({
+            "data": {
+                "event": {
+                    "event_type": crate::magician_v2::chat::turn_state::CHAT_TURN_STATE_EVENT,
+                    "agent_id": "personal-assistant",
+                    "payload": {
+                        "chat_session_id": "session-1",
+                        "chat_turn_id": chat_turn_id,
+                        "status": status,
+                        "started_at": 10,
+                        "timestamp_ms": 10
+                    }
+                }
+            }
+        })
+        .to_string()
+    }
+
+    /// The sweep keeps a turn's last state row, so a turn whose process died
+    /// reads `running` and a settled one reads settled.
+    #[test]
+    fn turn_journal_scan_keeps_the_last_turn_state_row() {
+        let cut_off = format!(
+            "{}\n{}\n",
+            turn_state_event("chat-turn-cut", "running"),
+            delegate_status_event("task-1", "exec-1", "running"),
+        );
+        let scan = scan_chat_turn_journal_reader(std::io::Cursor::new(cut_off)).expect("scan");
+        let turn = scan.latest_turn_state.expect("turn state row");
+        assert_eq!(turn.state.chat_turn_id, "chat-turn-cut");
+        assert_eq!(
+            turn.state.status,
+            crate::magician_v2::chat::turn_state::ChatTurnStatus::Running
+        );
+        assert_eq!(turn.chat_session_id, "session-1");
+        assert_eq!(scan.orphans.len(), 1, "delegate rows are still read");
+
+        let settled = format!(
+            "{}\n{}\n",
+            turn_state_event("chat-turn-done", "running"),
+            turn_state_event("chat-turn-done", "completed"),
+        );
+        let scan = scan_chat_turn_journal_reader(std::io::Cursor::new(settled)).expect("scan");
+        assert_eq!(
+            scan.latest_turn_state.expect("turn state row").state.status,
+            crate::magician_v2::chat::turn_state::ChatTurnStatus::Completed
+        );
+
+        let no_state = format!("{}\n", delegate_status_event("task-1", "exec-1", "running"));
+        let scan = scan_chat_turn_journal_reader(std::io::Cursor::new(no_state)).expect("scan");
+        assert!(scan.latest_turn_state.is_none());
     }
 
     #[test]
     fn orphan_recovery_and_task_summary_paths_do_not_restore_whole_file_reads() {
         let source = include_str!("service.rs");
         let orphan_recovery = source
-            .split_once("async fn find_orphan_delegates_in_jsonl_path(")
+            .split_once("async fn scan_chat_turn_journal_path(")
             .expect("orphan stream reader")
             .1
             .split_once("/// Sanitise a chat session")
             .expect("orphan stream reader end")
             .0;
         assert!(orphan_recovery.contains("spawn_blocking"));
-        assert!(orphan_recovery.contains("find_orphan_delegates_in_jsonl_reader(file)"));
+        assert!(orphan_recovery.contains("scan_chat_turn_journal_reader(file)"));
         assert!(!orphan_recovery.contains("read_to_string"));
 
         let task_summary = source
@@ -47939,6 +48423,8 @@ implementation:
                     outputs: vec![output.clone()],
                     default_task_agent_output_id: None,
                     primary_user_output_id: Some(output.output_id.clone()),
+                    primary_deliverable_output_id: None,
+                    latest_delivered_output_ids: Vec::new(),
                     updated_at: Some(output.created_at.clone()),
                 },
             )
@@ -49240,6 +49726,171 @@ implementation:
             .await
             .unwrap();
         assert!(!cancelled);
+    }
+
+    fn journaled_running_turn(
+        session_id: &str,
+        chat_turn_id: &str,
+        started_at: i64,
+    ) -> JournaledTurnState {
+        JournaledTurnState {
+            state: crate::magician_v2::chat::turn_state::ChatTurnState::running(
+                chat_turn_id,
+                started_at,
+            ),
+            chat_session_id: session_id.to_string(),
+        }
+    }
+
+    /// A turn a dead process left running settles as failed (`interrupted`)
+    /// and becomes the session's `turn_state` again; the newest such turn
+    /// names the session.
+    #[tokio::test]
+    async fn a_turn_left_running_by_a_restart_settles_as_interrupted() {
+        use crate::magician_v2::chat::turn_state::{ChatTurnStatus, INTERRUPTED_REASON};
+        let llm = Arc::new(MockChatLlmClient::default());
+        let (service, store, session, _tmp) = create_test_service(llm).await;
+        let older = journaled_running_turn(&session.id, "chat-turn-older", 10);
+        let newer = journaled_running_turn(&session.id, "chat-turn-newer", 20);
+        // A card landing after the turn is not a later turn.
+        store
+            .append_message(
+                &session.id,
+                ChatMessage::new(
+                    "late-card".to_string(),
+                    session.id.clone(),
+                    ChatMessageDirection::Assistant,
+                    ChatMessageContent::Text {
+                        text: "a task finished".to_string(),
+                        plan_reply: None,
+                    },
+                    100,
+                ),
+            )
+            .await
+            .expect("saved message");
+        assert!(service.chat_turn_left_running_by_a_dead_process(&older));
+        assert!(service.chat_turn_left_running_by_a_dead_process(&newer));
+
+        let settled = service
+            .settle_interrupted_chat_turns(vec![
+                older,
+                newer,
+                journaled_running_turn("sess_deleted", "chat-turn-gone", 30),
+            ])
+            .await;
+
+        assert_eq!(settled, 2, "a deleted session's turn is left alone");
+        let state = service.chat_turn_state(&session.id).expect("turn state");
+        assert_eq!(state.chat_turn_id, "chat-turn-newer");
+        assert_eq!(state.status, ChatTurnStatus::Failed);
+        assert_eq!(state.reason.as_deref(), Some(INTERRUPTED_REASON));
+        assert_eq!(state.started_at, 20);
+        assert!(service.chat_turn_state("sess_deleted").is_none());
+    }
+
+    /// An interrupted turn the session has moved past (a newer message of
+    /// another turn) gets its settled row, but never stands in as the
+    /// session's latest turn.
+    #[tokio::test]
+    async fn an_old_interrupted_turn_does_not_become_the_sessions_turn_state() {
+        let llm = Arc::new(MockChatLlmClient::default());
+        let (service, store, session, _tmp) = create_test_service(llm).await;
+        let mut later = ChatMessage::new(
+            "later-message".to_string(),
+            session.id.clone(),
+            ChatMessageDirection::User,
+            ChatMessageContent::Text {
+                text: "a later question".to_string(),
+                plan_reply: None,
+            },
+            50,
+        );
+        later.chat_turn_id = Some("chat-turn-later".to_string());
+        store
+            .append_message(&session.id, later)
+            .await
+            .expect("saved message");
+
+        let settled = service
+            .settle_interrupted_chat_turns(vec![journaled_running_turn(
+                &session.id,
+                "chat-turn-old",
+                10,
+            )])
+            .await;
+
+        assert_eq!(settled, 1);
+        assert!(service.chat_turn_state(&session.id).is_none());
+    }
+
+    /// A turn whose reply was saved but whose settled row the sink lost reads
+    /// as completed, not interrupted.
+    #[tokio::test]
+    async fn a_cut_off_turn_with_a_saved_reply_settles_as_completed() {
+        use crate::magician_v2::chat::turn_state::ChatTurnStatus;
+        let llm = Arc::new(MockChatLlmClient::default());
+        let (service, store, session, _tmp) = create_test_service(llm).await;
+        let mut reply = ChatMessage::new(
+            "reply".to_string(),
+            session.id.clone(),
+            ChatMessageDirection::Assistant,
+            ChatMessageContent::Text {
+                text: "the answer".to_string(),
+                plan_reply: None,
+            },
+            15,
+        );
+        reply.chat_turn_id = Some("chat-turn-answered".to_string());
+        store
+            .append_message(&session.id, reply)
+            .await
+            .expect("saved message");
+
+        service
+            .settle_interrupted_chat_turns(vec![journaled_running_turn(
+                &session.id,
+                "chat-turn-answered",
+                10,
+            )])
+            .await;
+
+        let state = service.chat_turn_state(&session.id).expect("turn state");
+        assert_eq!(state.status, ChatTurnStatus::Completed);
+        assert!(state.reason.is_none());
+    }
+
+    /// Only a `running` turn that began before this service did is a dead
+    /// process's; a turn this process started never is, however late its
+    /// settled row reaches the file.
+    #[tokio::test]
+    async fn the_restart_sweep_leaves_this_process_turns_alone() {
+        let llm = Arc::new(MockChatLlmClient::default());
+        let (service, _store, session, _tmp) = create_test_service(llm).await;
+        let live = journaled_running_turn(
+            &session.id,
+            "chat-turn-live",
+            chrono::Utc::now().timestamp_millis(),
+        );
+        assert!(!service.chat_turn_left_running_by_a_dead_process(&live));
+
+        // Should the clock step back, the session's turn state still marks
+        // the turn as this process's.
+        let stepped_back = journaled_running_turn(&session.id, "chat-turn-stepped", 1);
+        service.publish_chat_turn_state(
+            &session.id,
+            &session.agent_id,
+            &session.principal,
+            &session.workspace,
+            stepped_back.state.clone(),
+        );
+        assert!(!service.chat_turn_left_running_by_a_dead_process(&stepped_back));
+
+        let mut settled = journaled_running_turn(&session.id, "chat-turn-done", 1);
+        settled.state = settled
+            .state
+            .settled(crate::magician_v2::chat::turn_state::ChatTurnOutcome::Answered, 2);
+        assert!(!service.chat_turn_left_running_by_a_dead_process(&settled));
     }
 
     #[tokio::test]

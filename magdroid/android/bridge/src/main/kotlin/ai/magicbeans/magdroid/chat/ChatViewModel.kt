@@ -1652,7 +1652,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(background: Boolean = false, stopAndSend: Boolean = false) {
         // A composer holding exactly a command opens its options instead of
         // posting it to the model.
-        ComposerCommands.exactCommand(_state.value.draft)?.let { command ->
+        (
+            ComposerCommands.exactCommand(_state.value.draft)
+                ?: ComposerCommands.partialCommand(_state.value.draft, _state.value.commandState)
+        )?.let { command ->
             openCommand(command)
             return
         }

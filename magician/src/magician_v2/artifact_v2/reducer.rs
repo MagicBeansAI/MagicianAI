@@ -366,6 +366,9 @@ pub trait ArtifactV2Reducer: Send + Sync {
         active_child_execution_ids: Option<&[String]>,
         current_step_id: Option<&str>,
         updated_at: &str,
+        // False for a progress event: its `running`/`planning` hint must not
+        // end a wait on delegated children (see `reduce_runtime_signal`).
+        may_end_children_wait: bool,
     ) -> Result<(), ArtifactV2Error>;
 
     /// Reduce a step completion or failure event into execution state.
@@ -3679,6 +3682,22 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
             task.state.primary_user_output_id = Some(outputs.task_user_output.output_id.clone());
             task.refs.default_task_agent_output_id = None;
             task.refs.primary_user_output_id = Some(outputs.task_user_output.output_id.clone());
+            // A new answer names its own primary deliverable, or none: an
+            // earlier run's file never stays primary beside a newer answer.
+            task.refs.primary_deliverable_output_id = outputs
+                .primary_deliverable_output_id
+                .clone()
+                .filter(|id| {
+                    outputs
+                        .delivered_file_outputs
+                        .iter()
+                        .any(|output| output.output_id == *id)
+                });
+            task.refs.latest_delivered_output_ids = outputs
+                .delivered_file_outputs
+                .iter()
+                .map(|output| output.output_id.clone())
+                .collect();
         }
         // Remove this execution's id from the per-task in-flight
         // synthesis registry — safe regardless of active_root scoping
@@ -4354,6 +4373,9 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
         active_child_execution_ids: Option<&[String]>,
         current_step_id: Option<&str>,
         updated_at: &str,
+        // False for a progress event: its `running`/`planning` hint must not
+        // end a wait on delegated children (see `reduce_runtime_signal`).
+        may_end_children_wait: bool,
     ) -> Result<(), ArtifactV2Error> {
         self.with_task_write_lock(scope, &ctx.task_id, || async {
             let mut task = self.load_task_record(scope, &ctx.task_id).await?;
@@ -4362,6 +4384,20 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
                 .await?;
             let is_root_execution = Self::is_root_execution(&execution);
             let was_terminal = Self::execution_status_is_terminal(&execution.state.status);
+            // A progress event's `running`/`planning` hint does not end a park
+            // on delegated children; the runtime's own transition does.
+            let execution_status = execution_status.filter(|status| {
+                may_end_children_wait
+                    || execution.state.status != "waiting_for_children"
+                    || !matches!(*status, "running" | "planning")
+            });
+            // A hint-less signal (a cycle boundary, a step event) arriving after
+            // the execution ended carries nothing to apply, and must not reach
+            // the root block below, which would reinstate an ended root as the
+            // task's active root.
+            if was_terminal && execution_status.is_none() {
+                return Ok(());
+            }
 
             if Self::execution_status_is_terminal(&execution.state.status)
                 && execution_status
@@ -4472,6 +4508,9 @@ impl ArtifactV2Reducer for FilesystemArtifactV2Reducer {
                                 Some(ctx.execution_id.clone());
                         }
                     },
+                    // A late signal for a root that had already ended (its
+                    // terminal reducer has run) must not make it active again.
+                    None if was_terminal => {},
                     None => {
                         task.state.active_root_execution_id = Some(ctx.execution_id.clone());
                     },
@@ -4757,6 +4796,8 @@ mod tests {
                 outputs: Vec::new(),
                 default_task_agent_output_id: None,
                 primary_user_output_id: None,
+                primary_deliverable_output_id: None,
+                latest_delivered_output_ids: Vec::new(),
                 updated_at: Some(updated_at.to_string()),
             },
         }
@@ -5107,6 +5148,7 @@ mod tests {
                 Some(&late_children),
                 Some("late-step"),
                 "2026-08-04T00:04:00Z",
+                true,
             )
             .await
             .expect("late runtime signal is ignored");
@@ -5437,6 +5479,7 @@ mod tests {
                 None,
                 None,
                 "2026-08-04T00:00:04Z",
+                true,
             )
             .await
             .expect("child runtime signal");
@@ -5704,6 +5747,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .unwrap();
@@ -5717,6 +5761,195 @@ mod tests {
         assert_eq!(state.status, "waiting_for_user");
         assert_eq!(state.active_root_execution_id.as_deref(), Some("exec-wait"));
         assert_eq!(state.latest_root_execution_id.as_deref(), Some("exec-wait"));
+    }
+
+    /// A delegated coordinator that parks on its own children ends its agent
+    /// cycle as `paused`. The bridge mirrors that cycle event through this
+    /// reducer; it must leave the park standing, or the parent resume reads
+    /// the coordinator as running and never wakes it.
+    #[tokio::test]
+    async fn a_completed_agent_cycle_leaves_a_parked_coordinator_waiting_on_its_children() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path().join("magician_data_v3"));
+        let reducer = test_reducer(workspace.clone());
+        let scope = test_scope();
+        let task_id = "task-nested";
+        let root_id = "exec-root";
+        let coordinator_id = "exec-deleg-ceo";
+        let mut task = task_record(task_id, "2026-10-30T13:27:00Z");
+        let root = execution_record(
+            task_id,
+            root_id,
+            "waiting_for_children",
+            "2026-10-30T13:27:00Z",
+        );
+        reducer.reduce_task_created(&task).await.expect("task");
+        reducer
+            .reduce_execution_initialized(&mut task, &root)
+            .await
+            .expect("root");
+        let coordinator = child_execution_record(
+            task_id,
+            root_id,
+            root_id,
+            coordinator_id,
+            "running",
+            "2026-10-30T13:28:00Z",
+        );
+        reducer
+            .reduce_execution_discovered(&scope, &coordinator)
+            .await
+            .expect("coordinator discovered");
+        let ctx = ExecutionContext {
+            principal: scope.principal().to_string(),
+            workspace: scope.workspace().to_string(),
+            task_id: task_id.to_string(),
+            execution_id: coordinator_id.to_string(),
+        };
+        let grandchildren = vec!["exec-deleg-cto".to_string(), "exec-deleg-cpo".to_string()];
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                Some("waiting_for_children"),
+                Some("running"),
+                Some(&grandchildren),
+                None,
+                "2026-10-30T13:31:18Z",
+                true,
+            )
+            .await
+            .expect("coordinator parks");
+
+        let cycle = crate::magician_v2::artifact_v2::map_v2_realtime_event(
+            &crate::magician_v2::realtime_events::RuntimeTransportEvent::AgentCycleCompleted {
+                principal: Some(scope.principal().to_string()),
+                workspace: Some(scope.workspace().to_string()),
+                agent_id: "ceo".into(),
+                goal_id: "launch".into(),
+                cycle_id: "ceo::launch::1".into(),
+                execution_id: Some(coordinator_id.into()),
+                outcome: "paused".into(),
+                iterations_used: 11,
+                timestamp: 1_793_367_080_142,
+            },
+        )
+        .expect("cycle event maps");
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                cycle.execution_status_hint.as_deref(),
+                cycle.task_status_hint,
+                cycle.active_child_execution_ids.as_deref(),
+                cycle.current_step_id.as_deref(),
+                "2026-10-30T13:31:20Z",
+                crate::magician_v2::artifact_v2::events::status_hint_may_end_children_wait(
+                    cycle.event_type,
+                ),
+            )
+            .await
+            .expect("cycle signal reduces");
+
+        let persisted = persisted_execution(&workspace, &scope, task_id, coordinator_id).await;
+        assert_eq!(persisted.state.status, "waiting_for_children");
+        assert_eq!(persisted.state.active_child_execution_ids, grandchildren);
+
+        // A progress event stamped with the parked id (an LLM call, an
+        // iteration) carries `running`; it is not the runtime's transition.
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                Some("running"),
+                Some("running"),
+                None,
+                None,
+                "2026-10-30T13:35:00Z",
+                false,
+            )
+            .await
+            .expect("progress signal reduces");
+        let persisted = persisted_execution(&workspace, &scope, task_id, coordinator_id).await;
+        assert_eq!(persisted.state.status, "waiting_for_children");
+
+        // The runtime's own WaitingChildren -> Runnable transition ends it.
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                Some("running"),
+                Some("running"),
+                None,
+                None,
+                "2026-10-30T13:54:00Z",
+                true,
+            )
+            .await
+            .expect("runtime transition reduces");
+        let persisted = persisted_execution(&workspace, &scope, task_id, coordinator_id).await;
+        assert_eq!(persisted.state.status, "running");
+    }
+
+    /// A cycle boundary can be mirrored after its root already ended (the
+    /// status change is published first). With no hint to apply it must leave
+    /// the ended root off the task's active-root pointer.
+    #[tokio::test]
+    async fn a_hintless_signal_after_a_root_ended_does_not_reinstate_it_as_active() {
+        let temp = tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp.path().join("magician_data_v3"));
+        let reducer = test_reducer(workspace.clone());
+        let task_id = "task-ended-root";
+        let scope = test_scope();
+        let mut task = task_record(task_id, "2026-10-30T10:00:00Z");
+        let execution = execution_record(task_id, "exec-1", "running", "2026-10-30T10:00:00Z");
+        reducer.reduce_task_created(&task).await.expect("task");
+        reducer
+            .reduce_execution_initialized(&mut task, &execution)
+            .await
+            .expect("execution");
+        let ctx = ExecutionContext {
+            principal: scope.principal().to_string(),
+            workspace: scope.workspace().to_string(),
+            task_id: task_id.to_string(),
+            execution_id: "exec-1".to_string(),
+        };
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                Some("cancelled"),
+                Some("cancelled"),
+                None,
+                None,
+                "2026-10-30T10:05:00Z",
+                true,
+            )
+            .await
+            .expect("cancel");
+        reducer
+            .reduce_runtime_signal(
+                &scope,
+                &ctx,
+                None,
+                None,
+                None,
+                None,
+                "2026-10-30T10:05:01Z",
+                false,
+            )
+            .await
+            .expect("late cycle boundary");
+
+        let task_state = read_json::<TaskState>(&workspace.task_state_path(
+            &scope.principal(),
+            &scope.workspace(),
+            task_id,
+        ))
+        .await
+        .expect("task state");
+        assert!(task_state.active_root_execution_id.is_none());
+        assert_eq!(task_state.status, "cancelled");
     }
 
     #[tokio::test]
@@ -5752,6 +5985,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .expect("terminal runtime signal should persist");
@@ -5822,6 +6056,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .expect("completed runtime signal should persist");
@@ -5891,6 +6126,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .expect("late runtime signal should persist");
@@ -5969,6 +6205,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .expect("runtime signal should persist");
@@ -6036,6 +6273,7 @@ mod tests {
                 None,
                 None,
                 "2026-03-30T10:05:00Z",
+                true,
             )
             .await
             .expect("ready runtime signal should persist");
@@ -6176,6 +6414,7 @@ mod tests {
             }),
             media_outputs: Vec::new(),
             delivered_file_outputs: Vec::new(),
+            primary_deliverable_output_id: None,
             task_output_mode: TaskOutputMode::Overwrite,
         };
 
@@ -6549,6 +6788,7 @@ mod tests {
             continuation_context_output: None,
             media_outputs: Vec::new(),
             delivered_file_outputs: Vec::new(),
+            primary_deliverable_output_id: None,
             task_output_mode: crate::magician_v2::artifact_v2::models::TaskOutputMode::Accumulate,
         };
 
@@ -6978,6 +7218,7 @@ mod tests {
             continuation_context_output: None,
             media_outputs: Vec::new(),
             delivered_file_outputs: Vec::new(),
+            primary_deliverable_output_id: None,
             task_output_mode: crate::magician_v2::artifact_v2::models::TaskOutputMode::Accumulate,
         };
         reducer
@@ -7044,6 +7285,7 @@ mod tests {
             continuation_context_output: None,
             media_outputs: Vec::new(),
             delivered_file_outputs: Vec::new(),
+            primary_deliverable_output_id: None,
             task_output_mode: TaskOutputMode::Accumulate,
         }
     }
@@ -7229,6 +7471,7 @@ mod tests {
             source_output_ids: vec![outputs.task_user_output.output_id.clone()],
         };
         outputs.delivered_file_outputs = vec![delivered.clone()];
+        outputs.primary_deliverable_output_id = Some(delivered.output_id.clone());
         let outcome = ExecutionOutcomeSnapshot {
             execution_status: "completed".to_string(),
             task_status: "completed".to_string(),
@@ -7266,6 +7509,16 @@ mod tests {
             .position(|output| output.output_id == delivered.output_id)
             .expect("delivered file committed with the answer");
         assert!(primary < attached, "the attachment follows the answer");
+        assert_eq!(
+            stored.refs.primary_deliverable_output_id.as_deref(),
+            Some(delivered.output_id.as_str()),
+            "the declared primary deliverable is recorded on the task refs"
+        );
+        assert_eq!(
+            stored.refs.latest_delivered_output_ids,
+            vec![delivered.output_id.clone()],
+            "this answer's files are recorded as the latest delivery"
+        );
         assert_eq!(
             stored.refs.outputs[attached].relative_path,
             delivered.relative_path
@@ -7432,6 +7685,7 @@ mod tests {
                 None,
                 None,
                 HEARTBEAT_AT,
+                true,
             )
             .await
             .expect("heartbeat should persist");
@@ -7486,6 +7740,7 @@ mod tests {
                 None,
                 None,
                 LATE_HEARTBEAT_AT,
+                true,
             )
             .await
             .expect("late heartbeat should persist");

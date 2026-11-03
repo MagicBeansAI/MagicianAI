@@ -22,6 +22,7 @@ import { maybeSpeakTaskCompletion } from '$lib/media/tts/taskCompletionSpeech';
 import { codingChoiceFromSelection, codingProfileStore } from '$lib/stores/codingProfileStore';
 import { chatComposerFor } from '$lib/stores/chatHarnessPreferenceStore';
 import { chatTurnStateStore, recordChatTurnStateFromResponse } from '$lib/magician/chat/turnState';
+import { presentTaskOutputBlocks } from '$lib/magician/tasks/deliverableOrder';
 
 // =============================================================================
 // Types
@@ -54,6 +55,9 @@ export interface ContentBlockRecord {
     label?: string;
     size?: number;
     url?: string;
+    /** `true` on a finished task's primary deliverable (the file the run
+     *  declared first). Omitted when `false`. */
+    primary?: boolean;
 }
 
 export interface UploadedAttachment {
@@ -1745,7 +1749,9 @@ export function getMessageContentBlocks(content: ChatMessageContent): ContentBlo
         return content.content_blocks ?? [];
     }
     if (content.type === 'task_status_update') {
-        return content.output_files ?? [];
+        // Primary deliverable first, the summary last and labelled `Summary`,
+        // agent-facing state dropped (`deliverableOrder.ts`).
+        return presentTaskOutputBlocks(content.output_files ?? []);
     }
     if (content.type === 'attachment' && content.filename) {
         return [{

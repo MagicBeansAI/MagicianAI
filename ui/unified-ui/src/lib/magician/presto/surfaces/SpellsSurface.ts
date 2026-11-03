@@ -1,6 +1,7 @@
 import type { MuijComponent } from '$lib/stores/muijStore';
 import type { Task, TaskStatus } from '$lib/stores/taskStore';
 import { cronToHumanReadable } from '$lib/utils/cron';
+import { threadLabel } from '$lib/threads/threadLinks';
 import { sanitizeIdSegment } from '$lib/magician/presto/contracts/id';
 import { statusBadgeTone, statusTone } from '$lib/shared/statusTone';
 import type {
@@ -552,7 +553,7 @@ function buildTaskCard(
 		// (context, not state — the chips it replaces were visual noise).
 		const metaParts = [
 			task.agentName,
-			task.uiThreadId ? `#${task.uiThreadId}` : '',
+			task.uiThreadId ? `#${threadLabel(task.uiThreadId)}` : '',
 			task.updatedAt !== 'never' ? `updated ${task.updatedAt}` : ''
 		].filter(Boolean);
 		if (metaParts.length > 0) {

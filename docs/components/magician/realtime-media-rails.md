@@ -54,7 +54,7 @@ with the call's agent (not archived, not a concurrent-voice branch), and the
 call takes that chat's `ui_thread_id`. Otherwise, and for callers with no chat
 (wake word, war room, thinking map), it falls back to the active chat of
 `ui_thread_id`. That fallback alone is ambiguous: a thread with chat tabs has
-several active chats.
+several active chats. `session.start.new_chat=true` (the desktop Orb) gets a new chat in `ui_thread_id` instead (`CallChat::Fresh`).
 
 **Turn boundaries.** `turn_boundary=server_vad|push_to_talk` maps to provider
 turn detection (`server_vad` / `none`) and persists across rotations; the Mac
@@ -154,7 +154,8 @@ Under `/api/magician/v2/media`, scope-isolated by the workspace bearer.
 Meetings (`/api/magician/v2/meetings`) and `/api/magician/v2/screen/observe/…`
 are below.
 
-**Voice notes.** `POST /voice-notes` returns transcript, preview and
+**Voice notes.** Without a `chat_session_id` a note joins the thread's open chat, or starts a new one with `new_chat=true`.
+`POST /voice-notes` returns transcript, preview and
 `assistant_speech_segments` when the reply had `<speech>` (host-native feeds them
 to `/tts/synthesize_message`; browsers use persisted `speech_segments`). Chat cancel/panic emits
 `media.voice_note.chat_submit_failed` + `media.voice_note.error` and returns

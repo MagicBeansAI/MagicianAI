@@ -43,6 +43,12 @@ import {
 } from './taskAttention';
 import { runsSliceOf, type RunRecord, type TaskPanelRuns } from './taskRuns';
 import { deriveTimeline, runCostRows } from './taskTimeline';
+import {
+	deliverableRank,
+	isTaskSummaryFileName,
+	orderWithinSlots,
+	SUMMARY_OUTPUT_LABEL
+} from './deliverableOrder';
 import { executionProgressAt, latestProgressAt } from './taskProgress';
 import type { QueuedReason } from './taskVerdict';
 import type {
@@ -103,6 +109,12 @@ export interface TaskOutputRef {
 	 * servers omit it, and `isDeliverableRef` then derives it by the same rule.
 	 */
 	deliverable?: boolean | null;
+	/**
+	 * `true` on the one delivered file that is the run's primary deliverable
+	 * (`primary_deliverable_output_id`). Omitted when `false`, and by older
+	 * servers.
+	 */
+	primary?: boolean | null;
 }
 
 /**
@@ -279,8 +291,16 @@ export function outputFilesFrom(
 		const absolutePath = absolutePathOf(ref);
 		// Only the task's own list is split into deliverables and the rest; run
 		// rows already sit in their own disclosure and carry no such rule.
-		const deliverable = scope === undefined || scope === 'task' ? isDeliverableRef(ref) : true;
+		const taskScoped = scope === undefined || scope === 'task';
+		const deliverable = taskScoped ? isDeliverableRef(ref) : true;
 		const detail = deliverable ? null : nonDeliverableDetail(ref.role);
+		// The task's summary: by its role, or by the generated file name a ref
+		// without a role still carries. Only the generated name is relabelled —
+		// a `primary_task_user` file the agent named itself keeps its name.
+		const summaryName = isTaskSummaryFileName(path);
+		const taskSummary =
+			taskScoped && deliverable && (summaryName || (typeof ref.role === 'string' && ref.role.trim() === 'primary_task_user'));
+		const primary = taskScoped && deliverable && ref.primary === true;
 		files.push({
 			// The basename, because the design's line is `report.md and 2 images`
 			// rather than a directory tree. The full path is kept on `path` and
@@ -302,10 +322,45 @@ export function outputFilesFrom(
 			...(absolutePath ? { absolutePath } : {}),
 			...(scope ? { scope } : {}),
 			...(deliverable ? {} : { deliverable: false }),
-			...(detail ? { detail } : {})
+			...(detail ? { detail } : {}),
+			...(summaryName ? { label: SUMMARY_OUTPUT_LABEL } : {}),
+			...(taskSummary ? { taskSummary: true } : {}),
+			...(primary ? { primary: true } : {})
 		});
 	}
 	return files;
+}
+
+/**
+ * The task's deliverables in reading order: the primary deliverable, the
+ * other files the run delivered, then the task's summary (`deliverableOrder.ts`).
+ *
+ * Only task-scoped deliverables move, and only among the slots they already
+ * held: the non-deliverables and run rows keep their indexes, so the order
+ * the outputs endpoint sent everything else in survives. Without a primary
+ * marker (an older task) the only change is that the summary drops behind the
+ * files the run wrote.
+ */
+export function orderTaskDeliverables(files: readonly PanelOutputFile[]): PanelOutputFile[] {
+	return orderWithinSlots(files, (file) =>
+		(file.scope === undefined || file.scope === 'task') && file.deliverable !== false
+			? deliverableRank({ primary: file.primary, summary: file.taskSummary })
+			: null
+	);
+}
+
+/**
+ * `refs` with `primary: true` on the ref `primaryId` names, for a source that
+ * states the primary deliverable once (`primary_deliverable_output_id`) rather
+ * than on each row. A ref that already says so keeps it.
+ */
+export function withPrimaryDeliverable(
+	refs: readonly TaskOutputRef[],
+	primaryId: string | null | undefined
+): TaskOutputRef[] {
+	const id = typeof primaryId === 'string' ? primaryId.trim() : '';
+	if (!id) return [...refs];
+	return refs.map((ref) => (ref.output_id === id && ref.primary !== true ? { ...ref, primary: true } : ref));
 }
 
 /**

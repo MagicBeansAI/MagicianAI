@@ -1,5 +1,12 @@
 package ai.magicbeans.magdroid.chat
 
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.Url
+import io.ktor.http.headersOf
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -154,6 +161,94 @@ class ChatHistoryContractTest {
         assertTrue(historyActivityChanged(working, idle))
         // Different rows mean the page itself was just re-read.
         assertFalse(historyActivityChanged(idle, HistoryActivityPoll(setOf("s3"), setOf("s3"))))
+    }
+
+    private fun thread(id: String) = UiThreadRecord(id = id, name = id)
+
+    @Test
+    fun `showing a thread's sessions picks Sessions, clears search and page`() {
+        val shown = ChatHistoryState(
+            activeTab = ChatHistoryTab.Threads,
+            searchText = "x",
+            appliedSearch = "x",
+            offset = 15,
+        ).showingSessionsOf(thread("plans"))
+        assertEquals(ChatHistoryTab.Sessions, shown.activeTab)
+        assertEquals("", shown.searchText)
+        assertFalse(shown.searchActive)
+        assertEquals(0, shown.offset)
+        assertEquals("plans", shown.sessionThreadFilter?.id)
+        // Another tap replaces the filter.
+        assertEquals("ideas", shown.showingSessionsOf(thread("ideas")).sessionThreadFilter?.id)
+    }
+
+    @Test
+    fun `a thread filter drops the lane from the sessions query`() {
+        val personal = ChatHistoryState(historyLane = ChatHistoryLane.Personal)
+        assertEquals(SessionsQuery(historyLane = ChatHistoryLane.Personal, uiThreadId = null), personal.sessionsQuery())
+        val automated = ChatHistoryState(historyLane = ChatHistoryLane.Automated).showingSessionsOf(thread("plans"))
+        assertEquals(SessionsQuery(historyLane = null, uiThreadId = "plans"), automated.sessionsQuery())
+    }
+
+    @Test
+    fun `clearing the thread filter restores the lane`() {
+        val cleared = ChatHistoryState(historyLane = ChatHistoryLane.Personal)
+            .showingSessionsOf(thread("plans"))
+            .withoutThreadFilter()
+        assertNull(cleared.sessionThreadFilter)
+        assertEquals(SessionsQuery(historyLane = ChatHistoryLane.Personal, uiThreadId = null), cleared.sessionsQuery())
+    }
+
+    @Test
+    fun `general filters too`() {
+        assertEquals("general", ChatHistoryState().showingSessionsOf(thread("general")).sessionsQuery().uiThreadId)
+    }
+
+    @Test
+    fun `a thread-filtered Sessions list can always add a session`() {
+        val automated = ChatHistoryState(historyLane = ChatHistoryLane.Automated)
+        assertFalse(automated.canCreate)
+        val filtered = automated.showingSessionsOf(thread("plans"))
+        assertTrue(filtered.canCreate)
+        assertFalse(filtered.copy(activeTab = ChatHistoryTab.Threads).canCreate)
+        assertFalse(filtered.copy(appliedSearch = "launch").canCreate)
+    }
+
+    @Test
+    fun `new session goes in the filtered thread and its lane`() {
+        assertEquals("general" to ChatHistoryLane.Personal, ChatHistoryState().newSessionTarget())
+        val automatedThread = UiThreadRecord(id = "daily-brief", name = "Daily brief", historyLane = "automated")
+        assertEquals(
+            "daily-brief" to ChatHistoryLane.Automated,
+            ChatHistoryState().showingSessionsOf(automatedThread).newSessionTarget(),
+        )
+        assertEquals("plans" to ChatHistoryLane.Personal, ChatHistoryState().showingSessionsOf(thread("plans")).newSessionTarget())
+        assertEquals(
+            "general" to ChatHistoryLane.Personal,
+            ChatHistoryState().showingSessionsOf(thread("plans")).withoutThreadFilter().newSessionTarget(),
+        )
+    }
+
+    @Test
+    fun `a thread's sessions are read with ui_thread_id and no lane`() = runBlocking {
+        val requests = mutableListOf<Url>()
+        val client = HttpClient(MockEngine { request ->
+            requests += request.url
+            respond(
+                """{"sessions":[{"id":"s-1","ui_thread_id":"plans","history_lane":"automated"}],"total":1,"limit":15,"offset":0}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            )
+        })
+        val repository = ChatRepository(client, { "https://owner.test" }, { emptyMap() }, { "owner" to "workspace" })
+        try {
+            val query = ChatHistoryState().showingSessionsOf(thread("plans")).sessionsQuery()
+            val page = repository.sessionsPage(historyLane = query.historyLane, uiThreadId = query.uiThreadId)
+            assertEquals(listOf("s-1"), page.items.map { it.identifier() })
+            val url = requests.single()
+            assertTrue(url.encodedPath.endsWith("/chat/sessions"))
+            assertEquals("plans", url.parameters["ui_thread_id"])
+            assertNull(url.parameters["history_lane"])
+        } finally { repository.close() }
     }
 
     @Test

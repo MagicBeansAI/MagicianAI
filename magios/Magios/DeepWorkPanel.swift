@@ -386,6 +386,28 @@ struct TaskDetailActivity: Identifiable, Equatable {
 
     /// A feed row whose status means running (`FeedItemStatus::Running`).
     var isRunning: Bool { status.lowercased() == "running" }
+
+    /// A settled tool call that failed; its body is the reason.
+    var isFailedToolCall: Bool { kind == "tool" && eventType == "tool.failed" }
+}
+
+/// Why a tool call failed, as the Run timeline shows it. The feed carries the
+/// reason in `summary`; a server that leaves it empty still records it in
+/// `metadata.error`, behind the executor's wrapper prefixes. The fallback
+/// strips them as the server's `tool_failure_reason` does (and Android):
+/// either prefix, in whatever order they nest, until neither leads.
+enum TaskActivityFailure {
+    static let wrapperPrefixes = ["step execution failed:", "compiled-pack dispatch failed:"]
+
+    static func reason(summary: String?, error: String?) -> String? {
+        if let summary { return summary }
+        guard var reason = error?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        while let range = wrapperPrefixes.lazy
+            .compactMap({ reason.range(of: $0, options: [.anchored, .caseInsensitive]) }).first {
+            reason = String(reason[range.upperBound...].drop(while: \.isWhitespace))
+        }
+        return reason.isEmpty ? nil : reason
+    }
 }
 
 /// One row per call in the Run timeline. The activity log records a model
@@ -626,6 +648,99 @@ enum TaskTimelineFormatting {
     private static func roundHalfUp(_ amount: Double, scale: Double) -> Double {
         let cleaned = Double(String(format: "%.12g", locale: Locale(identifier: "en_US_POSIX"), amount * scale)) ?? amount * scale
         return (cleaned + 0.5).rounded(.down)
+    }
+}
+
+// MARK: - Card times
+
+/// The chat cards' times line: "Created 14:28 · Updated 2 min. ago" on a task
+/// card, "Started … · Updated …" on an activity card. Local calendar and
+/// locale throughout; `CardTimesLine` renders it.
+extension TaskTimelineFormatting {
+    /// The time alone on `now`'s day ("14:28"), else the short date and time
+    /// ("Oct 31, 14:28"), with the year once it is not `now`'s year. The clock
+    /// follows the locale and the device's 12/24-hour setting.
+    static func cardAbsolute(
+        _ date: Date, now: Date, calendar: Calendar = .current, locale: Locale = .current
+    ) -> String {
+        let template: String
+        if calendar.isDate(date, inSameDayAs: now) {
+            template = "jmm"
+        } else if calendar.component(.year, from: date) == calendar.component(.year, from: now) {
+            template = "MMMdjmm"
+        } else {
+            template = "yMMMdjmm"
+        }
+        return cardDateFormatter(template, calendar: calendar, locale: locale).string(from: date)
+    }
+
+    /// "2 min. ago", "3 hr. ago"; "now" under a minute (a settled card
+    /// refreshes every 30 s, so seconds would freeze; web and Android say
+    /// "now" too), and for a time ahead of the device clock (the time is the
+    /// server's).
+    static func cardRelative(_ date: Date, now: Date, locale: Locale = .current) -> String {
+        let formatter = cardRelativeFormatter(locale: locale)
+        let seconds = now.timeIntervalSince(date)
+        guard seconds.isFinite, seconds >= 60 else { return formatter.localizedString(fromTimeInterval: 0) }
+        return formatter.localizedString(fromTimeInterval: -seconds.rounded(.down))
+    }
+
+    /// The exact date and time a long-press shows ("Oct 31, 2026 at 14:28:05").
+    static func cardExact(_ date: Date, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        cardDateFormatter(nil, calendar: calendar, locale: locale).string(from: date)
+    }
+
+    // The times line re-renders every second per live card, so its formatters
+    // are built once per template, locale, calendar and time zone and reused.
+    // `NSCache` is thread-safe; formatting with a shared formatter is too.
+    private static let cardFormatters = NSCache<NSString, DateFormatter>()
+    private static let cardRelativeFormatters = NSCache<NSString, RelativeDateTimeFormatter>()
+
+    /// A template formatter, or the medium date-and-time one for `nil`.
+    private static func cardDateFormatter(_ template: String?, calendar: Calendar, locale: Locale) -> DateFormatter {
+        let key = "\(template ?? "medium")|\(locale.identifier)|\(calendar.identifier)|\(calendar.timeZone.identifier)" as NSString
+        if let cached = cardFormatters.object(forKey: key) { return cached }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = locale
+        if let template {
+            formatter.setLocalizedDateFormatFromTemplate(template)
+        } else {
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .medium
+        }
+        cardFormatters.setObject(formatter, forKey: key)
+        return formatter
+    }
+
+    private static func cardRelativeFormatter(locale: Locale) -> RelativeDateTimeFormatter {
+        let key = locale.identifier as NSString
+        if let cached = cardRelativeFormatters.object(forKey: key) { return cached }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = locale
+        formatter.unitsStyle = .short
+        formatter.dateTimeStyle = .named
+        cardRelativeFormatters.setObject(formatter, forKey: key)
+        return formatter
+    }
+
+    /// `<startWord> <absolute>` and `Updated <relative>`, each only when its
+    /// time is known; empty when neither is.
+    static func cardTimeParts(
+        started: Date?,
+        updated: Date?,
+        startWord: String = "Created",
+        now: Date,
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> [String] {
+        var parts: [String] = []
+        if let started {
+            parts.append("\(startWord) \(cardAbsolute(started, now: now, calendar: calendar, locale: locale))")
+        }
+        if let updated { parts.append("Updated \(cardRelative(updated, now: now, locale: locale))") }
+        return parts
     }
 }
 
@@ -1534,7 +1649,9 @@ struct TaskDetailSnapshot: Equatable {
                     eventType: eventType,
                     metadata: metadata
                 ),
-                body: string(item["summary"]),
+                body: eventType == "tool.failed"
+                    ? TaskActivityFailure.reason(summary: string(item["summary"]), error: string(metadata["error"]))
+                    : string(item["summary"]),
                 status: string(item["status"]) ?? "info",
                 contextPhaseId: string(metadata["phase_id"]),
                 kind: kind,
@@ -2199,6 +2316,7 @@ struct DeepWorkPanel: View {
     @State private var sharePayload: SharePayload?
     @State private var confirmDelete = false
     @State private var collapsedDelegations: Set<String> = []
+    @State private var expandedFailures: Set<String> = []
     @AppStorage(TaskTimelineMode.storageKey) private var timelineModeRaw = TaskTimelineMode.grouped.rawValue
 
     init(
@@ -2520,7 +2638,7 @@ struct DeepWorkPanel: View {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     metric("Status", snapshot.status.capitalized)
                     metric("Agent", snapshot.agentId ?? "—")
-                    metric("Thread", snapshot.threadId.map { "#\($0)" } ?? "—")
+                    metric("Thread", snapshot.threadId.map { ThreadDirectory.shared.label($0) } ?? "—")
                     metric("Priority", snapshot.priority ?? "—")
                     metric("Due", snapshot.dueDate ?? "—")
                     metric("Updated", formatted(snapshot.updatedAt))
@@ -3111,8 +3229,12 @@ struct DeepWorkPanel: View {
                 .font(.themed(10, weight: .medium))
                 .foregroundColor(themeManager.secondaryTextColor)
                 if let body = activity.body, !body.isEmpty {
-                    Text(body).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor)
-                        .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    if activity.isFailedToolCall {
+                        failureReason(body, rowId: activity.id)
+                    } else {
+                        Text(body).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor)
+                            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    }
                 }
                 HStack(spacing: 5) {
                     Text(activity.kind.replacingOccurrences(of: "_", with: " "))
@@ -3129,6 +3251,18 @@ struct DeepWorkPanel: View {
                 }.font(.themed(10)).foregroundColor(themeManager.secondaryTextColor.opacity(0.8))
                     .lineLimit(2)
             }
+        }
+    }
+
+    /// A failed tool call's reason: two lines until the owner asks for all of it.
+    private func failureReason(_ reason: String, rowId: String) -> some View {
+        TaskFailureReasonText(
+            reason: reason,
+            expanded: expandedFailures.contains(rowId),
+            color: themeManager.secondaryTextColor
+        ) {
+            if expandedFailures.contains(rowId) { expandedFailures.remove(rowId) }
+            else { expandedFailures.insert(rowId) }
         }
     }
 
@@ -3446,6 +3580,51 @@ struct DeepWorkPanel: View {
 
     private func formatBytes(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+}
+
+/// A failure reason clamped to two lines. "Show more" appears only when the
+/// clamp actually cut text: the full reason is laid out hidden at the same
+/// width and its height compared with the clamped one, so the button follows
+/// the row's real width (a delegated row is narrower) rather than a length guess.
+private struct TaskFailureReasonText: View {
+    let reason: String
+    let expanded: Bool
+    let color: Color
+    let toggle: () -> Void
+
+    @State private var clampedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var truncated: Bool { fullHeight > clampedHeight + 0.5 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(reason).font(.themed(12)).foregroundColor(color)
+                .lineLimit(expanded ? nil : 2)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { clampedHeight = $0 }
+                .background(alignment: .topLeading) {
+                    Text(reason).font(.themed(12))
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                        .accessibilityHidden(true)
+                }
+            if expanded || truncated {
+                Button(action: toggle) {
+                    Text(expanded ? "Show less" : "Show more")
+                        .font(.themed(11, weight: .semibold))
+                        .foregroundColor(color)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "Show less of the error" : "Show more of the error")
+                .accessibilityHint(expanded ? "Collapse" : "Expand")
+            }
+        }
     }
 }
 

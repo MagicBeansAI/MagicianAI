@@ -7,6 +7,7 @@ import ai.magicbeans.magdroid.tasks.PlanningEntry
 import ai.magicbeans.magdroid.tasks.PlanningPhase
 import ai.magicbeans.magdroid.tasks.PlanningTrack
 import ai.magicbeans.magdroid.tasks.TaskOutputClassification
+import ai.magicbeans.magdroid.tasks.TaskRunEvidence
 import ai.magicbeans.magdroid.tasks.jObj
 import ai.magicbeans.magdroid.tasks.jObjects
 import ai.magicbeans.magdroid.tasks.jText
@@ -277,6 +278,14 @@ data class TaskStoreRecord(
     val status: String,
     val activeRootExecutionId: String?,
     val chatSessionId: String?,
+    /** `manifest.created_at` (epoch ms), for the card's "Created" time. */
+    val createdAtMs: Long? = null,
+    /**
+     * The task's own updated time (epoch ms): `state.last_progress_at` (the
+     * run last advanced) when present, else `updated_at`. Never the later of
+     * the two: `updated_at` moves on every heartbeat and metadata write.
+     */
+    val updatedAtMs: Long? = null,
 ) {
     companion object {
         fun parse(record: JsonObject): TaskStoreRecord? {
@@ -291,6 +300,9 @@ data class TaskStoreRecord(
                 chatSessionId = task["chat_session_id"].jText()
                     ?: manifest?.get("chat_session_id").jText()
                     ?: state?.get("chat_session_id").jText(),
+                createdAtMs = TaskRunEvidence.instant(task["created_at"] ?: manifest?.get("created_at")),
+                updatedAtMs = TaskRunEvidence.instant(task["last_progress_at"] ?: state?.get("last_progress_at"))
+                    ?: TaskRunEvidence.instant(state?.get("updated_at") ?: task["updated_at"]),
             )
         }
     }

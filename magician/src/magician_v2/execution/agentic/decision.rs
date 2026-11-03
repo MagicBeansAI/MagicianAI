@@ -1300,15 +1300,28 @@ pub(super) fn estimate_message_pairs_tokens(messages: &[magicllm::prelude::LLMMe
         .fold(0usize, usize::saturating_add)
 }
 
-/// Conservative token estimate matching
-/// [`magicllm::chunking::ConservativeOllamaEstimator`] (ceil bytes / 2).
+/// Conservative token estimate: text and JSON at ceil(bytes / 2), matching
+/// [`magicllm::chunking::ConservativeOllamaEstimator`]; each image at the flat
+/// per-image rate providers bill
+/// ([`magicllm::STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK`]), not its encoded bytes,
+/// so one screenshot never evicts the whole verbatim window.
 fn estimate_message_tokens(message: &magicllm::prelude::LLMMessage) -> usize {
-    estimate_message_bytes(message).div_ceil(2)
+    let (text_bytes, media_blocks) = message_text_bytes_and_media_blocks(message);
+    let media_tokens = usize::try_from(
+        (media_blocks as u64).saturating_mul(magicllm::STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK),
+    )
+    .unwrap_or(usize::MAX);
+    text_bytes.div_ceil(2).saturating_add(media_tokens)
 }
 
-fn estimate_message_bytes(message: &magicllm::prelude::LLMMessage) -> usize {
+/// Text and JSON bytes, and the number of image blocks (counted apart from
+/// their bytes; a caption or prompt still counts as text).
+fn message_text_bytes_and_media_blocks(
+    message: &magicllm::prelude::LLMMessage,
+) -> (usize, usize) {
     use magicllm::prelude::ContentBlock;
-    message
+    let mut media_blocks = 0usize;
+    let text_bytes = message
         .content
         .iter()
         .map(|block| match block {
@@ -1323,10 +1336,17 @@ fn estimate_message_bytes(message: &magicllm::prelude::LLMMessage) -> usize {
                 .unwrap_or(usize::MAX)
                 .saturating_add(32),
             ContentBlock::Json { value } => json_encoded_len(value).unwrap_or(usize::MAX),
-            ContentBlock::Image { data, .. } => data.len(),
-            ContentBlock::ImageUrl { url, .. } => url.len(),
+            ContentBlock::Image { caption, .. } => {
+                media_blocks = media_blocks.saturating_add(1);
+                caption.as_deref().map_or(0, str::len)
+            },
+            ContentBlock::ImageUrl { prompt, .. } => {
+                media_blocks = media_blocks.saturating_add(1);
+                prompt.as_deref().map_or(0, str::len)
+            },
         })
-        .fold(0usize, usize::saturating_add)
+        .fold(0usize, usize::saturating_add);
+    (text_bytes, media_blocks)
 }
 
 /// Use the validated model projection before native prompt presentation trims.
@@ -2466,7 +2486,10 @@ fn current_continuation_sections(
                 .and_then(|guard| guard.clone())
         })
         .flatten();
-    let active_skill = build_active_procedure_skill_section(active_skill.as_ref());
+    let active_skill = build_active_procedure_skill_section(
+        active_skill.as_ref(),
+        procedure_skill_activation_offered(ctx),
+    );
     let call_frequency = build_call_frequency_section(history);
     let execution_files = if protected_app {
         String::new()
@@ -2906,6 +2929,7 @@ fn continuation_turn_budget_available(history: &ExecutionHistory) -> bool {
 /// procedure skills.
 fn build_active_procedure_skill_section(
     active: Option<&crate::magician_v2::skills::ActiveProcedureSkill>,
+    activation_offered: bool,
 ) -> String {
     let Some(active) = active else {
         return String::new();
@@ -2921,9 +2945,15 @@ fn build_active_procedure_skill_section(
          relevant steps; call `deactivate_skill` when it's no longer relevant.\n\n\
          ----- BEGIN PLAYBOOK: {name} -----\n\
          {body}\n\
-         ----- END PLAYBOOK: {name} -----\n",
+         ----- END PLAYBOOK: {name} -----\n{files}",
         name = active.name,
         body = active.body,
+        // The hint names `activate_skill`, so only an agent offered it gets it.
+        files = activation_offered
+            .then(|| active.linked_files_hint())
+            .flatten()
+            .map(|hint| format!("{hint}\n"))
+            .unwrap_or_default(),
     )
 }
 
@@ -3054,6 +3084,7 @@ async fn build_decision_prompt_from_manager(
         .and_then(|guard| guard.clone());
     capabilities_section.push_str(&build_active_procedure_skill_section(
         active_skill_snapshot.as_ref(),
+        procedure_skill_activation_offered(ctx),
     ));
 
     // §2.1 step 2 — "the acting agent sees those capability summaries", BEFORE
@@ -3856,7 +3887,10 @@ pub(crate) async fn decision_rail_prompt_context(
         .lock()
         .ok()
         .and_then(|skill| skill.clone());
-    instructions.push_str(&build_active_procedure_skill_section(active.as_ref()));
+    instructions.push_str(&build_active_procedure_skill_section(
+        active.as_ref(),
+        procedure_skill_activation_offered(ctx),
+    ));
     let (verbatim_max_pairs, verbatim_token_budget) = verbatim_window(ctx);
     let mut messages = compact_live_messages_stepped(
         &history.live_messages,
@@ -4109,6 +4143,27 @@ fn build_artifact_output_guidance_section(ctx: &AgenticContext) -> String {
          delegation-preview format, never a file. A search/query tool's terminal summary \
          is NOT the deliverable — synthesise the document yourself before calling \
          `yield`.\n\n\
+         ## Deliver first\n\n\
+         Once a result that satisfies the goal exists, save it and finish. Verification, \
+         cross-checking and gap-filling passes are optional improvements to a deliverable \
+         that already exists; they never replace it, and they never justify a new sub-goal \
+         or another pass once the result answers the goal. The final `summary` and the \
+         deliverable are the requested artifact itself, in the shape the goal asked for — \
+         never a QA, audit, delta or methodology report about it. Internal row IDs, \
+         candidate numbers and working labels never appear in the final answer. When \
+         sources fail or time runs short, deliver what exists with a short note on its \
+         limits.\n\n\
+         When the result is long (a list or table beyond a screenful, a report, a \
+         document), write the full content to a file in the task workdir with your \
+         file-writing tools (for example `export_result` or shell), then declare its path \
+         in `yield.deliverables` as \
+         `{\"path\": \"<absolute or task-workdir-relative path>\", \"title\": \"<human title>\"}`, \
+         primary deliverable first. Declared files are attached to the task as \
+         downloadable outputs with served links. The `summary` is then a short human \
+         summary that names the file and states the headline result. Put content inline \
+         in `yield.artifacts` only when it is short. Never put host \
+         filesystem paths or `file://` links in user-facing text; the runtime supplies \
+         the served link.\n\n\
          ## Output format guidance\n\n\
          Default to `text/markdown` for written deliverables (briefs, summaries, narrative \
          reports, memos). Prose, lists, headings, fenced code, and simple pipe-tables stay \
@@ -7661,6 +7716,67 @@ mod tests {
         assert!(
             estimate_message_tokens(&cjk) > estimate_message_tokens(&ascii),
             "multibyte text must cost more tokens than the same scalar count of ASCII"
+        );
+    }
+
+    /// A screenshot costs what providers bill for one image (~1.6k tokens),
+    /// not its bytes at the text ratio (~1.15M tokens for 2.3 MB), so one
+    /// screenshot turn does not evict every older pair from the window.
+    #[test]
+    fn token_estimate_counts_a_screenshot_at_the_flat_image_rate() {
+        use magicllm::prelude::{ContentBlock, LLMMessage, MessageRole};
+        let flat = magicllm::STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK as usize;
+        let screenshot = LLMMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::Text {
+                    text: "a".repeat(100),
+                },
+                ContentBlock::Image {
+                    data: vec![0u8; 2_300_000],
+                    media_type: "image/png".to_string(),
+                    caption: Some("b".repeat(10)),
+                },
+                ContentBlock::ImageUrl {
+                    url: format!("data:image/png;base64,{}", "A".repeat(3_000_000)),
+                    prompt: None,
+                },
+            ],
+        };
+        // 110 text bytes → 55 tokens, plus two flat image charges.
+        assert_eq!(estimate_message_tokens(&screenshot), 2 * flat + 55);
+
+        let older_pair = |text: &str| {
+            [
+                LLMMessage {
+                    role: MessageRole::Assistant,
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                },
+                LLMMessage {
+                    role: MessageRole::User,
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                },
+            ]
+        };
+        let mut live = Vec::new();
+        live.extend(older_pair("earlier step"));
+        live.extend([
+            LLMMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "took a screenshot".to_string(),
+                }],
+            },
+            screenshot,
+        ]);
+        assert_eq!(
+            compact_live_messages(&live, 40, 120_000).len(),
+            4,
+            "a screenshot pair fits a 120k budget without evicting older pairs"
         );
     }
 

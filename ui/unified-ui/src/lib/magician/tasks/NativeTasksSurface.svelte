@@ -2,6 +2,7 @@
 	import { createEventDispatcher } from 'svelte';
 	import type { Task, TaskStatus } from '$lib/stores/taskStore';
 	import { cronToHumanReadable } from '$lib/utils/cron';
+	import { threadLabel } from '$lib/threads/threadLinks';
 	import { statusTone } from '$lib/shared/statusTone';
 	import ExecutionControls from '$lib/magician/components/execution/ExecutionControls.svelte';
 	import type { ParsedTaskAction, ParsedTaskCompletionChange } from './types';
@@ -155,7 +156,7 @@
 	function metaParts(task: Task): string[] {
 		return [
 			asString(task.agentName).trim() || asString(task.agentId).trim(),
-			task.uiThreadId ? `#${task.uiThreadId}` : '',
+			task.uiThreadId ? `#${threadLabel(task.uiThreadId)}` : '',
 			`updated ${formatRelativeTime(task.updatedAt)}`
 		].filter(Boolean);
 	}

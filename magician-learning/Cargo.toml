@@ -1,6 +1,6 @@
 [package]
 name = "magician-learning"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "The learning plane — outcome learning, data room, chat bots, execution panel engines — extracted from the magician monolith"

@@ -2490,9 +2490,10 @@ const ABANDONED_STREAM_DRAIN: std::time::Duration = if cfg!(test) {
 };
 
 /// Flat input-token charge for one image, audio or document payload in an
-/// unfinished stream's estimate: roughly what providers bill for a full-size
-/// image (Anthropic ~1,600 tokens for ~1.15 MP), not its encoded bytes.
-const STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK: u64 = 1_600;
+/// unfinished stream's estimate and [`estimate_messages_input_tokens`]:
+/// roughly what providers bill for a full-size image (Anthropic ~1,600 tokens
+/// for ~1.15 MP), not its encoded bytes.
+pub const STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK: u64 = 1_600;
 
 /// Ceiling on an unfinished stream's input estimate when the profile declares
 /// no context window.
@@ -2508,7 +2509,6 @@ const BINARY_PAYLOAD_MIN_BYTES: usize = 16 * 1024;
 /// JSON, request media) at [`STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK`], capped at
 /// the profile's context window or [`STREAM_INPUT_ESTIMATE_CAP_TOKENS`].
 fn estimate_stream_input_tokens(request: &LLMRequest, context_window_tokens: Option<u32>) -> u32 {
-    use crate::types::ContentBlock;
     let mut tally = StreamInputTally::default();
     if request.messages.is_empty() {
         if let Some(prompt) = request
@@ -2520,43 +2520,7 @@ fn estimate_stream_input_tokens(request: &LLMRequest, context_window_tokens: Opt
             tally.text(prompt);
         }
     }
-    for message in request.messages.iter() {
-        // Role marker and separator.
-        tally.add(12);
-        for block in &message.content {
-            match block {
-                ContentBlock::Text { text } => tally.text(text),
-                ContentBlock::Image { caption, .. } => {
-                    tally.media();
-                    if let Some(caption) = caption {
-                        tally.text(caption);
-                    }
-                },
-                ContentBlock::ImageUrl { prompt, .. } => {
-                    tally.media();
-                    if let Some(prompt) = prompt {
-                        tally.text(prompt);
-                    }
-                },
-                ContentBlock::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                } => {
-                    tally.add(id.len().saturating_add(name.len()));
-                    tally.json(arguments);
-                },
-                ContentBlock::ToolResult {
-                    tool_call_id,
-                    content,
-                } => {
-                    tally.add(tool_call_id.len());
-                    tally.json(content);
-                },
-                ContentBlock::Json { value } => tally.json(value),
-            }
-        }
-    }
+    tally.messages(&request.messages);
     if request.media.is_some() {
         tally.media();
     }
@@ -2575,21 +2539,43 @@ fn estimate_stream_input_tokens(request: &LLMRequest, context_window_tokens: Opt
         tally.add(tool.name.len().saturating_add(tool.description.len()));
         tally.json(&tool.parameters);
     }
-    let tokens = tally.bytes.div_ceil(2).saturating_add(
-        tally
-            .media_blocks
-            .saturating_mul(STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK),
-    );
-    u32::try_from(tokens)
+    u32::try_from(tally.tokens())
         .unwrap_or(u32::MAX)
         .min(context_window_tokens.unwrap_or(STREAM_INPUT_ESTIMATE_CAP_TOKENS))
 }
 
-/// Text bytes and media payloads counted by [`estimate_stream_input_tokens`].
+/// Preflight input-token estimate for a list of messages, uncapped, for a
+/// "does this fit the window" check. Real media count at a flat
+/// [`STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK`], roughly what providers bill for
+/// one image, never their encoded bytes: image blocks, image URLs,
+/// `data:<mime>;base64,` URLs, and inline base64 parts beside a non-text MIME
+/// type in tool or JSON blocks (Anthropic image `source`, Gemini
+/// `inlineData`, rich tool-result images). Everything else, including long
+/// whitespace-free strings (minified JSON, CJK prose, one-line logs, other
+/// base64), is text at the conservative two-bytes-per-token ratio, since
+/// providers tokenize it as text.
+///
+/// Stricter than the stream spend estimate, which also treats any long
+/// whitespace-free string as an encoded payload.
+pub fn estimate_messages_input_tokens(messages: &[crate::types::LLMMessage]) -> u64 {
+    let mut tally = StreamInputTally {
+        recognized_media_only: true,
+        ..StreamInputTally::default()
+    };
+    tally.messages(messages);
+    tally.tokens()
+}
+
+/// Text bytes and media payloads counted by [`estimate_stream_input_tokens`]
+/// and [`estimate_messages_input_tokens`].
 #[derive(Default)]
 struct StreamInputTally {
     bytes: u64,
     media_blocks: u64,
+    /// Count only recognized media flat ([`estimate_messages_input_tokens`]);
+    /// otherwise any long whitespace-free string is a payload too (the
+    /// stream spend estimate).
+    recognized_media_only: bool,
 }
 
 impl StreamInputTally {
@@ -2597,12 +2583,66 @@ impl StreamInputTally {
         self.bytes = self.bytes.saturating_add(bytes as u64);
     }
 
+    /// Text bytes at two a token plus one flat charge per media payload.
+    fn tokens(&self) -> u64 {
+        let media = self
+            .media_blocks
+            .saturating_mul(STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK);
+        self.bytes.div_ceil(2).saturating_add(media)
+    }
+
+    fn messages(&mut self, messages: &[crate::types::LLMMessage]) {
+        use crate::types::ContentBlock;
+        for message in messages {
+            // Role marker and separator.
+            self.add(12);
+            for block in &message.content {
+                match block {
+                    ContentBlock::Text { text } => self.text(text),
+                    ContentBlock::Image { caption, .. } => {
+                        self.media();
+                        if let Some(caption) = caption {
+                            self.text(caption);
+                        }
+                    },
+                    ContentBlock::ImageUrl { prompt, .. } => {
+                        self.media();
+                        if let Some(prompt) = prompt {
+                            self.text(prompt);
+                        }
+                    },
+                    ContentBlock::ToolCall {
+                        id,
+                        name,
+                        arguments,
+                    } => {
+                        self.add(id.len().saturating_add(name.len()));
+                        self.json(arguments);
+                    },
+                    ContentBlock::ToolResult {
+                        tool_call_id,
+                        content,
+                    } => {
+                        self.add(tool_call_id.len());
+                        self.json(content);
+                    },
+                    ContentBlock::Json { value } => self.json(value),
+                }
+            }
+        }
+    }
+
     fn media(&mut self) {
         self.media_blocks = self.media_blocks.saturating_add(1);
     }
 
     fn text(&mut self, text: &str) {
-        if is_binary_payload(text) {
+        let payload = if self.recognized_media_only {
+            is_media_data_url(text)
+        } else {
+            is_binary_payload(text)
+        };
+        if payload {
             self.media();
         } else {
             self.add(text.len());
@@ -2625,6 +2665,11 @@ impl StreamInputTally {
                     self.add(items.len().saturating_add(2));
                     pending.extend(items.iter());
                 },
+                Value::Object(entries)
+                    if self.recognized_media_only && is_inline_media_object(entries) =>
+                {
+                    self.media();
+                },
                 Value::Object(entries) => {
                     self.add(2);
                     for (key, item) in entries {
@@ -2640,13 +2685,54 @@ impl StreamInputTally {
 /// A data URL, or a long string with no whitespace near its start (base64).
 fn is_binary_payload(text: &str) -> bool {
     let bytes = text.as_bytes();
-    if bytes.starts_with(b"data:") {
-        let head = &bytes[..bytes.len().min(256)];
-        if head.windows(8).any(|window| window == b";base64,") {
-            return true;
-        }
+    is_base64_data_url(text)
+        || (bytes.len() >= BINARY_PAYLOAD_MIN_BYTES
+            && !bytes[..1024].iter().any(u8::is_ascii_whitespace))
+}
+
+/// A `data:<mime>;base64,` URL, whatever its MIME type.
+fn is_base64_data_url(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.starts_with(b"data:")
+        && bytes[..bytes.len().min(256)]
+            .windows(8)
+            .any(|window| window == b";base64,")
+}
+
+/// A `data:<mime>;base64,` URL whose MIME type is media
+/// ([`is_media_mime`]); a `data:text/plain;base64,` URL is text.
+fn is_media_data_url(text: &str) -> bool {
+    if !is_base64_data_url(text) {
+        return false;
     }
-    bytes.len() >= BINARY_PAYLOAD_MIN_BYTES && !bytes[..1024].iter().any(u8::is_ascii_whitespace)
+    let head = &text.as_bytes()[5..text.len().min(256)];
+    let mime_end = head
+        .iter()
+        .position(|byte| matches!(byte, b';' | b','))
+        .unwrap_or(head.len());
+    std::str::from_utf8(&head[..mime_end]).is_ok_and(is_media_mime)
+}
+
+/// MIME types providers bill as media rather than tokenize as text.
+fn is_media_mime(mime: &str) -> bool {
+    let mime = mime.trim().to_ascii_lowercase();
+    ["image/", "audio/", "video/"]
+        .iter()
+        .any(|prefix| mime.starts_with(prefix))
+        || mime == "application/pdf"
+}
+
+/// An inline media part: a base64 `data` / `data_base64` string beside a
+/// media MIME type ([`is_media_mime`]), as in an Anthropic image `source`, a
+/// Gemini `inlineData` part or a rich tool-result image.
+fn is_inline_media_object(entries: &serde_json::Map<String, Value>) -> bool {
+    let has_data = ["data", "data_base64"]
+        .iter()
+        .any(|key| entries.get(*key).is_some_and(Value::is_string));
+    let mime = ["media_type", "mimeType", "mime_type"]
+        .iter()
+        .find_map(|key| entries.get(*key).and_then(Value::as_str));
+    has_data && mime.is_some_and(is_media_mime)
 }
 
 /// Spend settlement for one streaming provider attempt: it settles exactly
@@ -5084,6 +5170,151 @@ mod tests {
         assert_eq!(
             estimate_stream_input_tokens(&huge, None),
             STREAM_INPUT_ESTIMATE_CAP_TOKENS
+        );
+    }
+
+    #[test]
+    fn the_messages_input_estimate_charges_images_flat_and_is_uncapped() {
+        // Two ~3 MB screenshots, inline and as a data URL, plus a short
+        // question: millions of tokens at the text byte ratio.
+        let base64 = "A".repeat(3_000_000);
+        let question = "what is on these screens?";
+        let messages = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::text(question),
+                ContentBlock::Image {
+                    data: vec![0u8; 3_000_000],
+                    media_type: "image/png".to_string(),
+                    caption: None,
+                },
+                ContentBlock::ImageUrl {
+                    url: format!("data:image/png;base64,{base64}"),
+                    prompt: None,
+                },
+            ],
+        }];
+        assert_eq!(
+            estimate_messages_input_tokens(&messages),
+            2 * STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK + (question.len() as u64 + 12).div_ceil(2),
+            "two flat image charges and the question's text"
+        );
+
+        // Text alone is its bytes (plus the role marker) at two a token, the
+        // same as the stream estimate for the same messages.
+        let mut request = sample_request("gpt-5");
+        request.messages = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::text("x".repeat(1_000))],
+        }]
+        .into();
+        assert_eq!(estimate_messages_input_tokens(&request.messages), 506);
+        assert_eq!(
+            estimate_messages_input_tokens(&request.messages),
+            u64::from(estimate_stream_input_tokens(&request, None))
+        );
+
+        // Unlike the stream estimate, a long text history is not capped.
+        let huge = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::text("word ".repeat(400_000))],
+        }];
+        assert_eq!(estimate_messages_input_tokens(&huge), 1_000_006);
+    }
+
+    /// Only recognized media count flat in the fit estimate: a long
+    /// whitespace-free text (minified JSON) is tokenized as text by the
+    /// provider, while the stream spend estimate still calls it a payload.
+    #[test]
+    fn the_messages_input_estimate_counts_only_recognized_media_flat() {
+        let minified = "{\"k\":1},".repeat(62_500);
+        assert_eq!(minified.len(), 500_000);
+        let mut request = sample_request("gpt-5");
+        request.messages = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::text(minified.clone())],
+        }]
+        .into();
+        assert_eq!(estimate_messages_input_tokens(&request.messages), 250_006);
+        assert_eq!(
+            estimate_stream_input_tokens(&request, None),
+            STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK as u32 + 6,
+            "the stream spend estimate is unchanged"
+        );
+
+        // Non-image base64 and one-line logs in tool JSON are text too.
+        let base64 = "A".repeat(200_000);
+        let tool_text = vec![LLMMessage {
+            role: MessageRole::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: json!({ "log": minified, "blob": base64 }),
+            }],
+        }];
+        assert!(estimate_messages_input_tokens(&tool_text) > 300_000);
+
+        // A data URL, an Anthropic image source, a Gemini inline part and a
+        // rich tool-result image each count once, flat.
+        let media = vec![
+            LLMMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ImageUrl {
+                    url: format!("data:image/png;base64,{base64}"),
+                    prompt: None,
+                }],
+            },
+            LLMMessage {
+                role: MessageRole::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_call_id: "call-2".to_string(),
+                    content: json!({
+                        "anthropic": {"type": "image", "source": {
+                            "type": "base64", "media_type": "image/png", "data": base64,
+                        }},
+                        "gemini": {"inlineData": {"mimeType": "image/jpeg", "data": base64}},
+                        "rich": {"type": "image", "media_type": "image/png", "data_base64": base64},
+                        "text_document": {"type": "text", "media_type": "text/plain", "data": "short"},
+                    }),
+                }],
+            },
+        ];
+        let estimate = estimate_messages_input_tokens(&media);
+        let flat = 4 * STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK;
+        assert!(
+            (flat..flat + 200).contains(&estimate),
+            "four flat media charges and a little JSON, got {estimate}"
+        );
+        assert_eq!(
+            estimate_messages_input_tokens(&media[..1]),
+            STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK + 6
+        );
+
+        // A base64 data URL or inline part with a text MIME type is text; a
+        // PDF one is media.
+        let text_url = format!("data:text/plain;base64,{base64}");
+        let not_media = vec![LLMMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::text(text_url.clone())],
+        }];
+        assert_eq!(
+            estimate_messages_input_tokens(&not_media),
+            (text_url.len() as u64 + 12).div_ceil(2)
+        );
+        let documents = vec![LLMMessage {
+            role: MessageRole::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_call_id: "call-3".to_string(),
+                content: json!({
+                    "pdf": {"media_type": "application/pdf", "data": base64},
+                    "json": {"media_type": "application/json", "data": base64},
+                }),
+            }],
+        }];
+        let estimate = estimate_messages_input_tokens(&documents);
+        assert!(
+            (STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK + 100_000..STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK + 100_200)
+                .contains(&estimate),
+            "one flat PDF charge and the JSON payload as text, got {estimate}"
         );
     }
 

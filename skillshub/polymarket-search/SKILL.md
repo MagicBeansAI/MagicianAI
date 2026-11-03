@@ -1,6 +1,6 @@
 ---
 name: polymarket-search
-version: 0.2.1
+version: 0.2.2
 description: 'Search active prediction markets on Polymarket matching a topic.
 
   Uses Polymarket''s Gamma API — keyless. Returns normalized items
@@ -28,6 +28,7 @@ metadata:
     requires:
       bins:
       - polymarket-search
+      - python3
     install_hint:
       docs: Requires Python 3.9+. Zero credentials. Gamma API is public.
     runtime_canary:
@@ -46,6 +47,8 @@ metadata:
       requires:
         bins:
         - polymarket-search
+        - python3
+        entrypoint: polymarket-search
       runtime:
         protocol: cli
         command_prefix: []

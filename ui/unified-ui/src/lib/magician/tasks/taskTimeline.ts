@@ -393,6 +393,26 @@ function activityTitle(item: FeedItem, meta: Record<string, unknown>, eventType:
 }
 
 /**
+ * The executor's framing around a tool error ("step execution failed: …",
+ * "compiled-pack dispatch failed: …"), which nests in either order. Every
+ * leading run of them is stripped, as the server's `tool_failure_reason`
+ * strips it, so the row leads with the cause.
+ */
+const TOOL_FAILURE_PREFIXES = /^(?:(?:step execution failed|compiled-pack dispatch failed):\s*)+/i;
+
+/**
+ * The row's body text. A failed tool says why: the server's trimmed reason in
+ * `summary`, else the `error` it keeps in the metadata minus the same framing,
+ * so the row never reads as a bare `<tool> failed`.
+ */
+function activityBody(item: FeedItem, meta: Record<string, unknown>, eventType: string): string | null {
+	const summary = text(item.summary);
+	if (eventType !== 'tool.failed' || summary !== null) return summary;
+	const error = text(meta.error);
+	return error === null ? null : text(error.replace(TOOL_FAILURE_PREFIXES, ''));
+}
+
+/**
  * The usage this event reported, or `null`.
  *
  * `null` when **no** usage field was present, rather than a record of four
@@ -610,7 +630,12 @@ export function deriveTimeline(
 					...previous,
 					status: preparationStatus ?? FEED_STATUS[item.status] ?? previous.status,
 					title: activityTitle(item, callMeta, eventType),
-					body: text(item.summary) ?? previous.body,
+					// A failed tool's body is its reason or nothing: the start's
+					// text under a failure would read as the reason it failed.
+					body:
+						eventType === 'tool.failed'
+							? activityBody(item, meta, eventType)
+							: (activityBody(item, meta, eventType) ?? previous.body),
 					latencyMs: preparation?.durationMs ?? num(meta.latency_ms) ?? previous.latencyMs,
 					model: text(meta.model) ?? previous.model,
 					costUsd:
@@ -647,7 +672,7 @@ export function deriveTimeline(
 			kind,
 			status: preparationStatus ?? FEED_STATUS[item.status] ?? null,
 			title: activityTitle(item, meta, eventType),
-			body: text(item.summary),
+			body: activityBody(item, meta, eventType),
 			detail: null,
 			latencyMs: preparation?.durationMs ?? num(meta.latency_ms),
 			model: text(meta.model),

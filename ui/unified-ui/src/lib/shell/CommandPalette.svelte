@@ -53,6 +53,9 @@
 	import { toggleEventsConsole } from '$lib/stores/eventsConsoleStore';
 	import { commandFilter, commandItemScore } from '$lib/shell/commandMatch';
 	import { showSuccess, showError } from '$lib/shared/stores/notifications';
+	import { startNewThread } from '$lib/threads/newThread';
+	import { isEditableTarget } from '$lib/shared/keyboardTargets';
+	import { threadHref, threadLabel, threadLabels } from '$lib/threads/threadLinks';
 	import { SOTA_FIXTURES, sotaDisplayName, sotaGoalForFixture } from '$lib/data/sotaFixtures';
 	import { timedFetch } from '$lib/shared/fetch';
 	import {
@@ -336,7 +339,7 @@
 				label: thread.name || thread.id,
 				icon: '#',
 				entityId: thread.id,
-				run: () => goto(`/t/${encodeURIComponent(thread.id)}`)
+				run: () => goto(threadHref(thread))
 			});
 		});
 		result.push({
@@ -345,7 +348,8 @@
 			label: 'New thread',
 			kbd: 'N H',
 			icon: '+',
-			run: () => goto('/t/new')
+			// Ask for the name first; cancel creates nothing.
+			run: () => void startNewThread()
 		});
 
 		// Needs attention — pending approvals + paused/failed tasks. These
@@ -443,12 +447,12 @@
 				section: 'Recent sessions',
 				label: session.title || session.id,
 				icon: '◉',
-				hint: session.ui_thread_id ? `#${session.ui_thread_id}` : undefined,
+				hint: session.ui_thread_id ? `#${threadLabel(session.ui_thread_id)}` : undefined,
 				entityId: session.id,
 				run: () => {
 					const threadId = session.ui_thread_id;
 					if (threadId && threadId !== 'general') {
-						goto(`/t/${encodeURIComponent(threadId)}?session=${encodeURIComponent(session.id)}`);
+						goto(threadHref(threadId, `?session=${encodeURIComponent(session.id)}`));
 					} else {
 						goto(`/chat?session=${encodeURIComponent(session.id)}`);
 					}
@@ -830,8 +834,7 @@
 	function handlePaletteKeydown(event: KeyboardEvent): void {
 		if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.metaKey || event.altKey) return;
 		const target = event.target;
-		const editing = target instanceof HTMLElement
-			&& (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable);
+		const editing = isEditableTarget(target);
 		if (editing && target !== searchInput) return;
 		const key = event.key.toLowerCase();
 		const vim = (event.ctrlKey || !editing) && ['h', 'j', 'k', 'l'].includes(key);
@@ -1877,7 +1880,7 @@
 												<span class="ico">◉</span>
 												<span class="label">
 													{session.title || session.id}
-													{#if session.ui_thread_id}<span class="hint">— #{session.ui_thread_id}</span>{/if}
+													{#if session.ui_thread_id}<span class="hint">— #{$threadLabels(session.ui_thread_id)}</span>{/if}
 												</span>
 											</Command.Item>
 										{/each}

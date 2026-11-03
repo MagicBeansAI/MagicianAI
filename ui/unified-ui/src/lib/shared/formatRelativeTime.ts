@@ -17,3 +17,13 @@ export function formatRelativeTime(epochMs: number | null | undefined, now = Dat
 	const date = new Date(epochMs);
 	return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
+
+/**
+ * The same label read as an age: `now`, `5m ago`, `3h ago`, `2d ago`, then the
+ * short date (a date is not an age, so it keeps no suffix).
+ */
+export function formatTimeAgo(epochMs: number | null | undefined, now = Date.now()): string {
+	const label = formatRelativeTime(epochMs, now);
+	if (!label || label === 'now' || now - (epochMs as number) >= WEEK) return label;
+	return `${label} ago`;
+}

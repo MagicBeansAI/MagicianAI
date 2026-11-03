@@ -1,6 +1,6 @@
 ---
 name: "meme-generation-via-imgflip"
-version: 0.2.2
+version: 0.2.3
 description: "Build memes from popular Imgflip templates with custom captions. Pick when the user wants a meme based on an established format (Drake, Distracted Boyfriend, This Is Fine, Two Buttons, Change My Mind, etc.). Not for finding existing memes (`gif-search-via-klipy`) or original images (`image-generation`)."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.imgflip.com
     requires:
-      bins: ["imgflip-meme"]
+      bins: ["imgflip-meme", "python3"]
       env: ["IMGFLIP_PASSWORD", "IMGFLIP_USERNAME"]
     install_hint:
       docs: "requires env: IMGFLIP_PASSWORD, IMGFLIP_USERNAME — set in vault before activating"
@@ -32,7 +32,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [imgflip-meme]
+        bins: [imgflip-meme, python3]
+        entrypoint: imgflip-meme
       runtime:
         protocol: cli
         command_prefix: []

@@ -4,6 +4,7 @@ Magios is the ubiquitous native iOS companion for Magican. It connects to the
 Magician backend service while presenting the configured agents by their own
 names.
 Chat and task Steps show paired context-preparation timings and partial or cancelled outcomes.
+Chat task cards show "Created <time> · Updated <how long ago>" (the task record's created time, else the card's first update; the latest of the record's last progress (else its update time) and the card's updates), and expanded Steps show "Started … · Updated …" from their first and latest step times; touch and hold the line for the exact times.
 Chat and VibeDev use a bare shield icon for God modes, sized like attachment controls, with the current mode retained in its accessibility label.
 It bypasses traditional "app" mechanics by relying entirely on OS-level integrations: Siri, Shortcuts, the Action Button, and the Dynamic Island.
 

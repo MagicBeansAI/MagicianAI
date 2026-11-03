@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pinned_bin_store  # noqa: E402
-import skill_render  # noqa: E402
+import scope_env  # noqa: E402
 import shared_skill_bins  # noqa: E402
 
 SKIP_DIRS = {"node_modules", ".venv", ".node", ".runtime", ".pp-build", ".cache", "_vendor", "__pycache__", ".git", "config"}
@@ -47,13 +47,13 @@ def link(source: Path, dest: Path) -> bool:
 def user_owned(scoped_skill: Path) -> bool:
     """A scope's own copy of a skill (real SKILL.md) is never overlaid.
 
-    A SKILL.md that `skill_render` wrote is setup-managed, not scope-owned: its
-    other files keep being linked and the manifest is re-rendered."""
+    A SKILL.md the retired renderer wrote (`.skill-render.json` beside it) is
+    setup-managed, not scope-owned: it is relinked to the shared manifest."""
     manifest = scoped_skill / "SKILL.md"
     return (
         manifest.exists()
         and not manifest.is_symlink()
-        and not skill_render.is_render_managed(scoped_skill)
+        and not scope_env.is_legacy_rendered(scoped_skill)
     )
 
 
@@ -83,9 +83,12 @@ def link_scope(scope: Path, names: set[str] | None, store_root: Path) -> tuple[i
         changed += resolver.wire(skill)
         stored, store_changes = pinned_bin_store.store_skill_bins(ROOT, skill, scoped_skill, store_root)
         changed += store_changes
-        # A per-scope manifest is rendered, never linked to its template.
-        rendered = skill_render.is_rendered_skill(skill)
-        never_link = {Path("SKILL.md"), Path(skill_render.RENDER_SPEC)} if rendered else set()
+        # A manifest an older setup rendered into this scope becomes the
+        # shared link again; its `${NAME}` values resolve from config/.env.
+        retired = scope_env.retire_rendered_manifest(skill, scoped_skill)
+        changed += int(retired == "relinked")
+        if retired == "edited":
+            print(f"  ! {skill.name}: rendered SKILL.md was edited after setup wrote it; left as it is")
         for directory, dirs, files in os.walk(skill):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
             for name in files:
@@ -95,15 +98,8 @@ def link_scope(scope: Path, names: set[str] | None, store_root: Path) -> tuple[i
                 relative = source.relative_to(skill)
                 if relative.parent == Path("bin") and name in stored:
                     continue
-                if relative in never_link:
-                    continue
                 if source.is_file():
                     changed += int(link(source, scoped_skill / relative))
-        if rendered:
-            status, detail = skill_render.render_scope_skill(skill, scoped_skill)
-            changed += int(status == "rendered")
-            if status in ("rendered", "missing_inputs"):
-                print(f"  {'✓' if status == 'rendered' else '—'} {skill.name}: {detail}")
     return changed, skipped
 
 

@@ -112,8 +112,13 @@ selects no remote repository, and no startup scanner uploads existing files.
 **Subprocess and skill storage.** `workdirs/` and
 `workdirs/skill-working/{call_id}/` are ephemeral until accepted. The governed
 launcher writes a versioned `SubprocessStorageEnvelope` (scratch lease, input
-manifest, SecretRef requests, output slots, result manifest) without replacing
-an admitted CLI working directory or a `WorkingDirectoryMode::Denied` contract.
+manifest, SecretRef requests, output slots, result manifest) for every
+admitted call, in the scope it resolved to, without replacing an admitted CLI
+working directory, a task work root or a `WorkingDirectoryMode::Denied`
+contract. A workspace-mode CLI with neither runs in that lease, never the scope
+root (an ancestor of every task's evidence folder, refused by the
+goal-workspace fence). Nothing reads a lease after its call, so the governed
+runtime scavenges it when the call ends, success or error.
 Closed children get no `MAGICIAN_ROOT_DIR`, `MAGICIAN_STORAGE_PATH` or store
 credentials; accepted slots publish through the object kit, the rest is scavenged. Reader: `subprocess_owners::load_envelope` (`ENVELOPE_VERSION`,
 `ENVELOPE_FILE_NAME`). `skillshub/scripts/runtime_root_shim.py` maps old

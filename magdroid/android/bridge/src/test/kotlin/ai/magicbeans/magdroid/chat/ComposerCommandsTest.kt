@@ -7,6 +7,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,6 +79,19 @@ class ComposerCommandsTest {
             ComposerCommands.rows("/def", state, context).map { it.action },
         )
         assertTrue(ComposerCommands.rows("plain text", state, context).isEmpty())
+    }
+
+    @Test
+    fun `a partial command opens instead of reaching the model`() {
+        val empty = ComposerCommandState()
+        assertEquals(ComposerCommandId.Engine, ComposerCommands.partialCommand("/eng", empty))
+        assertEquals(ComposerCommandId.BudgetDefault, ComposerCommands.partialCommand("/budget defa", empty))
+        assertNull("a message, not a command", ComposerCommands.partialCommand("/budget please help me", empty))
+        assertNull(ComposerCommands.partialCommand("/voice-mode is broken", empty))
+        assertNull(ComposerCommands.partialCommand("/usr/bin is missing", empty))
+        assertNull(ComposerCommands.partialCommand("engine", empty))
+        assertTrue(ComposerCommands.holdsSend("/eng", empty))
+        assertFalse(ComposerCommands.holdsSend("/usr/bin is missing", empty))
     }
 
     @Test

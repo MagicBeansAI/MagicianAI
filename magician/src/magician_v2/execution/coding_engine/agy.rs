@@ -230,13 +230,46 @@ where
     filtered
 }
 
+/// Longest prompt Agy is launched with when the persona and playbook lead it.
+/// The prompt is one argv string and Linux refuses one over 128 KiB
+/// (`MAX_ARG_STRLEN`); Agy has no file form, so past this bound the turn runs
+/// on its task prompt alone, with a warning.
+const AGY_INLINE_PROMPT_MAX_BYTES: usize = 96 * 1024;
+
+/// The prompt Agy is launched with. Agy has no system-prompt flag, so the
+/// executing agent's persona and playbook lead a NEW conversation's prompt;
+/// a `--conversation` resume already holds them in its history.
+fn launch_prompt(request: &CodingEngineRequest) -> String {
+    if request
+        .agy
+        .resume_session_id
+        .as_deref()
+        .is_some_and(|id| !id.trim().is_empty())
+    {
+        return request.prompt.clone();
+    }
+    let prompt =
+        request.prompt_with_appended_instructions(CodingEngineKind::AgyCli, &request.prompt);
+    if prompt.len() > AGY_INLINE_PROMPT_MAX_BYTES && prompt.len() > request.prompt.len() {
+        tracing::warn!(
+            target: "coding_engine",
+            engine = "agy",
+            bytes = prompt.len(),
+            "the persona and playbook make the Agy prompt too long for one argument; the \
+             turn runs without them"
+        );
+        return request.prompt.clone();
+    }
+    prompt
+}
+
 fn spawn_agy(
     adapter: &AgyCliAdapter,
     request: &CodingEngineRequest,
 ) -> Result<tokio::process::Child> {
     let mut launch = super::agy_contract::launch_args_with(
         request.agy.mode,
-        &request.prompt,
+        &launch_prompt(request),
         request.agy.resume_session_id.as_deref(),
         &request.repo_config,
     );
@@ -1402,6 +1435,39 @@ mod tests {
         assert!(!pre_init_resume_is_lost(&timeout, &request));
         let missing = Err(AgySessionError::MissingResult);
         assert!(pre_init_resume_is_lost(&missing, &request));
+    }
+
+    #[test]
+    fn a_new_agy_conversation_gets_the_persona_and_playbook_ahead_of_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request_for(dir.path());
+        assert_eq!(launch_prompt(&request), "add a comment");
+        let persona = dir.path().join("persona.md");
+        let playbook = dir.path().join("playbook.md");
+        std::fs::write(&persona, "\n## IDENTITY\nYou are Ada.\n").unwrap();
+        std::fs::write(&playbook, "\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n").unwrap();
+        request.append_system_prompt = vec![persona, playbook];
+        let prompt = launch_prompt(&request);
+        assert_eq!(
+            prompt,
+            format!(
+                "{}\n## IDENTITY\nYou are Ada.\n\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n{}\n\nadd a comment",
+                super::super::APPENDED_INSTRUCTIONS_BEGIN,
+                super::super::APPENDED_INSTRUCTIONS_END,
+            )
+        );
+        let args = super::super::agy_contract::launch_args(AgyTurnMode::Build, &prompt, None);
+        assert_eq!(args[0], "-p");
+        assert_eq!(args[1], prompt);
+        // `--conversation` resumes a conversation that already holds them.
+        request.agy.resume_session_id = Some(NATIVE.into());
+        assert_eq!(launch_prompt(&request), "add a comment");
+        // Too long for one argument: the task prompt goes alone, never E2BIG.
+        request.agy.resume_session_id = None;
+        let huge = dir.path().join("huge.md");
+        std::fs::write(&huge, "x".repeat(AGY_INLINE_PROMPT_MAX_BYTES)).unwrap();
+        request.append_system_prompt = vec![huge];
+        assert_eq!(launch_prompt(&request), "add a comment");
     }
 
     #[test]

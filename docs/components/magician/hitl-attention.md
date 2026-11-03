@@ -61,7 +61,11 @@ once. `GET /bots/auth` (`list_bots_auth`) polls emit
   `execution_id` = child, `metadata.delegated_agent_id`,
   `metadata.delegation_child = true`); the child stays suspended (parent
   `WaitingChildren`) for every owner-answerable input incl. `otp`, forms and
-  diff approval; only tool authorization and sandbox override fail it
+  diff approval, and for an approval gate (`WaitingForConfirmation`). The
+  gate's question card always reaches the task; an approvals-inbox entry
+  also needs `agent_id`, `goal_id` and `cycle_id` on the pause (present for
+  `delegate_to_agent` children), otherwise only the card. Only tool authorization
+  and sandbox override fail it
   (`agents::runtime::delegated_waiting_for_user_should_suspend`). A diff
   answered after the child finished wakes the parent via
   `notify_parent_after_child_review_closed` (`coding-engine-guardrails.md`).
@@ -108,6 +112,18 @@ RuntimeTransportEvent::HitlRequested {
     timestamp: i64,
 }
 ```
+
+A client drops a request whose `input_type` it does not know (the web keeps
+one list, `KNOWN_INPUT_TYPES` in `lib/hitl/adapters.ts`), so a user request
+announces only canonical types (`CANONICAL_HITL_INPUT_TYPES` in
+`user_requests/service.rs`, which adds `tool_authorization`,
+`sandbox_override` and `diff_approval` to the list above). No `context.input_type`
+is a `choice`. A non-canonical one is announced as `choice` when the request has
+options and as `text` when it has none, with a warning; `request_type` keeps
+naming the ask (e.g. `work_location`). A producer reads the pick with
+`UserResponse::chosen_option(options)`: the `decision` when it is an option id,
+else a `provide_input` answer whose text is an option's id or label (a client
+may send the label it showed).
 
 Mirrored by `RuntimeTransportEvent::HitlResolved { correlation_id, source,
 outcome ∈ {responded, expired, cancelled, dismissed}, decision: Option<String>,

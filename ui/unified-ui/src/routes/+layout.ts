@@ -3,6 +3,7 @@ import { browser } from '$app/environment';
 import { isPublicRoute } from '$lib/shared/publicRoutes';
 import { hasHydratedScopeBearer } from '$lib/stores/scopeIdentityStore';
 import { canonicalWorkHref } from '$lib/work/routes';
+import { threadIdForKey } from '$lib/threads/threadLinks';
 
 /**
  * Root auth gate. Every route is a Magician surface unless `isPublicRoute`
@@ -24,7 +25,8 @@ export const load = async ({ url }: { url: URL }) => {
 	// left every page on "Internal Error"). The hash is only carried over, so
 	// map path + query and re-attach the browser's hash on redirect.
 	const entered = url.pathname + url.search;
-	const canonical = canonicalWorkHref(entered);
+	// `/t/<key>/tasks` names a thread by slug; Work filters by the id.
+	const canonical = canonicalWorkHref(entered, threadIdForKey);
 	if (canonical !== entered) throw redirect(307, canonical + location.hash);
 	if (isPublicRoute(url.pathname)) return;
 	// Dev-only visual check for the draw overlay. The desktop webview is already

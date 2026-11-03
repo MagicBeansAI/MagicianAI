@@ -52,6 +52,8 @@ kind: worker
 tools:
 - office-powerpoint
 - presentation-design-principles
+- impeccable
+- frontend-slides
 - content_search
 - content_read
 - browser

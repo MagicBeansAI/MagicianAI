@@ -39,7 +39,11 @@ struct LiveTaskCardView: View {
     private var current: TaskStatusModel {
         loader.storeStatus.map { LiveTaskCardRules.reconciled(task, storeStatus: $0) } ?? task
     }
-    private var input: LiveTaskCardInput { LiveTaskCardRules.input(for: current, messageId: messageId) }
+    private var input: LiveTaskCardInput {
+        LiveTaskCardRules.input(
+            for: current, messageId: messageId,
+            recordCreatedAt: loader.storeCreatedAt, recordUpdatedAt: loader.storeUpdatedAt)
+    }
     private var state: LiveTaskCardState { LiveTaskCardState(input) }
     private var phase: LiveTaskCardPhase {
         LiveTaskCardRules.phase(state, effectiveStatus: LiveTaskCardRules.effectiveStatus(input))
@@ -69,6 +73,7 @@ struct LiveTaskCardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 header
                 metaRow
+                timesLine
             }
             if let line = LiveTaskCardRules.line(
                 phase: phase, state: state, planningEntries: loader.planningEntries,
@@ -311,6 +316,16 @@ struct LiveTaskCardView: View {
             Spacer(minLength: 0)
         }
         .padding(.leading, 18)
+    }
+
+    /// "Created 14:28 · Updated 2 min. ago"; a long-press shows the exact times.
+    private var timesLine: some View {
+        CardTimesLine(
+            started: state.createdAt, updated: state.updatedAt,
+            live: !state.terminal, theme: theme
+        )
+        .padding(.leading, 18)
+        .accessibilityIdentifier("live-task-times")
     }
 
     /// The task's model usage so far — `3 calls · 12.3k tok · $0.04`, planning
@@ -749,6 +764,9 @@ final class LiveTaskCardLoader: ObservableObject {
     @Published private(set) var plan: LiveTaskPlan?
     /// The task's stored status (`/v3/tasks/{id}`), when fetched.
     @Published private(set) var storeStatus: String?
+    /// The task record's created and latest updated times, when fetched.
+    @Published private(set) var storeCreatedAt: Date?
+    @Published private(set) var storeUpdatedAt: Date?
     private var storeFetchedAt: Date?
     private var storeInFlight = false
 
@@ -788,9 +806,10 @@ final class LiveTaskCardLoader: ObservableObject {
             let payload = await LiveTaskCardClient.json("/tasks/\(LiveTaskCardClient.segment(taskId))")
             guard let self else { return }
             self.storeInFlight = false
-            if let record = payload.flatMap(TaskStoreRecord.parse), record.status != self.storeStatus {
-                self.storeStatus = record.status
-            }
+            guard let record = payload.flatMap(TaskStoreRecord.parse) else { return }
+            if record.status != self.storeStatus { self.storeStatus = record.status }
+            if record.createdAt != self.storeCreatedAt { self.storeCreatedAt = record.createdAt }
+            if record.updatedAt != self.storeUpdatedAt { self.storeUpdatedAt = record.updatedAt }
         }
     }
 
@@ -890,6 +909,51 @@ enum LiveTaskCardClient {
             return message ?? "\(fallback) (HTTP \(status))"
         } catch {
             return error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Times line
+
+/// A chat card's times line (`TaskTimelineFormatting.cardTimeParts`), shared
+/// by the live task card and the activity card. A part whose time is unknown
+/// is left out; with neither, nothing renders. The relative part re-renders
+/// on a `TimelineView`: each second while the card is live, every 30 s once it
+/// settled. A long-press shows each exact time, and tapping one copies it.
+struct CardTimesLine: View {
+    let started: Date?
+    let updated: Date?
+    var startWord = "Created"
+    let live: Bool
+    @ObservedObject var theme: ThemeManager
+
+    var body: some View {
+        if started != nil || updated != nil {
+            TimelineView(.periodic(from: .now, by: live ? 1 : 30)) { context in
+                let parts = TaskTimelineFormatting.cardTimeParts(
+                    started: started, updated: updated, startWord: startWord, now: context.date)
+                Text(parts.joined(separator: " · "))
+                    .font(.themed(11))
+                    .monospacedDigit()
+                    .foregroundColor(theme.secondaryTextColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .accessibilityLabel(parts.joined(separator: ", "))
+                    .accessibilityHint("Touch and hold for the exact times")
+            }
+            .contentShape(Rectangle())
+            .contextMenu {
+                if let started { exactTimeButton("\(startWord) \(TaskTimelineFormatting.cardExact(started))", started) }
+                if let updated { exactTimeButton("Updated \(TaskTimelineFormatting.cardExact(updated))", updated) }
+            }
+        }
+    }
+
+    private func exactTimeButton(_ title: String, _ date: Date) -> some View {
+        Button {
+            UIPasteboard.general.string = TaskTimelineFormatting.cardExact(date)
+        } label: {
+            Label(title, systemImage: "clock")
         }
     }
 }

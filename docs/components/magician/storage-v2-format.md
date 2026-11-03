@@ -262,6 +262,19 @@ surfaces can report a wedged run. `updated_at` cannot: the realtime bridge
 drives `reduce_runtime_signal` from every mirrored event, so a wedged run
 rewrites it continuously.
 
+A mirrored event sets `ExecutionState.status` only through its status hint.
+`agent.cycle.completed` carries none: a cycle ends `paused` when its run parks
+on children or the user, and a `running` hint there overwrote a delegated
+coordinator's `waiting_for_children`, so the parent resume never woke it. A
+`waiting_for_children` park ends only through events that
+`status_hint_may_end_children_wait` admits (the runtime's status and
+responsibility changes, sub-goal outcomes, resume, HITL resolution and a new
+cycle); a progress event's `running`/`planning` hint leaves it. A hint-less
+signal for an ended execution is ignored, so it cannot reinstate an ended root
+as the task's active root. A delegated parent resuming after its children is
+activated by `activate_resumed_child_execution`, which keeps the task's active
+root on the recorded root.
+
 Exactly four sites may write it:
 
 | site | why it counts |

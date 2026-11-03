@@ -1398,7 +1398,7 @@ async fn run_orb_dictation_loop(
                 &app,
                 completed.bytes,
                 AMBIENT_DICTATION_SOURCE_SURFACE,
-                chat_session_id.as_deref(),
+                orb_voice_note_chat(chat_session_id.as_deref()),
             ),
         )
         .await
@@ -2252,6 +2252,7 @@ async fn engage_live_ptt(
                 realtime_profile,
                 voice_mode,
                 turn_boundary,
+                orb_requested,
                 sequence,
                 audio_rx,
                 control_rx,
@@ -3079,9 +3080,49 @@ async fn submit_voice_note(
     app: &AppHandle,
     audio_bytes: Vec<u8>,
 ) -> Result<VoiceNoteSubmitResponse, String> {
-    match submit_voice_note_for_surface(app, audio_bytes, VOICE_NOTE_SOURCE_SURFACE, None).await? {
+    match submit_voice_note_for_surface(
+        app,
+        audio_bytes,
+        VOICE_NOTE_SOURCE_SURFACE,
+        VoiceNoteChat::ThreadActive,
+    )
+    .await?
+    {
         VoiceNoteSubmitOutcome::Accepted(response) => Ok(response),
         VoiceNoteSubmitOutcome::Rejected(rejection) => Err(rejection.to_string()),
+    }
+}
+
+/// Which chat a voice note is filed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceNoteChat<'a> {
+    /// The thread's open chat: a one-shot note to whatever is being discussed.
+    ThreadActive,
+    /// The chat this conversation already started.
+    Continue(&'a str),
+    /// A chat of its own: an Orb conversation was summoned with no chat
+    /// behind it and must not join one the owner is having.
+    Fresh,
+}
+
+impl VoiceNoteChat<'_> {
+    fn form_field(self) -> Option<(&'static str, String)> {
+        match self {
+            Self::ThreadActive => None,
+            Self::Continue(id) => {
+                let id = id.trim();
+                (!id.is_empty()).then(|| ("chat_session_id", id.to_string()))
+            },
+            Self::Fresh => Some(("new_chat", "true".to_string())),
+        }
+    }
+}
+
+/// An Orb conversation's first turn starts its own chat; later turns continue it.
+fn orb_voice_note_chat(chat_session_id: Option<&str>) -> VoiceNoteChat<'_> {
+    match chat_session_id {
+        Some(id) => VoiceNoteChat::Continue(id),
+        None => VoiceNoteChat::Fresh,
     }
 }
 
@@ -3089,9 +3130,12 @@ async fn submit_voice_note_for_surface(
     app: &AppHandle,
     audio_bytes: Vec<u8>,
     source_surface: &str,
-    chat_session_id: Option<&str>,
+    chat: VoiceNoteChat<'_>,
 ) -> Result<VoiceNoteSubmitOutcome, String> {
     let config = app.state::<crate::AppState>().config.lock().await.clone();
+    if !matches!(chat, VoiceNoteChat::Continue(_)) {
+        ensure_desktop_voice_thread(&config).await;
+    }
     let url = config.engine_url("/api/magician/v2/media/voice-notes");
     let part = multipart::Part::bytes(audio_bytes)
         .file_name(VOICE_NOTE_FILENAME)
@@ -3107,11 +3151,8 @@ async fn submit_voice_note_for_surface(
             config.voice.retain_voice_note_audio.to_string(),
         );
     form = form.text("mode", "ask");
-    if let Some(chat_session_id) = chat_session_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        form = form.text("chat_session_id", chat_session_id.to_string());
+    if let Some((name, value)) = chat.form_field() {
+        form = form.text(name, value);
     }
 
     let client = reqwest::Client::builder()
@@ -3587,9 +3628,53 @@ fn presence_session_id() -> String {
     format!("desktop-tray-{}", std::process::id())
 }
 
+/// The desktop thread is created with a readable name the first time desktop
+/// voice uses it; an existing thread is never renamed. Best effort: without
+/// it the thread is still discovered from its chats, named by its id.
+async fn ensure_desktop_voice_thread(config: &MagicianDesktopConfig) {
+    let thread_id = config.voice.default_thread_id.as_str();
+    if thread_id != crate::config::DEFAULT_VOICE_THREAD_ID {
+        return;
+    }
+    let result = async {
+        let client = reqwest::Client::builder()
+            .timeout(LIVE_PTT_HTTP_TIMEOUT)
+            .build()
+            .map_err(|error| format!("failed to create thread HTTP client: {error}"))?;
+        let url = config.engine_url(&format!("/api/magician/v2/ui-threads/{thread_id}"));
+        let existing = crate::magician_auth::authorize(client.get(url.clone()))
+            .send()
+            .await
+            .map_err(|error| format!("failed to read {url}: {error}"))?;
+        if existing.status() != reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        let url = config.engine_url("/api/magician/v2/ui-threads");
+        let created = crate::magician_auth::authorize(client.post(url.clone()))
+            .json(&desktop_voice_thread_body(thread_id))
+            .send()
+            .await
+            .map_err(|error| format!("failed to create {url}: {error}"))?;
+        if created.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("The backend returned {}", created.status()))
+        }
+    }
+    .await;
+    if let Err(error) = result {
+        warn!("Could not name the desktop voice thread: {error}");
+    }
+}
+
+fn desktop_voice_thread_body(thread_id: &str) -> Value {
+    json!({ "id": thread_id, "name": crate::config::DEFAULT_VOICE_THREAD_NAME })
+}
+
 async fn register_live_ptt_media_session(
     config: &MagicianDesktopConfig,
 ) -> Result<MediaSessionWire, String> {
+    ensure_desktop_voice_thread(config).await;
     let url = config.engine_url("/api/magician/v2/media/sessions");
     let body = json!({
         "thread_id": config.voice.default_thread_id,
@@ -3758,6 +3843,7 @@ fn live_ptt_session_start_payload(
     realtime_profile: &str,
     voice_mode: &str,
     turn_boundary: Option<&str>,
+    new_chat: bool,
 ) -> Value {
     let mut payload = json!({
         "ui_thread_id": thread_id,
@@ -3768,6 +3854,11 @@ fn live_ptt_session_start_payload(
     });
     if let Some(turn_boundary) = turn_boundary {
         payload["turn_boundary"] = Value::String(turn_boundary.to_string());
+    }
+    // An Orb call has no chat behind it, so it asks for one of its own
+    // instead of joining the thread's open chat.
+    if new_chat {
+        payload["new_chat"] = Value::Bool(true);
     }
     payload
 }
@@ -3783,6 +3874,7 @@ async fn run_live_ptt_control_loop(
     realtime_profile: String,
     voice_mode: String,
     turn_boundary: Option<String>,
+    new_chat: bool,
     sequence: u64,
     mut audio_rx: tokio_mpsc::Receiver<Vec<u8>>,
     mut control_rx: tokio_mpsc::Receiver<LivePttControlCommand>,
@@ -3844,6 +3936,7 @@ async fn run_live_ptt_control_loop(
             &realtime_profile,
             &voice_mode,
             turn_boundary.as_deref(),
+            new_chat,
         );
         send_ws_json(&mut ws_write, "session.start", session_start).await?;
         post_live_ptt_session_event(
@@ -6518,16 +6611,43 @@ mod tests {
             "voice_realtime_openai_backend",
             "realtime",
             live_ptt_turn_boundary(Some(OrbVoiceMode::Realtime), false),
+            true,
         );
         assert_eq!(ambient["turn_boundary"], "server_vad");
+        assert_eq!(ambient["new_chat"], true);
 
         let push_to_talk = live_ptt_session_start_payload(
             "general",
             "voice_realtime_openai_backend",
             "realtime",
             live_ptt_turn_boundary(Some(OrbVoiceMode::Realtime), true),
+            false,
         );
         assert!(push_to_talk.get("turn_boundary").is_none());
+        assert!(push_to_talk.get("new_chat").is_none());
+    }
+
+    #[test]
+    fn the_desktop_thread_is_created_under_its_readable_name() {
+        assert_eq!(
+            desktop_voice_thread_body("desktop-general"),
+            json!({ "id": "desktop-general", "name": "Desktop" })
+        );
+    }
+
+    #[test]
+    fn an_orb_conversation_starts_its_own_chat_and_a_one_shot_note_joins_the_open_one() {
+        assert_eq!(orb_voice_note_chat(None), VoiceNoteChat::Fresh);
+        assert_eq!(
+            VoiceNoteChat::Fresh.form_field(),
+            Some(("new_chat", "true".to_string()))
+        );
+        assert_eq!(
+            orb_voice_note_chat(Some(" chat-1 ")).form_field(),
+            Some(("chat_session_id", "chat-1".to_string()))
+        );
+        assert_eq!(VoiceNoteChat::Continue("  ").form_field(), None);
+        assert_eq!(VoiceNoteChat::ThreadActive.form_field(), None);
     }
 
     #[test]
@@ -6537,6 +6657,7 @@ mod tests {
             "voice_realtime_openai_backend",
             "realtime",
             Some("server_vad"),
+            true,
         );
         let encoded = serde_json::to_string(&payload).unwrap();
         for forbidden in [

@@ -26,6 +26,8 @@ data class UiThreadRecord(
     @SerialName("memory_summary") val memorySummary: String? = null,
     @SerialName("memory_updated_at") val memoryUpdatedAt: Long? = null,
     @SerialName("history_lane") val historyLane: String? = null,
+    /** The URL key, which follows the name; [id] never changes. */
+    val slug: String? = null,
     @SerialName("created_at") val createdAt: Long = 0,
     @SerialName("updated_at") val updatedAt: Long = 0,
 ) {

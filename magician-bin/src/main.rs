@@ -12043,6 +12043,12 @@ async fn run_http_server(
                             recovery.failed_nonrecoverable,
                         );
                         }
+                        // A resumed chat-spawned run has no watcher left to
+                        // post its result into the chat; re-arm one per run
+                        // before waiting for the runs to finish.
+                        chat_service_for_sweep
+                            .rearm_chat_delivery_for_recovered_tasks(&recovery.recovered_task_runs)
+                            .await;
                         if recovery.scheduled > 0 {
                             orchestrator_for_reconcile
                                 .wait_for_interrupted_execution_recoveries()

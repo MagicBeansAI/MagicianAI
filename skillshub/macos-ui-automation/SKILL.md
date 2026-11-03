@@ -1,6 +1,6 @@
 ---
 name: macos-ui-automation
-version: 0.5.0
+version: 0.5.1
 description: Native desktop computer use through CuaDriver on macOS, Windows, or Linux,
   locally or through the desktop host relay. Snapshot the target window, act on grounded
   elements, then re-snapshot. Requires a signed-in graphical desktop and platform
@@ -35,6 +35,7 @@ metadata:
         bins:
         - macos-ui-controller
         - python3
+        - cua-driver
         entrypoint: macos-ui-controller
       runtime:
         protocol: cli

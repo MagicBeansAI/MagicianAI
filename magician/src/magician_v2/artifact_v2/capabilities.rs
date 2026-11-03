@@ -312,8 +312,12 @@ fn now_epoch_ms() -> u64 {
 
 /// Digest a skills root the way the scoped capability cache does: every
 /// skill's `SKILL.md` and `tool_schema.yaml` — the governed contract boundary
-/// and the legacy contract the loader still reads. A change to either rolls
-/// the catalog; anything else under a skill (bins, deps, env) does not.
+/// and the legacy contract the loader still reads — plus, for a contract with
+/// `${NAME}` scope references, how they resolve in that skill's `config/.env`
+/// ([`scope_env_stamp`]). A change to any of those rolls the catalog;
+/// anything else under a skill (bins, deps, other env values) does not.
+///
+/// [`scope_env_stamp`]: crate::magician_v2::skills::scope_env::scope_env_stamp
 pub(crate) fn hash_skill_catalog(
     hasher: &mut blake3::Hasher,
     label: &str,
@@ -376,6 +380,16 @@ pub(crate) fn hash_skill_catalog(
             hasher.update(file_name.as_bytes());
             hasher.update(&(bytes.len() as u64).to_le_bytes());
             hasher.update(&bytes);
+            if file_name == "SKILL.md" {
+                // The listed folder, not the resolved source: the values come
+                // from this scope's env only.
+                if let Some(stamp) =
+                    crate::magician_v2::skills::scope_env::scope_env_stamp(&bytes, &skill_dir)
+                {
+                    hasher.update(b"scope-env");
+                    hasher.update(stamp.as_bytes());
+                }
+            }
         }
     }
     Ok(())
@@ -976,6 +990,20 @@ impl CapabilityWorkspaceManager {
                  that rebuilds each one, then `make skills-link-scopes`; packaged installs: \
                  rerun Setup's skill steps"
             );
+        }
+        // Reconcile runs on every scope touch; an edited legacy manifest is
+        // the same news each time, so it is said once per process.
+        static KEPT_EDITED_SEEN: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashSet<String>>,
+        > = std::sync::OnceLock::new();
+        for kept in &report.kept_edited {
+            let first = KEPT_EDITED_SEEN
+                .get_or_init(Default::default)
+                .lock()
+                .is_ok_and(|mut seen| seen.insert(format!("{principal}/{workspace}/{kept}")));
+            if first {
+                tracing::warn!(principal, workspace, manifest = %kept, "scope skill manifest kept as edited");
+            }
         }
         for error in &report.errors {
             tracing::warn!(principal, workspace, error = %error, "scope skills layer repair failed");

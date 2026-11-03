@@ -1,0 +1,8 @@
+# Reviewed system-level git config for the dugite skill (read-only, tracked).
+# git-adapter loads it as GIT_CONFIG_SYSTEM, the lowest-precedence layer, so a
+# repository's own user.name/user.email always win. It only replaces git's
+# hostname guess, which the runtime's HOME-less child would otherwise use.
+# Keep it to identity: a git config can run code (core.fsmonitor, aliases).
+[user]
+	name = Magician
+	email = magician@localhost

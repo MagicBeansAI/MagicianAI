@@ -47,9 +47,10 @@ Operating contract: [LLM dispatch queue](../magician/llm-dispatch-queue.md).
 - Every request carries a local-only `LlmTraceContext` (root trace, logical call
   id, typed lineage, deterministic attempt ids). `LlmTraceReceipt` returns the
   final attempt and queue job identity; lineage never enters provider payloads.
-- Terminal-output synthesis can set `TaskRef::survives_terminal_task` (default
-  false) so the pre-dispatch task-state gate does not cancel the job that writes
-  a terminal deliverable. Explicit cancellation by task, execution or root
+- Terminal-output synthesis, and the claim review of that output, can set
+  `TaskRef::survives_terminal_task` (default false) so the pre-dispatch
+  task-state gate does not cancel the job that writes or checks a terminal
+  deliverable. Explicit cancellation by task, execution or root
   execution still applies. Cancellation diagnostics record reason and matched
   job count; pickup tombstones carry task reference, trace and refusal
   category.

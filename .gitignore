@@ -84,6 +84,12 @@ magician_data_v3/scopes/*/*/skills/
 skillshub/*/bin/
 # Phase 7 provider/native adapters are source, not build output. Keep this
 # allowlist exact so downloaded CLIs and generated native binaries stay ignored.
+!skillshub/office-powerpoint/bin/
+skillshub/office-powerpoint/bin/*
+!skillshub/office-powerpoint/bin/officecli-exporter-pdf
+!skillshub/agentmail-read/bin/
+skillshub/agentmail-read/bin/*
+!skillshub/agentmail-read/bin/agentmail-read-adapter
 !skillshub/agentmail-send/bin/
 skillshub/agentmail-send/bin/*
 !skillshub/agentmail-send/bin/agentmail-send-adapter
@@ -99,9 +105,16 @@ skillshub/analyze-image-via-minimax/bin/*
 !skillshub/arxiv-search/bin/
 skillshub/arxiv-search/bin/*
 !skillshub/arxiv-search/bin/arxiv-search
+!skillshub/dugite/bin/
+skillshub/dugite/bin/*
+!skillshub/dugite/bin/git-adapter
+!skillshub/dugite/bin/dugite.gitconfig
 !skillshub/find-details-by-username/bin/
 skillshub/find-details-by-username/bin/*
 !skillshub/find-details-by-username/bin/find-details-by-username
+!skillshub/higgsfield/bin/
+skillshub/higgsfield/bin/*
+!skillshub/higgsfield/bin/higgsfield-adapter
 !skillshub/hackernews-search/bin/
 skillshub/hackernews-search/bin/*
 !skillshub/hackernews-search/bin/hackernews-search
@@ -144,12 +157,18 @@ skillshub/reddit-search/bin/*
 !skillshub/structured-web-data/bin/
 skillshub/structured-web-data/bin/*
 !skillshub/structured-web-data/bin/structured-web-data
+!skillshub/telegram-self/bin/
+skillshub/telegram-self/bin/*
+!skillshub/telegram-self/bin/tgcli-adapter
 !skillshub/telegram/bin/
 skillshub/telegram/bin/*
 !skillshub/telegram/bin/telegram-bot-adapter
 !skillshub/video-generation-via-minimax/bin/
 skillshub/video-generation-via-minimax/bin/*
 !skillshub/video-generation-via-minimax/bin/minimax-video
+!skillshub/web-via-tinyfish/bin/
+skillshub/web-via-tinyfish/bin/*
+!skillshub/web-via-tinyfish/bin/tinyfish-adapter
 !skillshub/web-search-via-minimax/bin/
 skillshub/web-search-via-minimax/bin/*
 !skillshub/web-search-via-minimax/bin/minimax-websearch

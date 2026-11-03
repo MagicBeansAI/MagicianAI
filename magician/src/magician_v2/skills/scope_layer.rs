@@ -31,12 +31,13 @@
 //! scope ([`mark_skill_removed`]): installing whatever a scope lacks used to
 //! undo every uninstall on the next boot.
 //!
-//! A skill whose manifest varies per scope ships `render.yaml` beside a
-//! placeholder template `SKILL.md`; setup (`skillshub/scripts/skill_render.py`)
-//! writes the scope's real `SKILL.md` plus a `.skill-render.json` provenance
-//! marker. This reconciler never links that template or `render.yaml` into a
-//! scope, and treats a marked manifest as setup-managed: the skill's other
-//! files are still installed and topped up, the manifest itself is left alone.
+//! A value that differs per workspace (a self-hosted MCP endpoint) is a
+//! `${NAME}` reference in the shared `SKILL.md`, resolved at load from the
+//! scope's own `config/.env` (`skills::scope_env`), so every file stays a
+//! link. Setup used to render a per-scope copy instead, marked by a
+//! `.skill-render.json` beside it; reconcile turns such a copy back into the
+//! link ([`retire_rendered_manifest`]) when its bytes are still exactly what
+//! setup wrote. An unmarked real `SKILL.md` stays the scope's own.
 // Symlink mirrors are a Unix layout; elsewhere reconcile is a no-op.
 #![cfg_attr(not(unix), allow(dead_code, unused_imports, unused_mut))]
 
@@ -57,17 +58,10 @@ pub const REMOVED_MARKER: &str = "removed";
 /// and the per-skill `.skill-state/` the uninstall contract preserves.
 const CARRIED_OVER: &[&str] = &["auth", ".skill-state"];
 
-/// Present in a skill's source when its manifest is rendered per scope.
-const RENDER_SPEC: &str = "render.yaml";
-/// Written by the renderer beside the scope's rendered `SKILL.md`.
+/// Written by the retired per-scope renderer beside the `SKILL.md` it wrote.
 const RENDER_MARKER: &str = ".skill-render.json";
-
-/// Top-level source files never linked for a render-declared skill.
-fn is_render_template_file(source_root: &Path, relative: &Path, name: &str) -> bool {
-    relative.as_os_str().is_empty()
-        && matches!(name, "SKILL.md" | RENDER_SPEC)
-        && source_root.join(RENDER_SPEC).is_file()
-}
+/// The marker's schema: the only one whose recorded digest is trusted.
+const RENDER_MARKER_SCHEMA: &str = "magician.skill-render.v1";
 
 /// Directories `install-scope` never mirrors.
 const INSTALL_SKIP_DIRS: &[&str] = &["_vendor"];
@@ -118,6 +112,9 @@ pub struct ScopeLayerReport {
     /// `bin/` links (re)pointed at the pinned-executable store.
     pub stored: usize,
     pub unresolved: Vec<UnresolvedLink>,
+    /// Manifests the retired renderer wrote and someone edited since, left as
+    /// they are on every reconcile: a standing state, not a repair failure.
+    pub kept_edited: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -395,7 +392,8 @@ fn reconcile_unix(
                 install_skill(&hub, source, scope_skills_root, name, bin_store, report)
             },
             Ok(meta) if meta.is_dir() && !scope_owns_skill(&dest) => {
-                top_up_skill(&hub, source, &dest, bin_store, report)
+                retire_rendered_manifest(source, scope_skills_root, name, report)
+                    .and_then(|()| top_up_skill(&hub, source, &dest, bin_store, report))
             },
             Ok(_) => Ok(()),
             Err(error) => Err(error),
@@ -407,10 +405,64 @@ fn reconcile_unix(
 }
 
 /// A scope's own copy of a skill (a real `SKILL.md`) is never overlaid. A
-/// manifest the renderer wrote (marked by [`RENDER_MARKER`]) is setup-managed.
+/// manifest the retired renderer wrote (marked by [`RENDER_MARKER`]) is
+/// setup-managed, not the scope's.
 fn scope_owns_skill(dest: &Path) -> bool {
     matches!(fs::symlink_metadata(dest.join("SKILL.md")), Ok(meta) if !meta.file_type().is_symlink())
         && !dest.join(RENDER_MARKER).is_file()
+}
+
+/// Migrate a manifest the retired per-scope renderer wrote back to a link to
+/// the source `SKILL.md` (whose `${NAME}` references now resolve at load
+/// from the same `config/.env` the renderer read), and drop its marker.
+///
+/// Only a copy whose bytes still match the marker's recorded
+/// `manifest_sha256` is replaced: one edited since is reported and left as
+/// it is. A marker beside a link or a missing manifest is just removed. An
+/// unmarked manifest never reaches here ([`scope_owns_skill`]).
+#[cfg(unix)]
+fn retire_rendered_manifest(
+    source: &Path,
+    skills_root: &Path,
+    name: &str,
+    report: &mut ScopeLayerReport,
+) -> io::Result<()> {
+    let dest = skills_root.join(name);
+    let marker = dest.join(RENDER_MARKER);
+    if !fs::symlink_metadata(&marker).is_ok_and(|meta| meta.is_file()) {
+        return Ok(());
+    }
+    let _lock = InstallLock::acquire(skills_root, name)?;
+    let manifest = dest.join("SKILL.md");
+    match fs::symlink_metadata(&manifest) {
+        Ok(meta) if meta.is_file() => {},
+        Ok(meta) if meta.file_type().is_symlink() => return fs::remove_file(&marker),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return fs::remove_file(&marker),
+        Ok(_) => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    let recorded = fs::read(&marker)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .filter(|marker| marker["schema_version"] == RENDER_MARKER_SCHEMA)
+        .and_then(|marker| marker["manifest_sha256"].as_str().map(str::to_owned));
+    let current = {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(fs::read(&manifest)?))
+    };
+    if recorded.as_deref() != Some(current.as_str()) {
+        report.kept_edited.push(format!(
+            "{name}: {} was edited after setup rendered it; left as it is (delete it to \
+             relink the shared manifest, or delete {RENDER_MARKER} to keep it as this \
+             scope's own)",
+            manifest.display()
+        ));
+        return Ok(());
+    }
+    replace_symlink(&manifest, &source.join("SKILL.md"))?;
+    fs::remove_file(&marker)?;
+    report.relinked += 1;
+    Ok(())
 }
 
 /// Same layout as `install_skill_layer.py`: real directories, absolute file
@@ -685,7 +737,6 @@ fn add_missing(
         }
         if matches!(name_str, ".DS_Store" | ".env")
             || (relative == Path::new("bin") && handled.contains(name_str))
-            || is_render_template_file(source_root, relative, name_str)
             || fs::metadata(&path).is_err()
         {
             continue;
@@ -727,9 +778,7 @@ fn mirror_tree(source: &Path, dest: &Path, top: bool) -> io::Result<()> {
         if file_type.is_symlink() && fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false) {
             continue;
         }
-        if name_str == ".DS_Store"
-            || (top && is_render_template_file(source, Path::new(""), name_str))
-        {
+        if name_str == ".DS_Store" {
             continue;
         }
         std::os::unix::fs::symlink(&path, dest.join(&name))?;
@@ -1053,18 +1102,13 @@ mod tests {
         );
     }
 
-    /// A render-declared skill: placeholder template, render spec, a script.
-    fn add_rendered_skill(f: &Fixture) -> PathBuf {
+    /// A skill whose shared manifest names a scope value as `${NAME}`.
+    fn add_scope_env_skill(f: &Fixture) -> PathBuf {
         let skill = f.hub.join("metabase-mcp");
         fs::create_dir_all(skill.join("config")).unwrap();
         fs::write(
             skill.join("SKILL.md"),
-            "---\nname: metabase-mcp\nendpoint: https://metabase.invalid/api/metabase-mcp\n---\n",
-        )
-        .unwrap();
-        fs::write(
-            skill.join(RENDER_SPEC),
-            "schema_version: magician.skill-render.v1\n",
+            "---\nname: metabase-mcp\nendpoint: ${METABASE_BASE_URL}/api/metabase-mcp\n---\n",
         )
         .unwrap();
         fs::write(skill.join("config/.env.example"), "METABASE_BASE_URL=\n").unwrap();
@@ -1072,56 +1116,105 @@ mod tests {
         skill
     }
 
-    /// The placeholder manifest never reaches a scope: setup renders it.
-    #[test]
-    fn a_render_declared_skill_installs_without_its_template_manifest() {
-        let f = fixture();
-        add_rendered_skill(&f);
-        let report = reconcile(&f);
-        assert!(report.errors.is_empty(), "{report:?}");
-        let scoped = f.skills.join("metabase-mcp");
-        assert!(
-            scoped.join("notes.md").exists(),
-            "other files are installed"
-        );
-        assert!(scoped.join("config").exists());
-        assert!(fs::symlink_metadata(scoped.join("SKILL.md")).is_err());
-        assert!(fs::symlink_metadata(scoped.join(RENDER_SPEC)).is_err());
+    /// What the retired renderer left in a scope: a real `SKILL.md` and its
+    /// provenance marker recording that file's digest.
+    fn write_rendered(scoped: &Path, manifest: &str) {
+        use sha2::{Digest, Sha256};
+        // A real file, as setup wrote it: never write through the link.
+        let _ = fs::remove_file(scoped.join("SKILL.md"));
+        fs::write(scoped.join("SKILL.md"), manifest).unwrap();
+        let marker = serde_json::json!({
+            "schema_version": RENDER_MARKER_SCHEMA,
+            "skill": "metabase-mcp",
+            "manifest_sha256": hex::encode(Sha256::digest(manifest.as_bytes())),
+        });
+        fs::write(scoped.join(RENDER_MARKER), marker.to_string()).unwrap();
     }
 
-    /// A rendered manifest is setup-managed: topped up, never overwritten,
-    /// unlike a manifest the scope owns outright.
+    fn is_link_to(path: &Path, target: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+            && fs::read_link(path).ok().as_deref() == Some(target)
+    }
+
+    /// The shared manifest is linked like any other file: every scope reads
+    /// the same `SKILL.md` and resolves its own value at load.
     #[test]
-    fn a_rendered_manifest_is_topped_up_but_left_as_written() {
+    fn a_scope_env_skill_installs_as_links() {
         let f = fixture();
-        let skill = add_rendered_skill(&f);
-        reconcile(&f);
-        let scoped = f.skills.join("metabase-mcp");
-        let rendered =
-            "---\nname: metabase-mcp\nendpoint: https://mb.example.com/api/metabase-mcp\n---\n";
-        fs::write(scoped.join("SKILL.md"), rendered).unwrap();
-        fs::write(scoped.join(RENDER_MARKER), "{}").unwrap();
-        fs::write(skill.join("added_later.md"), "new").unwrap();
+        let skill = add_scope_env_skill(&f);
         let report = reconcile(&f);
         assert!(report.errors.is_empty(), "{report:?}");
-        assert!(
-            scoped.join("added_later.md").exists(),
-            "a marked copy is still topped up"
+        let scoped = f.skills.join("metabase-mcp");
+        assert!(is_link_to(&scoped.join("SKILL.md"), &skill.join("SKILL.md")));
+        assert!(scoped.join("notes.md").exists());
+        assert!(scoped.join("config").exists());
+    }
+
+    /// The migration: a rendered copy setup wrote becomes the link again,
+    /// its marker goes, and the scope's env (its only input) stays.
+    #[test]
+    fn a_rendered_manifest_is_replaced_by_the_shared_link() {
+        let f = fixture();
+        let skill = add_scope_env_skill(&f);
+        reconcile(&f);
+        let scoped = f.skills.join("metabase-mcp");
+        write_rendered(
+            &scoped,
+            "---\nname: metabase-mcp\nendpoint: https://mb.example.com/api/metabase-mcp\n---\n",
         );
+        fs::write(scoped.join("config/.env"), "METABASE_BASE_URL=https://mb.example.com\n")
+            .unwrap();
+
+        let report = reconcile(&f);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.relinked, 1, "{report:?}");
+        assert!(is_link_to(&scoped.join("SKILL.md"), &skill.join("SKILL.md")));
+        assert!(fs::symlink_metadata(scoped.join(RENDER_MARKER)).is_err());
         assert_eq!(
-            fs::read_to_string(scoped.join("SKILL.md")).unwrap(),
-            rendered
+            fs::read_to_string(scoped.join("config/.env")).unwrap(),
+            "METABASE_BASE_URL=https://mb.example.com\n"
         );
+        // Idempotent.
+        let again = reconcile(&f);
+        assert!(!again.changed(), "{again:?}");
+
+        // A scope the renderer had withdrawn (no manifest) gets the link too.
+        fs::remove_file(scoped.join("SKILL.md")).unwrap();
+        reconcile(&f);
+        assert!(is_link_to(&scoped.join("SKILL.md"), &skill.join("SKILL.md")));
+    }
+
+    /// Never clobbered: a manifest the scope owns (no marker), and a marked
+    /// copy someone edited after setup wrote it.
+    #[test]
+    fn an_owned_or_edited_manifest_is_left_alone() {
+        let f = fixture();
+        add_scope_env_skill(&f);
+        reconcile(&f);
+        let scoped = f.skills.join("metabase-mcp");
+        let owned = "---\nname: metabase-mcp\nendpoint: https://own.example/api/mcp\n---\n";
+        fs::remove_file(scoped.join("SKILL.md")).unwrap();
+        fs::write(scoped.join("SKILL.md"), owned).unwrap();
+        let report = reconcile(&f);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(fs::read_to_string(scoped.join("SKILL.md")).unwrap(), owned);
         assert!(!fs::symlink_metadata(scoped.join("SKILL.md"))
             .unwrap()
             .file_type()
             .is_symlink());
 
-        // Without the marker the same file is scope-owned and not topped up.
-        fs::remove_file(scoped.join(RENDER_MARKER)).unwrap();
-        fs::write(skill.join("added_even_later.md"), "new").unwrap();
-        reconcile(&f);
-        assert!(!scoped.join("added_even_later.md").exists());
+        write_rendered(
+            &scoped,
+            "---\nname: metabase-mcp\nendpoint: https://mb.example.com/api/metabase-mcp\n---\n",
+        );
+        let edited = "---\nname: metabase-mcp\nendpoint: https://edited.example/api/metabase-mcp\n---\n";
+        fs::write(scoped.join("SKILL.md"), edited).unwrap();
+        let report = reconcile(&f);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.kept_edited.len(), 1, "{report:?}");
+        assert!(report.kept_edited[0].contains("edited"), "{report:?}");
+        assert_eq!(fs::read_to_string(scoped.join("SKILL.md")).unwrap(), edited);
+        assert!(scoped.join(RENDER_MARKER).is_file());
     }
 
     /// A workspace created after setup gets a complete layer on first touch,

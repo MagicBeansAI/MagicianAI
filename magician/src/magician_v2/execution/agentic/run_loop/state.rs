@@ -441,11 +441,12 @@ pub struct TerminalSettlementDescriptor {
     pub terminal_kind: String,
     pub terminal_seq: u64,
     pub outcome: TerminalOutcomeProjection,
-    /// HMAC-bound live delegated-child policy bit: a WaitingForUser the
-    /// delegated child may suspend on — a staged DiffApproval id or any
-    /// owner-answerable input (`delegated_waiting_for_user_should_suspend`
-    /// is the one predicate every stamping and reading site uses). The field
-    /// keeps its original name for receipt compatibility. It remains
+    /// HMAC-bound live delegated-child policy bit: a pause the delegated
+    /// child may suspend on — a WaitingForUser with a staged DiffApproval id
+    /// or any owner-answerable input (`delegated_waiting_for_user_should_suspend`
+    /// is the one predicate every stamping and reading site uses), or any
+    /// WaitingForConfirmation, an approval gate only the owner can answer.
+    /// The field keeps its original name for receipt compatibility. It remains
     /// available after the exact pause body is legitimately consumed into
     /// its successor segment.
     #[serde(default, skip_serializing_if = "pause_bool_is_false")]
@@ -833,6 +834,21 @@ pub struct LoopState {
     /// re-offered; after it they are retired without being prompted again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steer_consume_receipt: Option<super::steer_inbox::SteerConsumeReceipt>,
+
+    /// This segment's run-ending boundary retired only an inline nested
+    /// segment — a sub-goal or in-context delegation sharing its parent's
+    /// runtime execution — whose final outcome went back to the parent loop as
+    /// an observation (`WorkerHost::retires_into_parent_segment`).
+    ///
+    /// Such an ending carries no settlement receipt, and this marker is what
+    /// keeps the one receipt-less settlement path (`CannotProceed`, the
+    /// reconciler's retirement kind) from settling the shared runtime
+    /// execution with the child's ending. Its events are still projected.
+    /// Written by every `commit_boundary`, true only on such an ending; absent
+    /// on the wire (and in older records) means false, which is the
+    /// behaviour every pre-existing segment had.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retired_into_parent_segment: bool,
 }
 
 impl LoopState {
@@ -856,6 +872,7 @@ impl LoopState {
             cold_reobserve: false,
             resolve_checkpoint: None,
             steer_consume_receipt: None,
+            retired_into_parent_segment: false,
         }
     }
 
@@ -1997,11 +2014,54 @@ pub enum WaitReason {
         /// Absence here **cannot widen anything**, which is why a default is
         /// safe on this field where it is refused on [`LoopState::placement`]
         /// and [`LoopState::journal_seq`]: the value is read by a diagnosis
-        /// that fails towards *suspected* rather than towards *proved*, and by
-        /// nothing that schedules, claims or admits.
+        /// that fails towards *suspected* rather than towards *proved*.
+        ///
+        /// Since 2026-11-01 [`ResumeAddress::run_resumes_as`] also gates
+        /// scheduling, and in the fail-safe direction only: a park that names
+        /// its successor ([`parked_children_segment_from_wait`]) is never
+        /// claimed by generic recovery or resumed by the readiness owner without
+        /// its delegation checkpoint — both wait instead. An unstated address
+        /// keeps the legacy path, so absence still widens nothing.
         #[serde(default)]
         resume: ResumeAddress,
     },
+}
+
+/// Refusal reason for a [`ParkedChildrenSegment`] that has no delegation
+/// checkpoint: generic recovery would claim the parked segment rather than its
+/// successor, so it defers instead. Detail:
+/// `{prefix}:{base_execution_id}:{parked_segment}`.
+pub(crate) const STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING: &str =
+    "stateless_parked_children_checkpoint_missing";
+
+/// A loop segment parked on delegated children that names the successor its
+/// own work resumes as — the shape only an exact delegation handoff may move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParkedChildrenSegment {
+    pub(crate) segment: String,
+    pub(crate) resumes_as: String,
+    pub(crate) child_execution_ids: Vec<String>,
+}
+
+/// Read a committed wait as a [`ParkedChildrenSegment`]. A park that does not
+/// state its successor (`run_resumes_as: None`, written before the field
+/// existed) is not one: that legacy shape keeps its old recovery path.
+pub(crate) fn parked_children_segment_from_wait(
+    segment: &str,
+    wait: Option<&WaitReason>,
+) -> Option<ParkedChildrenSegment> {
+    let WaitReason::Children {
+        child_execution_ids,
+        resume,
+    } = wait?
+    else {
+        return None;
+    };
+    Some(ParkedChildrenSegment {
+        segment: segment.to_owned(),
+        resumes_as: resume.run_resumes_as.clone()?,
+        child_execution_ids: child_execution_ids.clone(),
+    })
 }
 
 /// Where a park's work is addressed once the segment that committed it ended.
@@ -2302,6 +2362,46 @@ pub(crate) fn exited_pid_for_tests() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a park on children that names its successor is one the readiness
+    /// owner must hand off. A job park, no park, and a pre-address children
+    /// park (`run_resumes_as: None`) keep their existing paths.
+    #[test]
+    fn a_parked_children_segment_is_one_that_names_its_successor() {
+        let parked = WaitReason::Children {
+            child_execution_ids: vec!["exec-deleg-child".to_string()],
+            resume: ResumeAddress {
+                run_resumes_as: Some("exec-parent-r138".to_string()),
+                ..ResumeAddress::default()
+            },
+        };
+        assert_eq!(
+            parked_children_segment_from_wait("exec-parent-r134", Some(&parked)),
+            Some(ParkedChildrenSegment {
+                segment: "exec-parent-r134".to_string(),
+                resumes_as: "exec-parent-r138".to_string(),
+                child_execution_ids: vec!["exec-deleg-child".to_string()],
+            })
+        );
+
+        let legacy = WaitReason::Children {
+            child_execution_ids: vec!["exec-deleg-child".to_string()],
+            resume: ResumeAddress::default(),
+        };
+        assert_eq!(
+            parked_children_segment_from_wait("exec-parent-r134", Some(&legacy)),
+            None,
+            "a park that states no successor keeps the legacy recovery path"
+        );
+        let job = WaitReason::Job {
+            job_id: "job-1".to_string(),
+        };
+        assert_eq!(
+            parked_children_segment_from_wait("exec-parent-r134", Some(&job)),
+            None
+        );
+        assert_eq!(parked_children_segment_from_wait("exec-parent-r134", None), None);
+    }
 
     #[test]
     fn resolve_checkpoints_refuse_unknown_versions_and_oversized_payloads() {

@@ -1,6 +1,6 @@
 ---
 name: video-generation-via-minimax
-version: 0.2.2
+version: 0.2.3
 description: Generate short video clips via MiniMax `Hailuo` family (T2V, I2V, SEF, S2V). Useful as a
   sibling/fallback to `video-generation-via-veo` — different lineage, different motion style, different
   content-policy calibration. Supports image-to-video animation, start-end-frame interpolation, and subject-reference
@@ -37,6 +37,7 @@ metadata:
       # without it loses these calls with the CLI's own message rather than
       # losing the skill.
       - node
+      - python3
     install_hint:
       docs: ships with the runtime — set the MiniMax API secret in the vault before activating. The `mmx`
         CLI is vendored via skillshub's npm workspaces and runs under the Node the runtime
@@ -55,6 +56,7 @@ metadata:
         - minimax-video
         - mmx
         - node
+        - python3
         entrypoint: minimax-video
       runtime:
         protocol: cli

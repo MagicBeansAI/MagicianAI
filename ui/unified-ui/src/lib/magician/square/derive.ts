@@ -121,13 +121,18 @@ export function isCeoOf(a: AgentSummary): boolean {
 }
 
 /** Mirror of the backend's `slugify_name` (alnum kept, everything else '-',
- * runs collapsed) — goal ids are `harness:{agent}:{slug(focus area name)}`. */
+ * runs collapsed, cut to 64 at a hyphen) — goal ids are
+ * `harness:{agent}:{slug(focus area name)}`. */
 function goalSlug(name: string): string {
 	const collapsed = name
 		.toLowerCase()
 		.replace(/[^a-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '');
-	return collapsed || 'unnamed';
+	if (!collapsed) return 'unnamed';
+	if (collapsed.length <= 64) return collapsed;
+	const head = collapsed.slice(0, 64);
+	const cut = head.lastIndexOf('-');
+	return cut >= 0 ? head.slice(0, cut) : head;
 }
 
 /** The agent's board-review goal id, when it has a review-flavoured focus
@@ -137,7 +142,13 @@ export function boardReviewGoalIdOf(a: AgentSummary): string | null {
 	const areas = a.autonomous_config?.focus_areas ?? [];
 	const fa = areas.find((f) => /board|review/i.test(f.name));
 	if (!fa) return null;
-	return `harness:${a.agent_id}:${goalSlug(fa.name)}`;
+	return focusAreaGoalId(a.agent_id, fa.name);
+}
+
+/** The harness goal id of one of an agent's focus areas (the backend's
+ * `focus_area_goal_id`). */
+export function focusAreaGoalId(agentId: string, focusAreaName: string): string {
+	return `harness:${agentId}:${goalSlug(focusAreaName)}`;
 }
 
 /** Party-frame order = THE LEADERBOARD: 7d activity (calls) descending,

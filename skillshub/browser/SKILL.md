@@ -1,6 +1,6 @@
 ---
 name: browser
-version: 0.5.4
+version: 0.5.5
 description: Drive a browser to accomplish the current task using the pinned agent-browser CLI. The agentic
   loop invokes exact CLI argv commands (open, read, snapshot, click, fill, drag, mouse, eval, screenshot,
   batch), observes the page via read/snapshot/get/eval, and verifies progress from page-owned evidence.
@@ -7648,6 +7648,15 @@ action differs, or the tab leaves the approved domain.
 
 Example (mode chosen on the session-creating call):
 `open({"args":["https://example.com"],"connection_mode":"headed"})`.
+
+A `cdp` session opens its own tab group in the owner's Chrome, starting with
+one empty `about:blank` tab, on its first browser call. Make that first call
+`open <url>` for the page you need: it navigates the empty tab. Do not start
+with `tab list`, which only creates that empty tab. The session sees only its
+own tabs, never the owner's other tabs. It shares their profile, so the owner's
+sign-ins and cookies apply: to continue in a site the owner is signed in to
+(a saved draft, an inbox), `open` the site's URL. An `about:blank` tab is the
+session's starting tab, not a sign that the page is unavailable.
 
 Example (fast public DOM-first session):
 `open({"args":["https://example.com"],"connection_mode":"headless","engine":"lightpanda"})`.

@@ -36,7 +36,12 @@ pub const DEFAULT_LIVE_PTT_SHORTCUT: &str = "";
 // Default is the Left-Control + Left-Option chord (not a bare modifier), which
 // avoids shadowing ⌥-key typing.
 pub const DEFAULT_VOICE_NOTE_GESTURE: &str = "Hold Left Control+Left Option";
-pub const DEFAULT_VOICE_THREAD_ID: &str = "general";
+/// Desktop voice has a thread of its own. It used to default to the owner's
+/// #general, where a wake-word conversation joined the chat open there.
+pub const DEFAULT_VOICE_THREAD_ID: &str = "desktop-general";
+/// The readable name the desktop thread is created with.
+pub const DEFAULT_VOICE_THREAD_NAME: &str = "Desktop";
+const LEGACY_DEFAULT_VOICE_THREAD_ID: &str = "general";
 pub const DEFAULT_LIVE_PTT_REALTIME_PROFILE: &str = "voice_realtime_openai_backend";
 pub const DEFAULT_ORB_SHORTCUT: &str = "Alt+Space";
 pub const DEFAULT_ORB_LEASH_MINUTES: u64 = 120;
@@ -103,6 +108,11 @@ pub struct VoiceConfig {
     /// Default chat thread used when no active desktop chat thread is known.
     #[serde(default = "default_voice_thread_id")]
     pub default_thread_id: String,
+    /// Whether a saved legacy `general` default has moved to the desktop
+    /// thread. Missing in older configs, so the move happens once and a
+    /// `general` chosen afterwards in Settings stays.
+    #[serde(default)]
+    pub default_thread_migrated: bool,
     /// Realtime voice profile used by host-native live PTT. Defaults
     /// to a backend-proxied profile so native PTT never accidentally
     /// tries to use the browser-only OpenAI WebRTC path.
@@ -559,11 +569,15 @@ pub fn normalize_config(config: &mut MagicianDesktopConfig) {
         .filter(|app| !app.is_empty())
         .map(ToOwned::to_owned)
         .collect();
-    if config.voice.default_thread_id.trim().is_empty() {
-        config.voice.default_thread_id = default_voice_thread_id();
+    let thread_id = config.voice.default_thread_id.trim();
+    let legacy_default =
+        !config.voice.default_thread_migrated && thread_id == LEGACY_DEFAULT_VOICE_THREAD_ID;
+    config.voice.default_thread_id = if thread_id.is_empty() || legacy_default {
+        default_voice_thread_id()
     } else {
-        config.voice.default_thread_id = config.voice.default_thread_id.trim().to_string();
-    }
+        thread_id.to_string()
+    };
+    config.voice.default_thread_migrated = true;
     if config.voice.live_ptt_realtime_profile.trim().is_empty() {
         config.voice.live_ptt_realtime_profile = default_live_ptt_realtime_profile();
     } else {
@@ -617,6 +631,7 @@ impl Default for VoiceConfig {
             live_ptt_shortcut: default_live_ptt_shortcut(),
             live_ptt_realtime_profile: default_live_ptt_realtime_profile(),
             default_thread_id: default_voice_thread_id(),
+            default_thread_migrated: true,
             retain_voice_note_audio: false,
             output_muted: false,
             voice_mode: default_voice_mode(),
@@ -1150,6 +1165,35 @@ mod orb_config_tests {
 #[cfg(test)]
 mod engine_base_url_tests {
     use super::*;
+
+    #[test]
+    fn desktop_voice_moves_off_general_once_and_keeps_a_later_choice() {
+        let mut fresh = MagicianDesktopConfig::default();
+        normalize_config(&mut fresh);
+        assert_eq!(fresh.voice.default_thread_id, "desktop-general");
+
+        // A config saved before the move carries the old default and no marker.
+        let mut saved: VoiceConfig =
+            serde_json::from_value(serde_json::json!({ "default_thread_id": "general" }))
+                .expect("legacy voice config");
+        assert!(!saved.default_thread_migrated);
+        let mut config = MagicianDesktopConfig::default();
+        std::mem::swap(&mut config.voice, &mut saved);
+        normalize_config(&mut config);
+        assert_eq!(config.voice.default_thread_id, "desktop-general");
+        assert!(config.voice.default_thread_migrated);
+
+        // `general` chosen afterwards in Settings is the owner's choice.
+        config.voice.default_thread_id = "general".to_string();
+        normalize_config(&mut config);
+        assert_eq!(config.voice.default_thread_id, "general");
+
+        let mut picked = MagicianDesktopConfig::default();
+        picked.voice.default_thread_migrated = false;
+        picked.voice.default_thread_id = " travel ".to_string();
+        normalize_config(&mut picked);
+        assert_eq!(picked.voice.default_thread_id, "travel");
+    }
 
     #[test]
     fn default_engine_base_url_is_loopback_magician_port() {

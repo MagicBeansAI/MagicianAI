@@ -1046,7 +1046,7 @@ mod tests {
                 .iter()
                 .map(|prerequisite| prerequisite.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["homebrew", "python3", "node", "uv"]
+            vec!["homebrew", "python3", "node", "uv", "ripgrep"]
         );
         let linux = host_prerequisites("linux_container").expect("linux prerequisites");
         assert_eq!(linux[0].id, "linux-python3");

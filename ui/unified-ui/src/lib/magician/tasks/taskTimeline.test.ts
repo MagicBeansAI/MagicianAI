@@ -492,6 +492,107 @@ describe('deriveTimeline', () => {
 			});
 		});
 
+		it('says why a paired tool call failed, from the server\'s trimmed summary', () => {
+			const start = activity({
+				id: 'tool-start',
+				createdAt: TOOL_AT,
+				status: 'running',
+				metadata: { event_type: 'tool.started', call_id: 'act-2', target: 'bash', execution_id: EXECUTION_ID }
+			});
+			const failed = activity({
+				id: 'tool-failed',
+				createdAt: TOOL_AT + 120_000,
+				status: 'failed',
+				summary: 'Command timed out after 120 seconds',
+				metadata: {
+					event_type: 'tool.failed',
+					call_id: 'act-2',
+					error: 'step execution failed: Command timed out after 120 seconds',
+					execution_id: EXECUTION_ID
+				}
+			});
+			const entries = timelineOf(state({ run: { activity_log: [start, failed] } }));
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({
+				status: 'failed',
+				title: 'bash failed',
+				body: 'Command timed out after 120 seconds'
+			});
+		});
+
+		it('falls back to the metadata error, minus the executor framing, when a failed tool row has no summary', () => {
+			const failed = activity({
+				id: 'tool-failed-legacy',
+				createdAt: TOOL_AT,
+				status: 'failed',
+				metadata: {
+					event_type: 'tool.failed',
+					target: 'gmail',
+					error: '  Step execution failed:  compiled-pack dispatch failed:\tpack is not installed '
+				}
+			});
+			const entries = timelineOf(state({ run: { activity_log: [failed] } }));
+			expect(byId(entries, 'tool-failed-legacy')).toMatchObject({
+				status: 'failed',
+				body: 'pack is not installed'
+			});
+		});
+
+		it('strips the framing however it nests, in the order compiled dispatch produces it', () => {
+			const failed = activity({
+				id: 'tool-failed-nested',
+				createdAt: TOOL_AT,
+				status: 'failed',
+				metadata: {
+					event_type: 'tool.failed',
+					target: 'bash',
+					error: 'compiled-pack dispatch failed: Step execution failed:  Command timed out after 120 seconds'
+				}
+			});
+			expect(byId(timelineOf(state({ run: { activity_log: [failed] } })), 'tool-failed-nested').body).toBe(
+				'Command timed out after 120 seconds'
+			);
+		});
+
+		it('shows no reason on a settled failed call that gave none, rather than the start\'s text', () => {
+			const start = activity({
+				id: 'tool-start',
+				createdAt: TOOL_AT,
+				status: 'running',
+				summary: 'Searching the memory index',
+				metadata: { event_type: 'tool.started', call_id: 'act-3', target: 'memory_search', execution_id: EXECUTION_ID }
+			});
+			const failed = activity({
+				id: 'tool-failed',
+				createdAt: TOOL_AT + 300,
+				status: 'failed',
+				metadata: { event_type: 'tool.failed', call_id: 'act-3', execution_id: EXECUTION_ID }
+			});
+			const entries = timelineOf(state({ run: { activity_log: [start, failed] } }));
+			expect(entries).toHaveLength(1);
+			expect(entries[0]).toMatchObject({ status: 'failed', title: 'memory_search failed', body: null });
+		});
+
+		it('gives a failed tool row no body when its error is only the executor framing', () => {
+			const failed = activity({
+				id: 'tool-failed-empty',
+				createdAt: TOOL_AT,
+				status: 'failed',
+				metadata: { event_type: 'tool.failed', target: 'bash', error: 'step execution failed: ' }
+			});
+			expect(byId(timelineOf(state({ run: { activity_log: [failed] } })), 'tool-failed-empty').body).toBeNull();
+		});
+
+		it('never borrows a metadata error as the body of a row that did not fail', () => {
+			const done = activity({
+				id: 'tool-ok',
+				createdAt: TOOL_AT,
+				status: 'done',
+				metadata: { event_type: 'tool.succeeded', target: 'bash', error: 'stale warning' }
+			});
+			expect(byId(timelineOf(state({ run: { activity_log: [done] } })), 'tool-ok').body).toBeNull();
+		});
+
 		it('falls back to the sequential fold when the request carries no id', () => {
 			// An older server: no `llm_call_id` on the request, one on the settle.
 			const entries = timelineOf(

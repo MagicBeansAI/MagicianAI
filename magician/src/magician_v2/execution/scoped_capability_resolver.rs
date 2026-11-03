@@ -817,7 +817,10 @@ impl ScopedCapabilityResolver {
     /// cache status with the skills and reasons, and the next revision that
     /// loads swaps in. Removing a skill is a change, not a failure, and a
     /// newly installed skill that is broken never served anything, so
-    /// neither holds the catalog back.
+    /// neither holds the catalog back. Nor does a skill the scope's own env
+    /// withdrew ([`SkillLoadFailure::withdrawn`]): serving its previous
+    /// endpoint after the operator blanked or replaced the value would keep
+    /// sending the scope's calls and logins to a server it no longer names.
     fn validate_cached_revision(
         &self,
         key: &ScopedCapabilityCacheKey,
@@ -1538,6 +1541,10 @@ fn newly_failed_served_skills(
     candidate
         .load_failures
         .iter()
+        // The scope's own configuration withdrew it (its `${NAME}` endpoint
+        // was blanked or made invalid): a change to apply, not a breakage to
+        // ride out on the old endpoint.
+        .filter(|failure| !failure.withdrawn)
         .filter(|failure| served.loaded_skills.contains(&failure.skill))
         .filter(|failure| {
             !served
@@ -2026,6 +2033,101 @@ mod tests {
         assert!(!after.loaded_skills.contains("gadget"));
         assert_eq!(after.load_failures.len(), 1);
         assert_eq!(after.load_failures[0].skill, "gadget");
+    }
+
+    /// The governed MCP endpoint a scope serves, if it serves the skill.
+    fn served_endpoint(snapshot: &ScopedCapabilitySnapshot, skill: &str) -> Option<String> {
+        use crate::magician_v2::execution::capability::ImplementationType;
+        use tool_runtime_core::manifest::{McpTransport, RuntimeProtocol};
+        let pack = snapshot.registry.get_pack_definition(skill)?;
+        let ImplementationType::Primitive {
+            runtime_package: Some(runtime),
+            ..
+        } = &pack.implementation
+        else {
+            return None;
+        };
+        match &runtime.package.contract.runtime {
+            RuntimeProtocol::Mcp {
+                transport: McpTransport::StreamableHttp { endpoint },
+                ..
+            } => Some(endpoint.clone()),
+            _ => None,
+        }
+    }
+
+    /// A `${NAME}` endpoint follows the scope's env: a changed value moves
+    /// the revision and swaps in the new endpoint, and a blanked one
+    /// withdraws the skill instead of holding the old endpoint in service.
+    #[test]
+    fn a_scope_env_endpoint_change_or_withdrawal_swaps_the_catalog() {
+        let temp = tempdir().expect("tempdir");
+        let resolver = resolver_for(temp.path());
+        let skills = resolver
+            .workspace_manager
+            .workspace_layout()
+            .scope_skills_root("owner", "default");
+        let skill = skills.join("metabase-mcp");
+        std::fs::create_dir_all(skill.join("config")).expect("skill");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            include_str!("../../../../skillshub/metabase-mcp/SKILL.md"),
+        )
+        .expect("SKILL.md");
+        let env = skill.join("config/.env");
+        std::fs::write(&env, "METABASE_BASE_URL=https://one.example\n").expect("env");
+        let key = ScopedCapabilityCacheKey::new("owner", "default");
+        let entry = |resolver: &ScopedCapabilityResolver| {
+            resolver
+                .cache
+                .read()
+                .expect("cache lock")
+                .get(&key)
+                .cloned()
+                .expect("entry")
+        };
+
+        let served = resolver
+            .capability_snapshot_for_scope("owner", "default")
+            .expect("snapshot with Metabase");
+        assert_eq!(
+            served_endpoint(&served, "metabase-mcp").as_deref(),
+            Some("https://one.example/api/metabase-mcp")
+        );
+        let revision = resolver.scope_revision("owner", "default").expect("revision");
+
+        std::fs::write(&env, "METABASE_BASE_URL=https://two.example\n").expect("env");
+        assert_ne!(
+            resolver.scope_revision("owner", "default").expect("revision"),
+            revision,
+            "the referenced value is part of the revision"
+        );
+        resolver.validate_cached_revision(&key, &entry(&resolver));
+        let moved = resolver
+            .capability_snapshot_for_scope("owner", "default")
+            .expect("swapped snapshot");
+        assert_eq!(
+            served_endpoint(&moved, "metabase-mcp").as_deref(),
+            Some("https://two.example/api/metabase-mcp")
+        );
+
+        std::fs::write(&env, "METABASE_BASE_URL=\n").expect("env");
+        resolver.validate_cached_revision(&key, &entry(&resolver));
+        let status = resolver.cache_status();
+        assert_eq!(status.swaps, 2);
+        assert_eq!(status.held_back_revisions, 0);
+        let withdrawn = resolver
+            .capability_snapshot_for_scope("owner", "default")
+            .expect("snapshot without Metabase");
+        assert_eq!(served_endpoint(&withdrawn, "metabase-mcp"), None);
+        assert!(!withdrawn.loaded_skills.contains("metabase-mcp"));
+        let failure = withdrawn
+            .load_failures
+            .iter()
+            .find(|failure| failure.skill == "metabase-mcp")
+            .expect("withdrawal reported");
+        assert!(failure.withdrawn);
+        assert!(failure.reason.contains("METABASE_BASE_URL"), "{}", failure.reason);
     }
 
     #[test]

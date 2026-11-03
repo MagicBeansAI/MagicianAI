@@ -592,7 +592,10 @@ struct ComposerView: View {
                     recomputeMentions()
                 }
                 .modifier(ComposerInputStyle())
-            if canSend, mode != .plan { sendOptionsMenu }
+            // A command draft has one way out, the picker: none of these may send it.
+            if canSend, mode != .plan, !(supportsChatCommands && ComposerCommands.holdsSend(text, state: commandState)) {
+                sendOptionsMenu
+            }
             trailingComposerButton
         }
     }
@@ -1115,7 +1118,8 @@ extension ComposerView {
     /// picker. Commands never reach the model.
     func send() {
         guard canSend && canSubmit else { return }
-        if supportsChatCommands, let id = ComposerCommands.exactCommand(text) {
+        if supportsChatCommands,
+           let id = ComposerCommands.exactCommand(text) ?? ComposerCommands.partialCommand(text, state: commandState) {
             openCommand(id)
             return
         }

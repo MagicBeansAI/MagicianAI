@@ -1,6 +1,6 @@
 ---
 name: "deep-research-with-claude"
-version: 0.2.4
+version: 0.2.5
 description: "Long-form research via Claude with web search, web fetch, and extended thinking. Pick when the user wants a deep investigation but you prefer Claude's reasoning style — narrative answers with cited evidence and inline cross-referencing. Cheaper and faster than `deep-research-with-openai` but typically less exhaustive on very large topics. Each run gets at most 35 minutes (`timeout_secs` up to 2100); split bigger research into several narrower runs. A run stopped by its limit or an error returns what it found so far, marked `incomplete`."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.anthropic.com
     requires:
-      bins: ["claude-deep-research"]
+      bins: ["claude-deep-research", "python3"]
       env: ["ANTHROPIC_API_KEY"]
     install_hint:
       docs: "requires env: ANTHROPIC_API_KEY — set in vault before activating"
@@ -35,7 +35,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [claude-deep-research]
+        bins: [claude-deep-research, python3]
+        entrypoint: claude-deep-research
       runtime:
         protocol: cli
         command_prefix: []

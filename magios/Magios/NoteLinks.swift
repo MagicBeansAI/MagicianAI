@@ -153,8 +153,13 @@ enum NoteLinkRouter {
         OpenURLAction { url in open(url) ? .handled : .systemAction }
     }
 
+    /// The Notes library at its root (a `/notes` link naming no note).
+    static func openLibrary() {
+        Task { @MainActor in presentNotes(path: nil) }
+    }
+
     @MainActor
-    private static func presentNotes(path: String) {
+    private static func presentNotes(path: String?) {
         guard let presenter = topViewController() else { return }
         let theme = ThemeManager.shared
         weak var host: UIViewController?
@@ -192,5 +197,117 @@ enum NoteLinkRouter {
         var top = window?.rootViewController
         while let next = top?.presentedViewController, !next.isBeingDismissed { top = next }
         return top
+    }
+}
+
+/// The one opener for every link tapped in chat — Markdown replies, structured
+/// blocks and actions, and activity details. `classifyActivityLink` (the Swift
+/// twin of web `classifyRef`) decides what a link is; this decides what the app
+/// does with it:
+///
+/// - note links → the native Notes screen (`NoteLinkRouter`);
+/// - task outputs and `/api/…` resources → the authenticated in-app viewer
+///   (`ArtifactViewer`), since Safari cannot carry the device bearer;
+/// - other host files (absolute paths, `file://`, workspace-relative) →
+///   open-file on the paired machine through the chat session;
+/// - chat links (`/chat?session=…`, `/t/<thread>[/chat][?session=…]`) → that
+///   conversation, else the thread's latest; tasks, Work, Attention, Today,
+///   Settings, Observe, Notes and VibeDev routes → in-app navigation; any
+///   other app route → the web page in the authenticated viewer;
+/// - http(s), mailto, tel, `magican://` → the system.
+///
+/// A tap it cannot open is reported through `fail`, never dropped.
+struct ChatLinkRouter {
+    static let failureMessage = "Can't open link"
+
+    let sessionId: String?
+    /// Presents the authenticated in-app viewer.
+    let present: (ArtifactRef) -> Void
+    /// Shows a short failure message.
+    let fail: (String) -> Void
+    /// Opens a task in place (a pushed detail); nil uses the app-wide route.
+    var openTask: ((String) -> Void)? = nil
+    /// Opens a run in place; false falls back to the run's debug page.
+    var openExecution: ((String) -> Bool)? = nil
+
+    func open(_ url: URL) { open(url.absoluteString) }
+
+    func open(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fail(Self.failureMessage) }
+        if NoteLinkRouter.open(trimmed) { return }
+        switch classifyActivityLink(trimmed, origin: MagicianAccess.baseURL) {
+        case .external(let value):
+            guard let url = URL(string: value) else { return fail(Self.failureMessage) }
+            let fail = self.fail
+            Task { @MainActor in
+                UIApplication.shared.open(url, options: [:]) { opened in
+                    if !opened { fail(Self.failureMessage) }
+                }
+            }
+        case .task(let id):
+            guard let id, !id.isEmpty else {
+                AppActions.shared.requestWork(WorkNavigationTarget(kind: .all))
+                return
+            }
+            if let openTask { openTask(id) } else { AppActions.shared.requestTask(id) }
+        case .execution(let executionId):
+            if openExecution?(executionId) == true { return }
+            let encoded = executionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? executionId
+            present(.direct(url: "/debug?execution_id=\(encoded)", mime: "text/html", name: "Run"))
+        case .thread(let id):
+            AppActions.shared.requestThread(id)
+        case .attention(let id):
+            AppActions.shared.requestAttention(itemID: id)
+        case .today(let rawSection):
+            AppActions.shared.requestToday(section: rawSection.flatMap(TodaySection.init(rawValue:)))
+        case .settings:
+            AppActions.shared.requestSettings()
+        case .observe:
+            AppActions.shared.requestObserve()
+        case .taskOutput(let taskId, let relativePath):
+            present(.taskOutput(taskId: taskId, relativePath: relativePath, mime: nil))
+        case .artifact(let path):
+            present(.direct(url: path, mime: nil, name: nil))
+        case .file(let path):
+            openOnHost(path)
+        case .chat(let sessionId, let threadId):
+            AppActions.shared.requestThread(threadId, session: sessionId)
+        case .vibeDev:
+            AppActions.shared.requestVibeDev()
+        case .notes:
+            NoteLinkRouter.openLibrary()
+        case .webRoute(let route):
+            let present = self.present
+            let openRoute: (String) -> Void = { target in
+                if AppActions.shared.requestWorkRoute(target) { return }
+                present(.direct(url: target, mime: "text/html", name: MagicianAccess.productName))
+            }
+            // `/t/<key>/tasks…`: the key may be the thread's slug or an old
+            // one; Work filters by the canonical id.
+            if let key = chatThreadRouteKey(route) {
+                ThreadDirectory.shared.resolve(key) { id in openRoute(chatRoute(route, withThreadId: id)) }
+            } else {
+                openRoute(route)
+            }
+        case .unknown:
+            fail(Self.failureMessage)
+        }
+    }
+
+    /// Opens a file on the paired machine; the server checks it against the
+    /// chat session's scope.
+    private func openOnHost(_ path: String) {
+        guard let sessionId, !sessionId.isEmpty else {
+            return fail("\(Self.failureMessage): this file is not attached to a chat.")
+        }
+        let fail = self.fail
+        Task { @MainActor in
+            do {
+                try await ActivityPathClient.perform(sessionId: sessionId, absolutePath: path, action: .file)
+            } catch {
+                fail(Self.failureMessage)
+            }
+        }
     }
 }

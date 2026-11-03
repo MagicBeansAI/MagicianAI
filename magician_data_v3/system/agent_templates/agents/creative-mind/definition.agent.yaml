@@ -58,6 +58,8 @@ tools:
 # needed.
 - comic-strip
 - presentation-design-principles
+- impeccable
+- frontend-slides
 - delegate_to_agent
 - handover_to_agent
 # Publish finished design artifacts INTO a VibeDev project (when delegated by the CTO as the

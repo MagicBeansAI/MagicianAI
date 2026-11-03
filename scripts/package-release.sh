@@ -84,6 +84,40 @@ for binary in "${BINARIES[@]}"; do
   fi
 done
 
+# The ripgrep the `grep` and `glob` agent tools run (runtime-core
+# `resolve_ripgrep` looks for it beside magician.bin first). It is the copy the
+# `rg` skill pins, with its integrity, in skillshub/package-lock.json, so every
+# install searches with the same version and none depends on the host having
+# rg. When skillshub/node_modules lacks the target's copy (a clean CI checkout,
+# or a cross-target package: npm installs only the host's platform package),
+# fetch-pinned-ripgrep.sh downloads that exact tarball and checks its
+# integrity. MAGICIAN_PACKAGE_RG names another binary instead.
+case "$TARGET" in
+  aarch64-apple-darwin) RG_PLATFORM=darwin-arm64 ;;
+  x86_64-apple-darwin) RG_PLATFORM=darwin-x64 ;;
+  aarch64-*-linux-*) RG_PLATFORM=linux-arm64 ;;
+  x86_64-*-linux-*) RG_PLATFORM=linux-x64 ;;
+  x86_64-*-windows-*) RG_PLATFORM=win32-x64 ;;
+  *) RG_PLATFORM="" ;;
+esac
+RG_NAME=rg; RG_PACKAGED=rg.bin
+[[ "$WINDOWS_PACKAGE" -eq 0 ]] || { RG_NAME=rg.exe; RG_PACKAGED=rg.exe; }
+RG_SOURCE="${MAGICIAN_PACKAGE_RG:-$ROOT_DIR/skillshub/node_modules/@vscode/ripgrep-$RG_PLATFORM/bin/$RG_NAME}"
+if [[ -n "$RG_PLATFORM" || -n "${MAGICIAN_PACKAGE_RG:-}" ]] && [[ -f "$RG_SOURCE" ]]; then
+  cp "$RG_SOURCE" "$STAGE/$RG_PACKAGED"
+  chmod 755 "$STAGE/$RG_PACKAGED"
+elif [[ "$VERSION" == fixture ]]; then
+  note "fixture package: no pinned ripgrep for $TARGET, so none is staged"
+elif [[ -n "$RG_PLATFORM" && -z "${MAGICIAN_PACKAGE_RG:-}" ]] \
+    && bash "$SCRIPT_DIR/fetch-pinned-ripgrep.sh" "$RG_PLATFORM" "$STAGE/$RG_PACKAGED"; then
+  note "fetched the pinned ripgrep for $RG_PLATFORM from skillshub/package-lock.json"
+else
+  err "no pinned ripgrep for $TARGET at $RG_SOURCE"
+  note "Run 'make -C skillshub setup-deps' (it installs @vscode/ripgrep for this host),"
+  note "or set MAGICIAN_PACKAGE_RG to an rg built for $TARGET."
+  exit 1
+fi
+
 # The supervisor's default Magician invocation names this file relative to the
 # install prefix. Without it a verified package installs three binaries that
 # cannot boot outside a source checkout.

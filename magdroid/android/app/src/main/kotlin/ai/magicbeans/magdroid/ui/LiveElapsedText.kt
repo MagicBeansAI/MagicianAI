@@ -38,20 +38,21 @@ internal fun LiveElapsedText(
 }
 
 /**
- * The wall clock, re-read every [LiveElapsed.TICK_MILLIS] while the screen is
- * started. The one ticker behind every live elapsed label: [LiveElapsedText]
- * and the "Preparing final result" row both read it, so a second timer is
- * never needed. [key] restarts the clock when the thing being timed changes.
+ * The wall clock, re-read every [tickMillis] (default [LiveElapsed.TICK_MILLIS])
+ * while the screen is started. The one ticker behind every live elapsed label:
+ * [LiveElapsedText] and the "Preparing final result" row both read it, so a
+ * second timer is never needed; the Steps card's "Updated 2 min. ago" reads it
+ * at a slower beat. [key] restarts the clock when the thing being timed changes.
  */
 @Composable
-internal fun rememberLiveNowMillis(key: Any?): Long {
+internal fun rememberLiveNowMillis(key: Any?, tickMillis: Long = LiveElapsed.TICK_MILLIS): Long {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(key, lifecycle) {
+    LaunchedEffect(key, lifecycle, tickMillis) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             while (true) {
                 now = System.currentTimeMillis()
-                delay(LiveElapsed.TICK_MILLIS)
+                delay(tickMillis)
             }
         }
     }

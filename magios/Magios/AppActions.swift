@@ -64,6 +64,9 @@ final class AppActions: ObservableObject {
     @Published private(set) var monitorTargetUpdateID: String?
     @Published var threadRequestID = 0
     @Published private(set) var threadTargetID: String?
+    /// The conversation a chat link named (`/chat?session=…`,
+    /// `/t/<thread>/chat?session=…`); nil opens the thread's latest one.
+    @Published private(set) var threadTargetSessionID: String?
     @Published var todayRequestID = 0
     @Published private(set) var todayTargetSection: TodaySection?
     @Published private(set) var todayShowActivity = false
@@ -147,8 +150,10 @@ final class AppActions: ObservableObject {
         monitorTargetTaskID = nil
         monitorTargetUpdateID = nil
     }
-    func requestThread(_ id: String?) { threadTargetID = id; threadRequestID += 1 }
-    func consumeThreadTarget() { threadTargetID = nil }
+    func requestThread(_ id: String?, session: String? = nil) {
+        threadTargetID = id; threadTargetSessionID = session; threadRequestID += 1
+    }
+    func consumeThreadTarget() { threadTargetID = nil; threadTargetSessionID = nil }
     func requestToday(section: TodaySection? = nil, activity: Bool = false) {
         todayTargetSection = section; todayShowActivity = activity; todayRequestID += 1
     }

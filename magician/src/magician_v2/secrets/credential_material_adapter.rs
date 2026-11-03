@@ -283,9 +283,13 @@ impl ScopedSecretEnvironmentAuthority {
             let (name, value) = entry.map_err(|_| {
                 CredentialPreparationError::resolution(CredentialResolutionFailure::Unavailable)
             })?;
-            if references
-                .iter()
-                .any(|reference| reference.secret_ref.as_str() == name)
+            // `KEY=` is an unset key, as for a required reference below: the
+            // runtime refuses empty material, so passing it on would fail every
+            // call that declares the key optional.
+            if !value.is_empty()
+                && references
+                    .iter()
+                    .any(|reference| reference.secret_ref.as_str() == name)
             {
                 available.insert(name, Zeroizing::new(value));
             }
@@ -2235,6 +2239,47 @@ mod tests {
                 .expect("an empty credential file must be refused")
                 .code,
             CredentialMaterialAdapterErrorCode::InvalidSecretEnvironment,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scoped_environment_reads_an_empty_value_as_an_unset_key() {
+        let root = TempDir::new().expect("scoped environment root");
+        let (aliased, _) = installed_scope_environment(
+            root.path(),
+            0o600,
+            "OPTIONAL_ID=\nOPTIONAL_SECRET=\nPRESENT_KEY=value\n",
+        );
+        let authority =
+            ScopedSecretEnvironmentAuthority::open(&aliased).expect("installed layout resolves");
+        let reference = |name: &str, required: bool| SecretReferenceAuthority {
+            binding: CredentialMaterialBindingName::new(name.to_ascii_lowercase())
+                .expect("binding"),
+            secret_ref: CredentialSecretReference::new(name).expect("secret ref"),
+            required,
+        };
+        let optional = [
+            reference("OPTIONAL_ID", false),
+            reference("OPTIONAL_SECRET", false),
+            reference("PRESENT_KEY", false),
+        ];
+        let available = authority
+            .read_declared(&optional.iter().collect::<Vec<_>>())
+            .expect("empty optional keys are not an error");
+        assert_eq!(
+            available.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["PRESENT_KEY"]
+        );
+
+        let required = [reference("OPTIONAL_ID", true)];
+        assert_eq!(
+            authority
+                .read_declared(&required.iter().collect::<Vec<_>>())
+                .err()
+                .expect("an empty required key is missing")
+                .resolution_failure,
+            Some(CredentialResolutionFailure::Missing)
         );
     }
 

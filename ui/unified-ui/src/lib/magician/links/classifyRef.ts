@@ -50,6 +50,15 @@ export type ResourceRef =
     | { kind: 'unknown'; raw: string };
 
 const TASK_ID_RE = /^task_[0-9a-f]{32}$/i;
+
+/** One URL path segment, decoded; a malformed escape stays as written. */
+function decodeSegment(segment: string): string {
+    try {
+        return decodeURIComponent(segment);
+    } catch {
+        return segment;
+    }
+}
 const EXECUTION_ID_RE = /^exec_[0-9a-f]{32}$/i;
 
 /**
@@ -87,6 +96,36 @@ export function classifyRef(href: string): ResourceRef {
     }
     if (EXECUTION_ID_RE.test(raw)) {
         return { kind: 'execution', id: raw };
+    }
+
+    // The task-output route itself, as the server writes it into chat — the
+    // "Files" list on a finished task's message and `delivered_files` URLs:
+    // `/api/magician/v3/tasks/<task>/outputs/delivered/<exec>/<name>`, each
+    // segment percent-encoded. Read it as the route it is, whatever the task
+    // id looks like, and keep the path decoded: `resolveHref` encodes each
+    // segment once, so an encoded one would be encoded twice (`%2520`).
+    const apiOutputMatch = raw.match(/^\/api\/magician\/v3\/tasks\/([^/?#]+)\/outputs\/([^?#]+)/);
+    if (apiOutputMatch) {
+        const taskId = decodeSegment(apiOutputMatch[1]);
+        const relativePath = apiOutputMatch[2]
+            .split('/')
+            .map(decodeSegment)
+            .filter((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+            .join('/');
+        if (taskId && relativePath) {
+            return { kind: 'taskOutput', taskId, relativePath };
+        }
+        return { kind: 'unknown', raw: href };
+    }
+
+    // A file in a task's working directory (`…/tasks/<task>/workdir/…`, and
+    // the internal-task tree `…/internal_tasks/<task>/workdir/…`). Only the
+    // task's `outputs/` is served, so a workdir file stays a host path and
+    // opens through the OS action — even when a folder inside the workdir
+    // happens to be called `outputs`, which the matches below would
+    // otherwise read as the task's own outputs directory.
+    if (/(?:^|\/)(?:internal_)?tasks\/[^/]+\/workdir\//i.test(raw) && !raw.startsWith('/api/')) {
+        return { kind: 'filePath', absolutePath: raw };
     }
 
     // A file an execution yielded lives in that execution's own outputs

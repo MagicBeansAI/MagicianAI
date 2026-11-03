@@ -58,11 +58,11 @@
    "file": "magicllm/src/router.rs",
    "type": "MultiLLMRouter",
    "fn": "route_stream",
-   "line": 1099,
+   "line": 1096,
    "carries": "LLMRequest",
    "title": "Resolve the workload route",
    "say": "The router resolves the operation or explicit model choice to a generated route, respects pins and locality, then applies capability checks.",
-   "evidence": "magicllm/src/bootstrap.rs:20, 92; magicllm/src/router.rs:1019, 1096, 1103, 1154, 1166, 1185; magicllm/src/config.rs:218, 395, 506, 531; branch at magicllm/src/router.rs:1003; branch at magicllm/src/router.rs:1091",
+   "evidence": "magicllm/src/bootstrap.rs:20, 92; magicllm/src/router.rs:1019, 1096, 1103, 1154, 1166, 1185; magicllm/src/config.rs:218, 395, 506, 531; branch at magicllm/src/router.rs:1003; branch at magicllm/src/router.rs:1091; branch at magicllm/src/router.rs:1099",
    "next": "llm.bounds"
   },
   {
@@ -222,11 +222,11 @@
    "file": "magicllm/src/providers/anthropic_messages.rs",
    "type": "AnthropicMessagesProvider",
    "fn": "invoke_stream",
-   "line": 2434,
+   "line": 2433,
    "carries": "LLMRequest",
    "title": "Anthropic Messages API",
    "say": "The Anthropic adapter posts to the Messages API and streams text, thinking blocks and tool call fragments back as the server events arrive.",
-   "evidence": "magicllm/src/providers/anthropic_messages.rs:29, 65, 1884, 2158, 2174; magicllm/src/bootstrap.rs:379; branch at magicllm/src/providers/anthropic_messages.rs:2174; branch at magicllm/src/providers/anthropic_messages.rs:2197; branch at magicllm/src/providers/anthropic_messages.rs:2199; branch at magicllm/src/providers/anthropic_messages.rs:2368; branch at magicllm/src/providers/anthropic_messages.rs:2432",
+   "evidence": "magicllm/src/providers/anthropic_messages.rs:29, 65, 1884, 2158, 2174; magicllm/src/bootstrap.rs:379; branch at magicllm/src/providers/anthropic_messages.rs:2174; branch at magicllm/src/providers/anthropic_messages.rs:2197; branch at magicllm/src/providers/anthropic_messages.rs:2199; branch at magicllm/src/providers/anthropic_messages.rs:2368; branch at magicllm/src/providers/anthropic_messages.rs:2432; branch at magicllm/src/providers/anthropic_messages.rs:2434",
    "next": "llm.fallback"
   },
   {
@@ -270,11 +270,11 @@
    "file": "magicllm/src/providers/minimax.rs",
    "type": "MinimaxProvider",
    "fn": "invoke_stream",
-   "line": 810,
+   "line": 813,
    "carries": "LLMRequest",
    "title": "MiniMax",
    "say": "MiniMax streams text, reasoning and tool calls with usage requested for pricing. M3.1 supports five thinking levels, while Auto leaves its native default.",
-   "evidence": "magicllm/src/providers/minimax.rs:42, 55, 577, 763; magicllm/src/bootstrap.rs:406; branch at magicllm/src/providers/minimax.rs:763; branch at magicllm/src/providers/minimax.rs:808",
+   "evidence": "magicllm/src/providers/minimax.rs:42, 55, 577, 763; magicllm/src/bootstrap.rs:406; branch at magicllm/src/providers/minimax.rs:763; branch at magicllm/src/providers/minimax.rs:808; branch at magicllm/src/providers/minimax.rs:810",
    "next": "llm.fallback"
   },
   {
@@ -457,11 +457,11 @@
    "file": "magician/src/magician_v2/chat/decision_rail.rs",
    "type": "ChatDecisionRail",
    "fn": "prepare_with_client",
-   "line": 183,
+   "line": 185,
    "carries": "ActionRequest",
    "title": "Build the action request",
    "say": "The decision rail packs the goal, instructions, recent evidence, offered tools, remaining plan and processing locality into one action request.",
-   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:47, 136, 159; magician/src/magician_v2/decision_host.rs:132, 276; branch at magician/src/magician_v2/chat/decision_rail.rs:159; branch at magician/src/magician_v2/chat/decision_rail.rs:162; branch at magician/src/magician_v2/chat/decision_rail.rs:164",
+   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:47, 136, 159; magician/src/magician_v2/decision_host.rs:132, 276; branch at magician/src/magician_v2/chat/decision_rail.rs:159; branch at magician/src/magician_v2/chat/decision_rail.rs:162; branch at magician/src/magician_v2/chat/decision_rail.rs:164; branch at magician/src/magician_v2/chat/decision_rail.rs:183",
    "next": "decision.client"
   },
   {
@@ -537,10 +537,11 @@
    "file": "decision-engine-contract/src/asset.rs",
    "type": null,
    "fn": "validate_assets",
-   "line": 129,
+   "line": 131,
    "title": "Optional screenshot assets",
    "say": "Image-capable routes can carry bounded, referenced screenshots. Assets are validated before dispatch, text-only models are skipped, and local processing rules still apply.",
-   "next": "decision.walk"
+   "next": "decision.walk",
+   "evidence": "branch at decision-engine-contract/src/asset.rs:129"
   },
   {
    "id": "decision.walk",
@@ -756,11 +757,11 @@
    "file": "magician/src/magician_v2/chat/decision_rail.rs",
    "type": "ChatDecisionRail",
    "fn": "accept",
-   "line": 291,
+   "line": 293,
    "carries": "ActionResponse",
    "title": "Verdict back in Magician",
    "say": "Back in Magician, the rail records model usage and health, then turns the verdict into run this call, ask the planner, bypass, or an error.",
-   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:41, 236, 245, 249, 252, 253; magician/src/magician_v2/chat/service.rs:13585, 13595; branch at magician/src/magician_v2/chat/decision_rail.rs:236; branch at magician/src/magician_v2/chat/decision_rail.rs:266; branch at magician/src/magician_v2/chat/decision_rail.rs:268",
+   "evidence": "magician/src/magician_v2/chat/decision_rail.rs:41, 236, 245, 249, 252, 253; magician/src/magician_v2/chat/service.rs:13585, 13595; branch at magician/src/magician_v2/chat/decision_rail.rs:236; branch at magician/src/magician_v2/chat/decision_rail.rs:266; branch at magician/src/magician_v2/chat/decision_rail.rs:268; branch at magician/src/magician_v2/chat/decision_rail.rs:291",
    "next": "decision.done"
   },
   {

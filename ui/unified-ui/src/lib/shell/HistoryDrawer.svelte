@@ -13,6 +13,9 @@
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 	import { threadStore } from '$lib/stores/threadStore';
 	import type { UiThreadRecord } from '$lib/threads/types';
+	import { startNewThread } from '$lib/threads/newThread';
+	import { findThreadByKey, threadRouteKey } from '$lib/threads/threadKeys';
+	import { threadHref, threadLabel, threadLabels } from '$lib/threads/threadLinks';
 	import {
 		normalizeThreadId,
 		isVibeDevThread,
@@ -30,7 +33,7 @@
 		release,
 		requestFocus
 	} from '$lib/shell/overlayCoordinator';
-	import { historyDrawerThreadFilter } from '$lib/shell/shellState';
+	import { historyDrawerThreadFilter, historyPickedThread } from '$lib/shell/shellState';
 
 	export let open = false;
 	export let side: 'left' | 'right' = 'right';
@@ -69,6 +72,7 @@
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 	/** Thread id whose session filter the reader dismissed. A later thread still scopes. */
 	let dismissedThreadFilter: string | null = null;
+	let previousScopeKey = '';
 
 	$: activeSessionId = $chatStore.activeSessionId;
 	$: viewingArchivedId = $chatStore.viewingArchivedId;
@@ -83,9 +87,10 @@
 	$: hasNext = offset + PAGE_SIZE < total;
 	$: isGlobalSearch = search.length > 0;
 	$: sessionThreadFilter =
-		threadFilter && threadFilter !== dismissedThreadFilter ? threadFilter : null;
+		$historyPickedThread ?? (threadFilter && threadFilter !== dismissedThreadFilter ? threadFilter : null);
 	$: effectiveLane = activeTab === 'sessions' && sessionThreadFilter ? undefined : historyLane;
 	$: scopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
+	$: noteScope(scopeKey);
 	$: loadKey = open
 		? isGlobalSearch
 			? [scopeKey, 'search', search, offset].join('|')
@@ -99,6 +104,16 @@
 		void loadHistory(background);
 	}
 	$: if (browser) onOpenChange(open);
+
+	/** A picked thread belongs to the scope it was picked in. */
+	function noteScope(key: string): void {
+		if (previousScopeKey && key !== previousScopeKey) historyPickedThread.set(null);
+		previousScopeKey = key;
+	}
+
+	function clearPickIf(threadId: string): void {
+		if (get(historyPickedThread) === threadId) historyPickedThread.set(null);
+	}
 
 	async function loadHistory(background = false): Promise<void> {
 		const generation = ++loadGeneration;
@@ -202,11 +217,20 @@
 	}
 
 	function clearThreadFilter(): void {
+		historyPickedThread.set(null);
 		if (threadFilter && get(historyDrawerThreadFilter) === threadFilter) {
 			historyDrawerThreadFilter.set(null);
 		}
 		dismissedThreadFilter = threadFilter;
 		offset = 0;
+	}
+
+	/** A tapped thread: Sessions, filtered to it, page 1, no search. */
+	function showThreadSessions(threadId: string): void {
+		historyPickedThread.set(threadId);
+		dismissedThreadFilter = null;
+		clearSearch();
+		activeTab = 'sessions';
 	}
 
 	function reloadCurrentPage(): void {
@@ -259,7 +283,7 @@
 			await goto(`/vibe?session=${encodeURIComponent(session.id)}`);
 			return;
 		}
-		const chatPath = `/t/${encodeURIComponent(targetThread)}/chat`;
+		const chatPath = threadHref(targetThread, '/chat');
 		const chatHref = `${chatPath}?session=${encodeURIComponent(session.id)}`;
 		const onTargetChat = browser && window.location.pathname === chatPath;
 		if (session.id === activeSessionId && !viewingArchivedId && onTargetChat) {
@@ -302,29 +326,35 @@
 		}
 	}
 
-	function newSession(): void {
-		void chatStore.newExecution(threadFilter ?? 'general');
+	async function newSession(): Promise<void> {
+		// A filtered list creates in its picked thread, and the chat goes there.
+		const picked = get(historyPickedThread);
+		const created = chatStore.newExecution(picked ?? threadFilter ?? 'general');
 		close();
+		const session = await created;
+		if (!picked || !session) return;
+		// newExecution does not navigate; the thread page opens its new active session.
+		if (onSelectThread) void onSelectThread(picked);
+		else void goto(threadHref(picked), { keepFocus: true, noScroll: true });
 	}
 
 	function selectThread(threadId: string): void {
-		if (onSelectThread) {
-			close();
-			void onSelectThread(threadId);
-			return;
-		}
 		if (isVibeDevThread(threadId)) {
 			close();
-			void goto('/vibe');
+			if (onSelectThread) void onSelectThread(threadId);
+			else void goto('/vibe');
 			return;
 		}
-		void goto(`/t/${encodeURIComponent(threadId)}`);
-		close();
+		// The drawer stays open on the thread's sessions while its chat opens.
+		showThreadSessions(threadId);
+		if (onSelectThread) void onSelectThread(threadId);
+		else void goto(threadHref(threadId), { keepFocus: true, noScroll: true });
 	}
 
 	function newThread(): void {
-		void goto('/t/new');
+		// Ask for the name first; cancel creates nothing.
 		close();
+		void startNewThread();
 	}
 
 	function beginThreadMutation(threadId: string, label: string): boolean {
@@ -343,9 +373,10 @@
 		try {
 			const updated = await threadStore.updateThread?.(threadId, { archived: true });
 			if (!updated) {
-				showError(`Could not archive #${threadId}`);
+				showError(`Could not archive #${threadLabel(threadId)}`);
 				return;
 			}
+			clearPickIf(threadId);
 			reloadCurrentPage();
 		} finally {
 			finishThreadMutation(threadId);
@@ -358,7 +389,7 @@
 		try {
 			const updated = await threadStore.updateThread?.(threadId, { archived: false });
 			if (!updated) {
-				showError(`Could not restore #${threadId}`);
+				showError(`Could not restore #${threadLabel(threadId)}`);
 				return;
 			}
 			reloadCurrentPage();
@@ -370,8 +401,15 @@
 	async function deleteThread(threadId: string, event: Event): Promise<void> {
 		event.stopPropagation();
 		if (threadId === 'general' || threadMutation) return;
+		const label = threadLabel(threadId);
+		// The open thread's URL carries a slug; map it to the id before the
+		// delete drops the record from the store.
+		const routeKey = browser ? threadRouteKey(window.location.pathname) : null;
+		const viewingDeleted =
+			routeKey !== null &&
+			(routeKey === threadId || findThreadByKey(get(threadStore).threads, routeKey)?.id === threadId);
 		const confirmed = await requestConfirmation({
-			title: `Delete #${threadId}?`,
+			title: `Delete #${label}?`,
 			message: 'This removes the thread and its chat sessions. Related tasks remain available from Tasks.',
 			confirmLabel: 'Delete',
 			destructive: true
@@ -380,21 +418,16 @@
 		try {
 			const deleted = await threadStore.deleteThread?.(threadId);
 			if (!deleted) {
-				showError(`Could not delete #${threadId}`);
+				showError(`Could not delete #${label}`);
 				return;
 			}
+			clearPickIf(threadId);
 			await chatStore.loadSessions?.();
-			showSuccess(`Deleted #${threadId}.`);
+			showSuccess(`Deleted #${label}.`);
 			reloadCurrentPage();
-			if (browser) {
-				const path = window.location.pathname;
-				const currentThreadId = path.startsWith('/t/')
-					? decodeURIComponent(path.slice('/t/'.length).split('/')[0] ?? '')
-					: null;
-				if (currentThreadId === threadId) await goto('/t/general');
-			}
+			if (viewingDeleted) await goto('/t/general');
 		} catch (error) {
-			showError(error instanceof Error ? error.message : `Failed to delete #${threadId}`);
+			showError(error instanceof Error ? error.message : `Failed to delete #${label}`);
 		} finally {
 			finishThreadMutation(threadId);
 		}
@@ -492,7 +525,7 @@
 								type="button"
 								role="menuitem"
 								class="rail-new-menu-item"
-								on:click={() => { newMenuOpen = false; newSession(); }}
+								on:click={() => { newMenuOpen = false; void newSession(); }}
 							>
 								<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 									<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -537,8 +570,8 @@
 
 		<div class="controls">
 			{#if !isGlobalSearch && activeTab === 'sessions' && sessionThreadFilter}
-				<div class="scope-label" title={`Sessions in #${sessionThreadFilter}`}>
-					<span class="scope-label-name">#{sessionThreadFilter}</span>
+				<div class="scope-label" title={`Sessions in #${$threadLabels(sessionThreadFilter)}`}>
+					<span class="scope-label-name">#{$threadLabels(sessionThreadFilter)}</span>
 					<button
 						type="button"
 						class="scope-clear"
@@ -605,7 +638,7 @@
 						{#if result.kind === 'session'}
 							<div class="item" class:archived={result.session.status === 'archived'} class:active={result.session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(result.session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} role="button" tabindex="0" on:click={() => openSelectedSession(result.session)} on:keydown={(event) => handleItemKeydown(event, () => openSelectedSession(result.session))}>
 								<div class="row1"><span class="dot" class:dim={result.session.status === 'archived'}></span><span class="title" title={result.session.title || 'Untitled session'}>{result.session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(result.session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}<span class="ts">{formatTimestamp(result.session.updated_at)}</span></div>
-								<div class="row2"><span class="thread-tag">#{result.session.ui_thread_id || 'general'}</span><span class="kind-tag">{result.session.internal_voice?.kind === 'branch' ? 'Concurrent' : 'Session'}</span><span class="lane-tag" class:personal={result.history_lane === 'personal'}>{result.history_lane === 'personal' ? 'Personal' : 'Automated'}</span><span class="actions">{#if result.session.status === 'archived'}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(event) => unarchiveSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>{:else if !result.session.is_default_session && !result.session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(event) => archiveSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>{/if}{#if !result.session.is_default_session && !result.session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>{/if}</span></div>
+								<div class="row2"><span class="thread-tag">#{$threadLabels(result.session.ui_thread_id || 'general')}</span><span class="kind-tag">{result.session.internal_voice?.kind === 'branch' ? 'Concurrent' : 'Session'}</span><span class="lane-tag" class:personal={result.history_lane === 'personal'}>{result.history_lane === 'personal' ? 'Personal' : 'Automated'}</span><span class="actions">{#if result.session.status === 'archived'}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(event) => unarchiveSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>{:else if !result.session.is_default_session && !result.session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(event) => archiveSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>{/if}{#if !result.session.is_default_session && !result.session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(result.session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>{/if}</span></div>
 							</div>
 						{:else}
 							{@const threadName = result.thread.name || result.thread.id}
@@ -625,14 +658,14 @@
 					{#each activeSessions as session (session.id)}
 						<div class="item" class:active={session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} role="button" tabindex="0" on:click={() => openSelectedSession(session)} on:keydown={(event) => handleItemKeydown(event, () => openSelectedSession(session))}>
 							<div class="row1"><span class="dot"></span><span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}<span class="ts">{formatTimestamp(session.updated_at)}</span></div>
-							<div class="row2"><span class="thread-tag">#{session.ui_thread_id || 'general'}</span>{#if session.internal_voice?.kind === 'branch'}<span class="kind-tag">Concurrent</span>{/if}{#if !session.is_default_session && !session.internal_voice}<span class="actions"><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(event) => archiveSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></span>{/if}</div>
+							<div class="row2"><span class="thread-tag">#{$threadLabels(session.ui_thread_id || 'general')}</span>{#if session.internal_voice?.kind === 'branch'}<span class="kind-tag">Concurrent</span>{/if}{#if !session.is_default_session && !session.internal_voice}<span class="actions"><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(event) => archiveSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button></span>{/if}</div>
 						</div>
 					{/each}
 					{#if archivedSessions.length > 0}<div class="section-h">Archived</div>{/if}
 					{#each archivedSessions as session (session.id)}
 						<div class="item archived" class:active={session.id === currentViewId} aria-busy={!!$chatStore.deletingSessionIds?.includes(session.id)} aria-disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} role="button" tabindex="0" on:click={() => openSelectedSession(session)} on:keydown={(event) => handleItemKeydown(event, () => openSelectedSession(session))}>
 							<div class="row1"><span class="dot dim"></span><span class="title" title={session.title || 'Untitled session'}>{session.title || 'Untitled session'}</span>{#if $chatStore.deletingSessionIds?.includes(session.id)}<span class="deleting-status" role="status">Deleting…</span>{/if}<span class="ts">{formatTimestamp(session.updated_at)}</span></div>
-							<div class="row2"><span class="thread-tag">#{session.ui_thread_id || 'general'}</span>{#if session.internal_voice?.kind === 'branch'}<span class="kind-tag">Concurrent</span>{/if}<span class="actions"><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(event) => unarchiveSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>{#if !session.is_default_session && !session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>{/if}</span></div>
+							<div class="row2"><span class="thread-tag">#{$threadLabels(session.ui_thread_id || 'general')}</span>{#if session.internal_voice?.kind === 'branch'}<span class="kind-tag">Concurrent</span>{/if}<span class="actions"><button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(event) => unarchiveSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>{#if !session.is_default_session && !session.internal_voice}<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action danger" title="Delete" aria-label="Delete session" on:click={(event) => deleteSession(session.id, event)}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg></button>{/if}</span></div>
 						</div>
 					{/each}
 				{/if}

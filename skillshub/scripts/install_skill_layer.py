@@ -40,7 +40,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pinned_bin_store  # noqa: E402
-import skill_render  # noqa: E402
 import shared_skill_bins  # noqa: E402
 
 # Directories at any depth that should be skipped entirely (source-only,
@@ -224,9 +223,9 @@ def _install_skill_locked(src: Path, dst: Path, bin_store: Path | None = None) -
         elif stale.exists():
             shutil.rmtree(stale)
 
-    # A per-scope manifest is rendered after the swap, never linked.
-    rendered = skill_render.is_rendered_skill(src)
-    never_link = {Path("SKILL.md"), Path(skill_render.RENDER_SPEC)} if rendered else set()
+    # The staged tree is all links, SKILL.md included: a `${NAME}` value
+    # resolves at load from the scope's config/.env. A manifest an older
+    # setup rendered into the old tree leaves with it in the exchange.
     try:
         for root, dirs, files in os.walk(src):
             rel = Path(root).relative_to(src)
@@ -237,7 +236,7 @@ def _install_skill_locked(src: Path, dst: Path, bin_store: Path | None = None) -
             # Create the corresponding real directory under staging.
             (staging / rel).mkdir(parents=True, exist_ok=True)
             for f in files:
-                if f in EXCLUDE_FILES or rel / f in never_link:
+                if f in EXCLUDE_FILES:
                     continue
                 link = staging / rel / f
                 target = src / rel / f
@@ -277,10 +276,6 @@ def _install_skill_locked(src: Path, dst: Path, bin_store: Path | None = None) -
                 staging.unlink()
             else:
                 shutil.rmtree(staging)
-        if rendered:
-            status, detail = skill_render.render_scope_skill(src, dst)
-            if status in ("rendered", "missing_inputs"):
-                print(f"  {'✓' if status == 'rendered' else '—'} {dst.name}: {detail}")
     except BaseException:
         # The prior destination was never removed. Only the incomplete staging
         # tree needs cleanup.

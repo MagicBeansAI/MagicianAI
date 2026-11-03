@@ -221,7 +221,10 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   `magician_api`, `magicutor` (from Magicutor's `/health`) and `desktop` (from
   the desktop host gateway's `/host/automation/status`), the last two `null`
   when offline or too old to report. The phone apps and web Settings → About →
-  Versions read it.
+  Versions read it. `tools.ripgrep` reports whether the `grep` and `glob` tools
+  have a ripgrep (`status` `ok` / `missing`) and its `source` (`packaged`,
+  `skillshub`, `override`, `system`, `missing`); a missing one leaves `status`
+  `ok`, since the service is up.
 - **Voice terminal conversations.** `GET /api/magician/v2/devices/me/conversations?thread=<id>`
   returns at most 8 recent threads and 6 chats in the chosen thread (default:
   the device's own thread `device-<device id>`, named after its pairing label);
@@ -259,6 +262,16 @@ is the Join voice-session token. `POST /meetings/join` accepts an optional
   events. The plain resume keeps its synchronous contract.
 - **Manual pause acknowledgement** waits for a durable, publicly resumable
   checkpoint without holding the status locks its publication requires.
+- **A resumed or continued run that delegates** parks exactly as a first run
+  does: both reducers persist its Delegation checkpoint through
+  `MagicianV2Orchestrator::persist_delegation_wait_checkpoint`, the same writer
+  the orchestrator's own outcome reducer uses. Without it the readiness owner
+  has nothing to hand off and the parent never resumes after its children
+  finish; the continue reducer used to fail such a parent outright. The
+  checkpoint replaces the answered pause under its storage key, so the answer
+  and continue takes refuse a key holding an internal checkpoint (Delegation,
+  PlacementRetry, ManualResumeInflight) as a missing pause, and a late or
+  repeated answer can no longer consume the parent's continuation.
 - **Cancelling a paused execution resolves its ask.**
   `POST /executions/{id}/execution/agentic-cancel` emits a persisted
   `HitlResolved` (`outcome: "cancelled"`) under the pause's
@@ -774,6 +787,10 @@ or, via `is_paired_owner_phone`, a verified paired-device bearer whose roster
 entry is an iOS/Android client without Apps automation authority. ESP and
 desktop Edge credentials and agent grants are refused.
 
+`POST /agents/{id}/trigger` accepts a `goal_id` that is one of the agent's
+focus-area goals; an agent with none takes any id except a `harness:{agent}:`
+one, which names a retired focus area (`400 invalid_goal_id`).
+
 `POST /agents/{id}/trigger` and cron fires allocate `trigger_seq` above
 `used_trigger_seq_floor`: the highest sequence the runtime still tracks for the
 agent/goal (active, queued, recently completed) or any stored episode records.
@@ -816,19 +833,26 @@ execution and persists the outcome instead of leaving it in `Planning`.
   frontmatter parses but whose typed actions or runtime contract do not
   compile — are rows with `kind: "invalid"` and the reason in
   `invalid`; `copied_scopes` lists scopes holding a skillshub skill as a plain
-  copy rather than the linked layout.
+  copy rather than the linked layout. A skillshub/extras row's `${NAME}` scope
+  env references are checked as a template; a scope-only row resolves them from
+  that scope's `config/.env`.
 - Setup-token-gated `POST /skills/install` links `skillshub:<name>` into the
   scope (live, repaired at boot) and copies `path:<abs>`;
   `POST /skills/{name}/uninstall` marks the skill removed so boot-time scope
   repair does not reinstall it (purge also deletes `.skill-state/<name>`).
 - Setup-token-gated `POST /skills/catalog/{name}/oauth/start` and
   `GET .../oauth/status` manage governed remote-MCP authorization with the same
-  resource/issuer/profile binding and encrypted vault as MCP execution; start
+  resource/issuer/profile binding and encrypted vault as MCP execution (both
+  parse through `skills::scope_env`, so a `${NAME}` endpoint resolves to the
+  same scope value; unset or invalid answers 422 naming the variable); start
   returns the authorization URL only to the native setup caller. A configured
   `mobile_access.public_origin` is the callback origin for a remote engine,
   else loopback.
 - Setup-token-gated per-skill (`/skills/catalog/{name}/env`) and per-bot env
   endpoints return key names and set/unset state and accept write-only updates.
+  A per-skill write invalidates each target scope's capability caches (scoped
+  snapshot, scope pack catalog, parsed skills dir, CLI pack index), so a changed
+  `${NAME}` endpoint applies on the next request.
   Bot auth adds a private interactive-input endpoint (Telegram 2FA); the QR
   endpoint serves WhatsApp's PNG or renders Telegram's `tg://` login URL as SVG.
   Raw QR payloads and 2FA values are never logged or returned.
@@ -1257,6 +1281,16 @@ On the task lists `status=archived` alone implies `only`. A non-default value pa
 and threads, and gives the task lists the paginated body. `GET /vibedev/projects` also takes
 `limit` (default 50, max 200) and `offset`; with any of the three it adds `pagination`
 (`total`, `limit`, `offset`, `has_more`).
+
+### Thread keys (`ui_thread_api.rs`, `chat_api.rs`)
+
+`GET/PATCH/DELETE /ui-threads/{key}` take a thread key — its id, current `slug`, or a former slug
+— and act on the canonical id (`UiThreadService::resolve_thread_key`); `DELETE` answers with that
+id. `POST /ui-threads` without an `id` (or with the reserved `new`) derives a fresh unique id from
+the name and never renames an existing thread. `GET /chat/active`, `POST /chat/new` and
+`GET /chat/sessions` map a `ui_thread_id` that is a live thread's slug or alias to its id
+(`canonical_ui_thread_id`); any other value passes through. Shapes and slug rules:
+[v2-api-guide.md](../magician/v2-api-guide.md#ui-threads).
 
 ### VibeDev project checks and build caches
 
@@ -1815,6 +1849,8 @@ Fallback providers use their own saved choice. Single synthesis returns the
 actual `X-Tts-Voice`. The additive fields preserve preferences schema 3.
 See the [voice selection contract](../magician/realtime-media-rails.md#speaking-voice-selection).
 
+
+Realtime `session.start.new_chat=true` and the voice-note field `new_chat=true` start a new chat in the thread instead of joining its open one; a supplied `chat_session_id` wins ([details](../magician/realtime-media-rails.md)).
 
 Realtime `session.start.chat_choice` uses the typed Chat fields:
 `harness_engine`, optional native `harness_model`, and `model_selection` for

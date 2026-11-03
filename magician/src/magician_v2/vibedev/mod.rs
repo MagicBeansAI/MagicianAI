@@ -30,6 +30,9 @@
 //!   state each, for the notch and other at-a-glance surfaces.
 //! * [`run_detail`] — a run read the way a phone reads it: turns, a turn's
 //!   folded timeline, and changes one file at a time.
+//! * [`work_location`] — the owner's answer to where a task that VibeDev
+//!   did not start works on a folder outside the workspace, bound to the
+//!   project that owns the folder.
 //! * [`rail`] — the `@vibedev` chat rail: the invoke grammar's caller-side
 //!   decisions, which sentence answers which outcome, and the lane triple
 //!   a leading invoke mints.
@@ -57,3 +60,4 @@ pub mod steer;
 pub mod trusted_workspace;
 #[cfg(test)]
 mod wire_fixtures;
+pub mod work_location;

@@ -129,17 +129,39 @@ pub(super) fn governed_refusal(message: impl Into<String>) -> String {
     format!("{GOVERNED_REFUSAL_PREFIX}{}", message.into())
 }
 
+/// Marks a governed dispatch error as a working directory that is a git
+/// repository outside the workspace with no project saying how to work there
+/// (`vibedev::work_location`); the canonical folder follows the prefix.
+/// [`governed_dispatch_error`] turns it into
+/// [`ExecutionError::WorkLocationRequired`], which asks the owner once.
+///
+/// [`ExecutionError::WorkLocationRequired`]: crate::magician_v2::execution::error::ExecutionError::WorkLocationRequired
+pub(super) const GOVERNED_WORK_LOCATION_PREFIX: &str = "work location required: ";
+
+/// A governed dispatch error that needs the owner's work-location answer for
+/// `folder` (see [`GOVERNED_WORK_LOCATION_PREFIX`]).
+pub(super) fn governed_work_location_required(folder: &Path) -> String {
+    format!("{GOVERNED_WORK_LOCATION_PREFIX}{}", folder.display())
+}
+
 /// The one conversion of a governed dispatch error into the execution error
 /// surface: a refusal becomes [`ExecutionError::Refused`] (logged as a
-/// warning, not retried), everything else stays a [`ExecutionError::Step`]
-/// fault.
+/// warning, not retried), a work-location ask becomes
+/// [`ExecutionError::WorkLocationRequired`], everything else stays a
+/// [`ExecutionError::Step`] fault.
 ///
 /// [`ExecutionError::Refused`]: crate::magician_v2::execution::error::ExecutionError::Refused
+/// [`ExecutionError::WorkLocationRequired`]: crate::magician_v2::execution::error::ExecutionError::WorkLocationRequired
 /// [`ExecutionError::Step`]: crate::magician_v2::execution::error::ExecutionError::Step
 pub(super) fn governed_dispatch_error(
     message: String,
 ) -> crate::magician_v2::execution::error::ExecutionError {
     use crate::magician_v2::execution::error::ExecutionError;
+    if let Some(folder) = message.strip_prefix(GOVERNED_WORK_LOCATION_PREFIX) {
+        return ExecutionError::WorkLocationRequired {
+            folder: folder.to_owned(),
+        };
+    }
     match message.strip_prefix(GOVERNED_REFUSAL_PREFIX) {
         Some(refusal) => ExecutionError::Refused(refusal.to_owned()),
         None => ExecutionError::Step(message),
@@ -576,17 +598,75 @@ fn governed_call_id(prefix: &str, exec_ctx: &PrimitiveExecCtx) -> String {
     }
 }
 
-fn bind_subprocess_storage_envelope(
+/// Where this call's skill-working lease (`workdirs/skill-working/{call}`)
+/// lives, in the scope the call resolved to (the exec context's own, or the
+/// default scope a scope-blind call runs in). Nothing is created: the lease is
+/// installed only once the call is admitted ([`bind_subprocess_storage_envelope`]).
+///
+/// The lease is runtime-owned and per call: it holds only this call's
+/// envelope and its empty `inputs/` and `outputs/` folders. It is also the
+/// working directory of a workspace-mode CLI that has no admitted folder and
+/// no task work root, so such a call never defaults to the scope root (an
+/// ancestor of every task's evidence folder).
+fn subprocess_lease_path(
     exec_ctx: &PrimitiveExecCtx,
+    scope_root: &ScopedPath,
     call_id: &str,
-) -> Result<Option<std::path::PathBuf>, String> {
-    crate::magician_v2::subprocess_owners::install_skill_working_envelope_from_exec(
-        &exec_ctx.storage_base_path,
-        exec_ctx.principal.as_deref(),
-        exec_ctx.workspace.as_deref(),
+) -> PathBuf {
+    let scope = scope_root.scope();
+    crate::magician_v2::subprocess_owners::skill_working_lease_path(
+        &crate::magician_v2::artifact_v2::workspace::ArtifactV2Workspace::new(
+            &exec_ctx.storage_base_path,
+        ),
+        scope.principal.as_str(),
+        scope.workspace.as_str(),
         call_id,
     )
-    .map_err(|err| format!("subprocess storage envelope failed: {err}"))
+}
+
+/// Install this admitted call's lease at [`subprocess_lease_path`]. The guard
+/// scavenges it when the call ends, success or error: nothing reads a lease
+/// after its call (no output slot is ever accepted from it), so an unaccepted
+/// lease left behind is litter. It also clears this thread's active-lease
+/// marker so no later spawn on the thread inherits a removed directory.
+fn bind_subprocess_storage_envelope(
+    exec_ctx: &PrimitiveExecCtx,
+    scope_root: &ScopedPath,
+    call_id: &str,
+) -> Result<CallLease, String> {
+    let scope = scope_root.scope();
+    crate::magician_v2::subprocess_owners::install_skill_working_envelope_from_exec(
+        &exec_ctx.storage_base_path,
+        Some(scope.principal.as_str()),
+        Some(scope.workspace.as_str()),
+        call_id,
+    )
+    .map_err(|err| format!("subprocess storage envelope failed: {err}"))?
+    .map(|path| CallLease { path })
+    .ok_or_else(|| "subprocess storage envelope is unavailable".to_owned())
+}
+
+/// One governed call's installed skill-working lease, scavenged on drop.
+struct CallLease {
+    path: PathBuf,
+}
+
+impl CallLease {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for CallLease {
+    fn drop(&mut self) {
+        use crate::magician_v2::subprocess_owners as owners;
+        if owners::active_skill_working_lease().as_deref() == Some(self.path.as_path()) {
+            owners::set_active_skill_working_lease(None);
+        }
+        if let Err(error) = owners::scavenge_lease(&self.path) {
+            tracing::warn!(%error, "governed call lease could not be scavenged");
+        }
+    }
 }
 
 fn dispatch_governed_runtime_blocking(
@@ -643,6 +723,12 @@ fn dispatch_governed_runtime_blocking(
         &mut effective_contract.policy_floor,
         &action.effective_policy,
     );
+    // The declared mode decides where the call runs; the effective contract
+    // only ever asks the core for a bound root (see the function).
+    let working_directory_mode = bind_denied_working_directory(&mut effective_contract);
+    if working_directory_mode == WorkingDirectoryMode::OutputRoot {
+        return Err("governed output-root execution is not migrated yet".to_owned());
+    }
     let validated = validate_skill_runtime_contract(&effective_contract)
         .map_err(|_| "governed runtime effective policy validation failed".to_owned())?;
 
@@ -673,6 +759,16 @@ fn dispatch_governed_runtime_blocking(
     )?;
     let mut lowered = lower_typed_action_invocation(action, &normalized)
         .map_err(|error| governed_refusal(format!("governed runtime input rejected: {error}")))?;
+    // The core would refuse this for a `denied` contract; the effective one is
+    // bound to a workspace root, so the refusal is Magician's to make.
+    if working_directory_mode == WorkingDirectoryMode::Denied
+        && lowered.working_directory.is_some()
+    {
+        return Err(governed_refusal(
+            "governed runtime working directory is denied: this tool runs in its own \
+             per-call folder, so omit the working directory",
+        ));
+    }
     // Magician does not own the governed spawn, so no OS box holds it: an
     // argument naming goal workspace content the acting agent may not read
     // (or a folder holding it) is refused before launch. The working
@@ -687,9 +783,7 @@ fn dispatch_governed_runtime_blocking(
         &lowered.arguments,
     )?;
     if exec_ctx.governed_work_root.is_some() {
-        if !matches!(&validated.contract().runtime, RuntimeProtocol::Cli { working_directory, .. }
-            if working_directory.mode == WorkingDirectoryMode::Workspace)
-        {
+        if working_directory_mode != WorkingDirectoryMode::Workspace {
             return Err("quality work root requires workspace execution".to_owned());
         }
         // The trusted root is bound separately below. The execution request
@@ -709,6 +803,7 @@ fn dispatch_governed_runtime_blocking(
             action_id,
             lowered,
             validated,
+            working_directory_mode,
             scope,
             scope_root,
             audit_store,
@@ -732,6 +827,7 @@ fn dispatch_governed_runtime_blocking(
             action_id,
             lowered,
             validated,
+            working_directory_mode,
             scope,
             scope_root,
             audit_store,
@@ -1129,11 +1225,14 @@ fn dispatch_governed_runtime_blocking(
             execution_policy,
         )
         .map_err(|_| "governed runtime execution contract failed".to_owned())?;
+    let envelope_id = governed_call_id("tool", exec_ctx);
+    let lease_path = subprocess_lease_path(exec_ctx, &scope_root, &envelope_id);
     let (admitted_cwd, requested_cwd) = settle_workspace_working_directory(
-        contract_working_directory_mode(validated),
+        working_directory_mode,
         lowered.working_directory,
         exec_ctx,
         &scope_root,
+        &lease_path,
     )?;
     let intent = execution_contract
         .admit(GovernedExecutionRequest::new(
@@ -1151,15 +1250,14 @@ fn dispatch_governed_runtime_blocking(
                 error.code,
             )
         })?;
-    let envelope_id = governed_call_id("tool", exec_ctx);
-    let _lease = bind_subprocess_storage_envelope(exec_ctx, &envelope_id)?;
-    let cwd = match admitted_cwd.or_else(|| task_work_root(exec_ctx, &scope_root)) {
-        Some(cwd) => cwd,
-        None => scope_root
-            .revalidated_path()
-            .map_err(|_| "governed runtime working directory changed".to_owned())?
-            .to_path_buf(),
-    };
+    let lease = bind_subprocess_storage_envelope(exec_ctx, &scope_root, &envelope_id)?;
+    let cwd = governed_call_working_directory(
+        working_directory_mode,
+        admitted_cwd,
+        exec_ctx,
+        &scope_root,
+        lease.path(),
+    )?;
     governed_goal_workspace_check(Some(cwd.as_path()), &[])?;
     let working_directory =
         GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
@@ -1216,6 +1314,7 @@ fn dispatch_implicit_cli_runtime(
     action_id: &str,
     mut lowered: LoweredTypedActionInvocation,
     validated: tool_runtime_core::manifest_validation::ValidatedSkillRuntimeContract<'_>,
+    working_directory_mode: WorkingDirectoryMode,
     scope: CredentialScope,
     scope_root: ScopedPath,
     audit_store: &SecretStore,
@@ -1287,13 +1386,31 @@ fn dispatch_implicit_cli_runtime(
                 .environment,
         ),
     )?;
-    let (working_directory, normalized_working_directory, actual_working_directory) =
-        implicit_cli_working_directory(validated, lowered.working_directory.take(), exec_ctx)?;
-    lowered.working_directory = normalized_working_directory;
-    // The implicit working directory is Magician's own (it may be the notes
-    // root): refused to an agent when it holds goal workspace content that
-    // agent may not read, since no OS box holds this child.
-    governed_goal_workspace_check(actual_working_directory.as_deref(), &lowered.arguments)?;
+    // The same working-directory rule as every other route: the CLI owns its
+    // login (`HOME`), never the folder it runs in. Standing it in Magician's
+    // own cwd is what sent ocr's relative `--input-file` past the task's files
+    // and its `--output-file` into the repository.
+    let envelope_id = governed_call_id("cli", exec_ctx);
+    let lease_path = subprocess_lease_path(exec_ctx, &scope_root, &envelope_id);
+    let (admitted_cwd, requested_cwd) = settle_workspace_working_directory(
+        working_directory_mode,
+        lowered.working_directory.take(),
+        exec_ctx,
+        &scope_root,
+        &lease_path,
+    )?;
+    lowered.working_directory = requested_cwd;
+    let cwd = governed_call_working_directory(
+        working_directory_mode,
+        admitted_cwd,
+        exec_ctx,
+        &scope_root,
+        &lease_path,
+    )?;
+    // No OS box holds this child: refused to an agent when its folder, or an
+    // argument resolved against it, reaches goal workspace content that agent
+    // may not read.
+    governed_goal_workspace_check(Some(cwd.as_path()), &lowered.arguments)?;
     if !lowered.runtime_controls.is_empty() {
         return Err("governed batch CLI has unconsumed runtime controls".to_owned());
     }
@@ -1327,8 +1444,10 @@ fn dispatch_implicit_cli_runtime(
     let scratch = CredentialScratchAuthority::open_or_create(&scope_root)
         .map_err(|_| "governed implicit CLI scratch authority is unavailable".to_owned())?;
     let filesystem = GovernedCredentialFilesystemRequest::new(&scratch, None);
-    let envelope_id = governed_call_id("cli", exec_ctx);
-    let _lease = bind_subprocess_storage_envelope(exec_ctx, &envelope_id)?;
+    let _lease = bind_subprocess_storage_envelope(exec_ctx, &scope_root, &envelope_id)?;
+    let working_directory =
+        GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
+            .map_err(|_| "governed implicit CLI working directory is unavailable".to_owned())?;
     let call_id = CredentialCallId::new(envelope_id)
         .map_err(|_| "governed implicit CLI call identity is invalid".to_owned())?;
     let context = GovernedExecutionCallContext::new(call_id, capability_id, action_id)
@@ -1340,7 +1459,7 @@ fn dispatch_implicit_cli_runtime(
         &preparation,
         &injection,
         values,
-        working_directory,
+        Some(working_directory),
         None,
         Some(filesystem),
     )
@@ -1394,6 +1513,7 @@ fn dispatch_profile_free_cli_runtime(
     action_id: &str,
     lowered: LoweredTypedActionInvocation,
     validated: tool_runtime_core::manifest_validation::ValidatedSkillRuntimeContract<'_>,
+    working_directory_mode: WorkingDirectoryMode,
     scope: CredentialScope,
     scope_root: ScopedPath,
     audit_store: &SecretStore,
@@ -1494,11 +1614,14 @@ fn dispatch_profile_free_cli_runtime(
             execution_policy,
         )
         .map_err(|_| "governed runtime execution contract failed".to_owned())?;
+    let envelope_id = governed_call_id("tool", exec_ctx);
+    let lease_path = subprocess_lease_path(exec_ctx, &scope_root, &envelope_id);
     let (admitted_cwd, requested_cwd) = settle_workspace_working_directory(
-        contract_working_directory_mode(validated),
+        working_directory_mode,
         lowered.working_directory,
         exec_ctx,
         &scope_root,
+        &lease_path,
     )?;
     let intent = execution_contract
         .admit(GovernedExecutionRequest::new(
@@ -1517,37 +1640,21 @@ fn dispatch_profile_free_cli_runtime(
             )
         })?;
 
-    let envelope_id = governed_call_id("tool", exec_ctx);
-    let _lease = bind_subprocess_storage_envelope(exec_ctx, &envelope_id)?;
-    let working_directory = match &validated.contract().runtime {
-        RuntimeProtocol::Cli {
-            working_directory, ..
-        } => match working_directory.mode {
-            WorkingDirectoryMode::Denied => None,
-            WorkingDirectoryMode::Workspace => {
-                let cwd = match admitted_cwd.or_else(|| task_work_root(exec_ctx, &scope_root)) {
-                    Some(cwd) => cwd,
-                    None => scope_root
-                        .revalidated_path()
-                        .map_err(|_| "governed runtime working directory changed".to_owned())?
-                        .to_path_buf(),
-                };
-                governed_goal_workspace_check(Some(cwd.as_path()), &[])?;
-                Some(
-                    GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
-                        .map_err(|_| {
-                            "governed runtime working directory is unavailable".to_owned()
-                        })?,
-                )
-            },
-            WorkingDirectoryMode::OutputRoot => {
-                return Err("governed output-root execution is not migrated yet".to_owned());
-            },
-        },
-        RuntimeProtocol::Mcp { .. } => {
-            return Err("governed static-secret CLI route is invalid".to_owned());
-        },
-    };
+    if matches!(&validated.contract().runtime, RuntimeProtocol::Mcp { .. }) {
+        return Err("governed static-secret CLI route is invalid".to_owned());
+    }
+    let lease = bind_subprocess_storage_envelope(exec_ctx, &scope_root, &envelope_id)?;
+    let cwd = governed_call_working_directory(
+        working_directory_mode,
+        admitted_cwd,
+        exec_ctx,
+        &scope_root,
+        lease.path(),
+    )?;
+    governed_goal_workspace_check(Some(cwd.as_path()), &[])?;
+    let working_directory =
+        GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, cwd)
+            .map_err(|_| "governed runtime working directory is unavailable".to_owned())?;
     let scratch = CredentialScratchAuthority::open_or_create(&scope_root)
         .map_err(|_| "governed runtime scratch authority is unavailable".to_owned())?;
     let filesystem = GovernedCredentialFilesystemRequest::new(&scratch, None);
@@ -1562,7 +1669,7 @@ fn dispatch_profile_free_cli_runtime(
         &preparation,
         &injection,
         values,
-        working_directory,
+        Some(working_directory),
         None,
         Some(filesystem),
     )
@@ -1804,16 +1911,60 @@ fn task_work_root(exec_ctx: &PrimitiveExecCtx, scope_root: &ScopedPath) -> Optio
         .map(|_| workdir)
 }
 
-/// The working-directory mode a validated CLI contract runs in (`Denied` for
-/// a non-CLI contract, which never reaches a CLI dispatch).
-fn contract_working_directory_mode(
-    validated: tool_runtime_core::manifest_validation::ValidatedSkillRuntimeContract<'_>,
+/// The working-directory mode `contract` declares (`Denied` for a non-CLI
+/// contract, which never reaches a CLI dispatch), with a `denied` CLI contract
+/// rebound to `workspace` for the core.
+///
+/// `denied` means the caller may not choose a folder. The core reads it as
+/// "bind none", and a child with no bound folder inherits Magician's own cwd
+/// -- the repository on a development host -- so a relative output landed in
+/// the repo and a relative input read repo files. Bound to `workspace`, the
+/// core runs the child in the root this module hands it, which for a denied
+/// call is its own empty lease ([`governed_call_working_directory`]); the
+/// caller's choice stays refused, by the dispatcher, before admission. The
+/// declared mode is returned because it, not the rebound one, picks the root.
+fn bind_denied_working_directory(
+    contract: &mut tool_runtime_core::manifest::SkillRuntimeContract,
 ) -> WorkingDirectoryMode {
-    match &validated.contract().runtime {
+    match &mut contract.runtime {
         RuntimeProtocol::Cli {
             working_directory, ..
-        } => working_directory.mode,
+        } => {
+            let declared = working_directory.mode;
+            if declared == WorkingDirectoryMode::Denied {
+                working_directory.mode = WorkingDirectoryMode::Workspace;
+            }
+            declared
+        },
         RuntimeProtocol::Mcp { .. } => WorkingDirectoryMode::Denied,
+    }
+}
+
+/// Where an admitted CLI call runs: one rule for every route (profile,
+/// profile-free and implicit CLI-owned), so a relative path means the same
+/// folder whichever auth shape the skill declares.
+///
+/// - `workspace` -> the folder [`settle_workspace_working_directory`] settled:
+///   the one the caller chose, else the task's work root, else `lease`;
+/// - `denied` -> `lease`, the call's own empty runtime-owned folder.
+///
+/// Never the scope root (an ancestor of every task's evidence folder) and
+/// never Magician's own cwd.
+fn governed_call_working_directory(
+    mode: WorkingDirectoryMode,
+    settled: Option<PathBuf>,
+    exec_ctx: &PrimitiveExecCtx,
+    scope_root: &ScopedPath,
+    lease: &Path,
+) -> Result<PathBuf, String> {
+    match mode {
+        WorkingDirectoryMode::Workspace => Ok(settled
+            .or_else(|| task_work_root(exec_ctx, scope_root))
+            .unwrap_or_else(|| lease.to_path_buf())),
+        WorkingDirectoryMode::Denied => Ok(lease.to_path_buf()),
+        WorkingDirectoryMode::OutputRoot => {
+            Err("governed output-root execution is not migrated yet".to_owned())
+        },
     }
 }
 
@@ -1823,12 +1974,15 @@ fn contract_working_directory_mode(
 ///
 /// A quality work root, or a contract that does not run in the workspace,
 /// leaves the request exactly as it was. Otherwise see
-/// [`resolve_workspace_working_directory`].
+/// [`resolve_workspace_working_directory`]; its default root is the task's
+/// work root, else `call_root` (the call's own runtime-owned lease), never
+/// the scope root, which is an ancestor of every task's evidence folder.
 fn settle_workspace_working_directory(
     mode: WorkingDirectoryMode,
     requested: Option<String>,
     exec_ctx: &PrimitiveExecCtx,
     scope_root: &ScopedPath,
+    call_root: &Path,
 ) -> Result<(Option<PathBuf>, Option<String>), String> {
     if let Some(root) = exec_ctx.governed_work_root.clone() {
         return Ok((Some(root), requested));
@@ -1840,7 +1994,8 @@ fn settle_workspace_working_directory(
         .revalidated_path()
         .map_err(|_| "governed runtime working directory changed".to_owned())?
         .to_path_buf();
-    let default_root = task_work_root(exec_ctx, scope_root).unwrap_or_else(|| scope.clone());
+    let default_root =
+        task_work_root(exec_ctx, scope_root).unwrap_or_else(|| call_root.to_path_buf());
     let granted: Vec<PathBuf> = exec_ctx
         .session_file_sandbox_roots
         .as_ref()
@@ -1852,7 +2007,13 @@ fn settle_workspace_working_directory(
         })
         .unwrap_or_default();
     let (root, descendant) =
-        resolve_workspace_working_directory(requested.as_deref(), &default_root, &scope, &granted)?;
+        resolve_workspace_working_directory(
+            requested.as_deref(),
+            &default_root,
+            &scope,
+            &granted,
+            exec_ctx.task_id.as_deref(),
+        )?;
     Ok((Some(root), descendant))
 }
 
@@ -1862,15 +2023,24 @@ fn settle_workspace_working_directory(
 /// `InvalidWorkingDirectory` (`.`, an absolute path) or
 /// `ExecutionAuthorityFailed` (a relative folder that is not there):
 ///
-/// - nothing, `""` or `.` → `default_root` (the task's workdir, else the scope
-///   root);
+/// - nothing, `""` or `.` → `default_root` (the task's workdir, else the
+///   call's own lease; never the scope root);
 /// - a relative path that exists below `default_root` → that descendant;
 /// - a relative path that does not, but names a folder below the scope's
 ///   capability home (`workdirs/home`, the base a VibeDev project's relative
 ///   `repo_path` resolves against) → that folder as the root;
 /// - an absolute path → that folder (canonical) as the root, when it is inside
-///   `default_root`, the scope's `workdirs`, a live VibeDev project folder of
-///   this scope, or a folder the owner granted this session (`granted`).
+///   `default_root`, the scope's `workdirs`, or a folder the owner granted
+///   this session (`granted`); or inside the folder of the project `task_id`
+///   belongs to (`vibedev::work_location::project_of_task`). A call with no
+///   task keeps the older rule: any live VibeDev project folder of the scope;
+/// - an absolute path in a live project's folder, or at the root of a git
+///   repository, on a task with no project → a work-location ask
+///   ([`governed_work_location_required`]): the executor binds the task to
+///   the owning project (or the project the owner's answer creates) and the
+///   call runs again;
+/// - such a path on a task that belongs to another project → refused, naming
+///   the task's project.
 ///
 /// Anything else is refused with a message saying what is accepted.
 fn resolve_workspace_working_directory(
@@ -1878,6 +2048,7 @@ fn resolve_workspace_working_directory(
     default_root: &Path,
     scope_root: &Path,
     granted: &[PathBuf],
+    task_id: Option<&str>,
 ) -> Result<(PathBuf, Option<String>), String> {
     let Some(requested) = requested
         .map(str::trim)
@@ -1900,24 +2071,42 @@ fn resolve_workspace_working_directory(
         if !canonical.is_dir() {
             return Err(refused());
         }
-        let projects = crate::magician_v2::vibedev::projects::read_vibedev_projects(scope_root)
-            .into_iter()
-            .filter(|project| !project.archived)
-            .map(|project| {
-                crate::magician_v2::vibedev::trusted_workspace::project_repo_folder(
-                    project.repo_path.as_deref(),
-                    &capability_home,
-                )
-            });
-        let authorized = [default_root.to_path_buf()]
+        use crate::magician_v2::vibedev::work_location;
+        let admitted = [default_root.to_path_buf()]
             .into_iter()
             .chain(resolve_workspace_file_root(scope_root).ok())
-            .chain(projects)
             .chain(granted.iter().cloned())
             .filter_map(|root| fs::canonicalize(root).ok())
             .any(|root| canonical.starts_with(root));
-        return if authorized {
-            Ok((canonical, None))
+        if admitted {
+            return Ok((canonical, None));
+        }
+        let owner = work_location::live_project_owning(scope_root, &capability_home, &canonical);
+        let Some(task_id) = task_id.map(str::trim).filter(|id| !id.is_empty()) else {
+            // No task to bind: a live project's folder is admitted as before.
+            return if owner.is_some() {
+                Ok((canonical, None))
+            } else {
+                Err(refused())
+            };
+        };
+        let repo_root = work_location::nearest_git_root(&canonical).as_deref()
+            == Some(canonical.as_path());
+        if let Some(project) = work_location::project_of_task(scope_root, task_id) {
+            return if work_location::project_owns(&project, &capability_home, &canonical) {
+                Ok((canonical, None))
+            } else if owner.is_some() || repo_root {
+                Err(governed_refusal(work_location::belongs_elsewhere_refusal(
+                    &project,
+                    &capability_home,
+                    &canonical,
+                )))
+            } else {
+                Err(refused())
+            };
+        }
+        return if owner.is_some() || repo_root {
+            Err(governed_work_location_required(&canonical))
         } else {
             Err(refused())
         };
@@ -2080,125 +2269,6 @@ fn reject_symlink_components(
         }
     }
     Ok(())
-}
-
-fn implicit_cli_working_directory(
-    validated: tool_runtime_core::manifest_validation::ValidatedSkillRuntimeContract<'_>,
-    requested: Option<String>,
-    exec_ctx: &PrimitiveExecCtx,
-) -> Result<
-    (
-        Option<GovernedWorkingDirectoryRoot>,
-        Option<String>,
-        Option<PathBuf>,
-    ),
-    String,
-> {
-    let mode = match &validated.contract().runtime {
-        RuntimeProtocol::Cli {
-            working_directory, ..
-        } => working_directory.mode,
-        RuntimeProtocol::Mcp { .. } => {
-            return Err("governed implicit CLI runtime requires a CLI contract".to_owned());
-        },
-    };
-    if mode == WorkingDirectoryMode::Denied {
-        return if requested.is_none() {
-            Ok((None, None, None))
-        } else {
-            Err(governed_refusal(
-                "governed implicit CLI working directory is denied",
-            ))
-        };
-    }
-    if mode != WorkingDirectoryMode::Workspace {
-        return Err("governed implicit CLI output-root execution is unsupported".to_owned());
-    }
-
-    if let Some(admitted) = exec_ctx.governed_work_root.as_deref() {
-        if requested.is_some() {
-            return Err(governed_refusal(
-                "quality work root cannot select another working directory",
-            ));
-        }
-        let root = GovernedWorkingDirectoryRoot::open(mode, admitted)
-            .map_err(|_| "governed quality workspace is unsafe".to_owned())?;
-        return Ok((Some(root), None, Some(admitted.to_path_buf())));
-    }
-
-    let current = fs::canonicalize(
-        std::env::current_dir()
-            .map_err(|_| "governed implicit CLI current workspace is unavailable".to_owned())?,
-    )
-    .map_err(|_| "governed implicit CLI current workspace is unavailable".to_owned())?;
-    let Some(requested) = requested else {
-        let root = GovernedWorkingDirectoryRoot::open(mode, &current)
-            .map_err(|_| "governed implicit CLI workspace is unsafe".to_owned())?;
-        return Ok((Some(root), None, Some(current)));
-    };
-    if requested == "." {
-        let root = GovernedWorkingDirectoryRoot::open(mode, &current)
-            .map_err(|_| "governed implicit CLI workspace is unsafe".to_owned())?;
-        return Ok((Some(root), None, Some(current)));
-    }
-    let requested_path = Path::new(&requested);
-    if !requested_path.is_absolute() {
-        let actual = fs::canonicalize(current.join(&requested)).map_err(|_| {
-            governed_refusal("governed implicit CLI requested workspace is unavailable")
-        })?;
-        if let Some(refusal) =
-            crate::magician_v2::execution::goal_workspace_access::refusal_for_current(
-                &actual,
-                crate::magician_v2::execution::goal_workspace_access::Op::Read,
-            )
-        {
-            return Err(refusal);
-        }
-        let root = GovernedWorkingDirectoryRoot::open(mode, &current)
-            .map_err(|_| "governed implicit CLI workspace is unsafe".to_owned())?;
-        return Ok((Some(root), Some(requested), Some(actual)));
-    }
-
-    let canonical = fs::canonicalize(requested_path).map_err(|_| {
-        governed_refusal("governed implicit CLI requested workspace is unavailable")
-    })?;
-    if canonical != requested_path {
-        return Err(governed_refusal(
-            "governed implicit CLI requested workspace is not canonical",
-        ));
-    }
-    let mut authorized = canonical == current || canonical.starts_with(&current);
-    if !authorized {
-        let roots = exec_ctx
-            .session_file_sandbox_roots
-            .as_ref()
-            .ok_or_else(|| {
-                governed_refusal("governed implicit CLI requested workspace is not authorized")
-            })?
-            .lock()
-            .map_err(|_| "governed implicit CLI workspace authority is unavailable".to_owned())?;
-        authorized = roots.iter().any(|root| {
-            fs::canonicalize(root)
-                .ok()
-                .is_some_and(|root| canonical == root || canonical.starts_with(root))
-        });
-    }
-    if !authorized {
-        return Err(governed_refusal(
-            "governed implicit CLI requested workspace is not authorized",
-        ));
-    }
-    // An approved folder never opens a goal workspace the acting agent may
-    // not read (`goal_workspace_access`).
-    if let Some(refusal) = crate::magician_v2::execution::goal_workspace_access::refusal_for_current(
-        &canonical,
-        crate::magician_v2::execution::goal_workspace_access::Op::Read,
-    ) {
-        return Err(refusal);
-    }
-    let root = GovernedWorkingDirectoryRoot::open(mode, &canonical)
-        .map_err(|_| "governed implicit CLI requested workspace is unsafe".to_owned())?;
-    Ok((Some(root), None, Some(canonical)))
 }
 
 /// Refuse a governed child whose working directory or arguments reach goal
@@ -2711,8 +2781,8 @@ pub(super) fn governed_executable_directory(
         .governed_executable_directory
         .clone()
         .or_else(|| runtime.executable_directory.clone());
-    if let Some(directory) = configured_directory {
-        if let Some(reviewed) = reviewed_executable_directory(&directory, executable_name, role) {
+    if let Some(directory) = configured_directory.as_deref() {
+        if let Some(reviewed) = reviewed_executable_directory(directory, executable_name, role) {
             return Ok(reviewed);
         }
     }
@@ -2722,21 +2792,49 @@ pub(super) fn governed_executable_directory(
     // artifact when the public `.bin` entry is a JavaScript launcher. The latter is a
     // package-layout rule rather than provider knowledge and keeps native CLI skills
     // drop-in without admitting an interpreter wrapper into the single-file snapshot.
-    for directory in [
-        &scope_paths.node_modules_bin,
-        &scope_paths.venv_bin,
-        &scope_paths.node_bin,
-    ] {
+    let shared_roots = [
+        scope_paths.node_modules_bin.as_path(),
+        scope_paths.venv_bin.as_path(),
+        scope_paths.node_bin.as_path(),
+    ];
+    for directory in shared_roots {
         if let Some(directory) = reviewed_executable_directory(directory, executable_name, role) {
             return Ok(directory);
         }
     }
-    if let Ok(executable) = which::which(executable_name) {
-        if let Some(directory) = executable
-            .parent()
-            .and_then(|directory| reviewed_executable_directory(directory, executable_name, role))
-        {
-            return Ok(directory);
+    let on_path = which::which(executable_name)
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf));
+    if let Some(directory) = on_path
+        .as_deref()
+        .and_then(|directory| reviewed_executable_directory(directory, executable_name, role))
+    {
+        return Ok(directory);
+    }
+    // Nothing admissible. When the reason is the one an owner can act on -- the
+    // entry point is a script inside an installed package, which loads files
+    // beside itself and so cannot run from the single-file snapshot -- say so,
+    // naming the skill and the fix, instead of failing every call at exec time
+    // with whatever the relocated script prints.
+    if role == ExecutableRole::SnapshotTarget {
+        let package_script = configured_directory
+            .as_deref()
+            .into_iter()
+            .chain(shared_roots)
+            .chain(on_path.as_deref())
+            .find_map(|directory| installed_package_script(directory, executable_name));
+        if let Some(script) = package_script {
+            let skill = runtime
+                .cli_actions()
+                .map(|actions| actions.skill_id.as_str())
+                .unwrap_or("this skill");
+            return Err(format!(
+                "governed runtime refused entry point `{executable_name}` of skill `{skill}`: \
+                 it resolves to `{}`, a script inside an installed package that loads files \
+                 beside itself, and an entry point runs from a private single-file copy. \
+                 Declare a self-contained adapter or a native binary as the skill's entry point",
+                script.display()
+            ));
         }
     }
     Err("governed runtime executable directory is unavailable".to_owned())
@@ -2853,24 +2951,23 @@ fn reviewed_executable_directory(
     let executable = directory.join(executable_name);
     let metadata = fs::symlink_metadata(&executable).ok()?;
     if metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() > 0 {
-        return Some(directory);
+        // The same package-tree rule as a linked entry point below: a script
+        // that sits inside an installed package is as self-relative when it is
+        // found directly as when it is reached through a link.
+        let package_script = role == ExecutableRole::SnapshotTarget
+            && installed_package_root(&executable).is_some()
+            && script_executable_file(&executable);
+        return (!package_script).then_some(directory);
     }
     if !metadata.file_type().is_symlink() {
         return None;
     }
 
     let resolved = fs::canonicalize(&executable).ok()?;
-    let package_root = directory.parent().and_then(|package_authority| {
-        resolved.ancestors().skip(1).find(|ancestor| {
-            ancestor.starts_with(package_authority) && ancestor.join("package.json").is_file()
-        })
-    });
-    // A skill's own `bin/` entry is not inside the package it links to, so the
-    // containment search above finds no root for it. When the link lands in an
-    // installed npm package, that package's own native artifact is still the
-    // answer: a launcher such as `run-gws.js` requires `./binary` next to it and
-    // fails once copied alone into the snapshot.
-    let redirect_root = package_root.or_else(|| installed_package_root(&resolved));
+    // When the link lands in a package, that package's own native artifact is
+    // the answer: a launcher such as `run-gws.js` requires `./binary` next to
+    // it and fails once copied alone into the snapshot.
+    let redirect_root = launcher_package_root(&directory, &resolved);
     if let Some(package_root) = redirect_root {
         let standalone_root = package_root.join("node_modules/.bin_real");
         if fs::canonicalize(&standalone_root).ok().as_deref() == Some(standalone_root.as_path()) {
@@ -2910,7 +3007,13 @@ fn reviewed_executable_directory(
     // inside a package tree, where the launcher resolves modules adjacent to
     // itself and cannot survive relocation into the single-file snapshot. Inside
     // such a tree the two branches above are the only admissible answers, so a
-    // launcher that reached this point stays refused.
+    // launcher that reached this point stays refused. That holds whichever way
+    // the tree was found: by containment under this install authority, or as
+    // the installed package a skill's own `bin/` link lands in. Judging only
+    // the first is what admitted `agentmail`, `tgcli` and `higgsfield` --
+    // `bin/` links onto `cli.js`-style launchers that import `./store-lock.js`
+    // or `./run.js` -- and then failed every call once the copy ran alone.
+    // `installed_package_script` names this refusal to the owner.
     //
     // Outside a package tree a `#!` entry point carries its interpreter in its
     // own first line and is snapshot-safe: the kernel launches the interpreter
@@ -2932,11 +3035,44 @@ fn reviewed_executable_directory(
     match role {
         ExecutableRole::SnapshotTarget => {
             let snapshot_safe = native_executable_file(&resolved)
-                || (package_root.is_none() && script_executable_file(&resolved));
+                || (redirect_root.is_none() && script_executable_file(&resolved));
             snapshot_safe.then_some(directory)
         },
         ExecutableRole::PathCompanion => Some(directory),
     }
+}
+
+/// The package tree a linked entry point lands in: the nearest `package.json`
+/// ancestor inside the install authority that holds `directory` (a public
+/// `node_modules/.bin`), else -- for a skill's own `bin/` entry, which is not
+/// inside the package it links to -- the installed npm package that holds it.
+fn launcher_package_root<'a>(directory: &Path, resolved: &'a Path) -> Option<&'a Path> {
+    let contained = directory.parent().and_then(|package_authority| {
+        resolved.ancestors().skip(1).find(|ancestor| {
+            ancestor.starts_with(package_authority) && ancestor.join("package.json").is_file()
+        })
+    });
+    contained.or_else(|| installed_package_root(resolved))
+}
+
+/// The real path of `executable_name` in `directory` when it is the shape
+/// [`reviewed_executable_directory`] refuses as a snapshot target: a `#!`
+/// script, not a native image, inside an installed package tree. It only
+/// names that refusal for the owner-facing error; it never admits anything.
+///
+/// A venv console script is not this shape: it sits in a venv `bin/`, not in
+/// a package tree, and its absolute interpreter line imports from
+/// `site-packages` rather than from beside itself, so it survives the copy.
+fn installed_package_script(directory: &Path, executable_name: &str) -> Option<PathBuf> {
+    let directory = fs::canonicalize(directory).ok()?;
+    let resolved = fs::canonicalize(directory.join(executable_name)).ok()?;
+    if !fs::metadata(&resolved).is_ok_and(|metadata| metadata.is_file()) {
+        return None;
+    }
+    let package_script = launcher_package_root(&directory, &resolved).is_some()
+        && !native_executable_file(&resolved)
+        && script_executable_file(&resolved);
+    package_script.then_some(resolved)
 }
 
 /// The npm package that installed `launcher`: its nearest `package.json`
@@ -3689,7 +3825,7 @@ mod tests {
             fs::create_dir_all(dir).unwrap();
         }
         let resolve = |requested: Option<&str>, granted: &[PathBuf]| {
-            resolve_workspace_working_directory(requested, &task, &scope, granted)
+            resolve_workspace_working_directory(requested, &task, &scope, granted, None)
         };
 
         // Nothing, `.` or blank: the task's own folder.
@@ -3745,6 +3881,221 @@ mod tests {
             resolve(Some(&registered_path), &[]).unwrap(),
             (registered.clone(), None)
         );
+    }
+
+    /// An unregistered git repository outside the workspace is not a bare
+    /// refusal: it asks the owner where to work (live 2026-10-31: a CTO's
+    /// `git status` on the Magician repo was refused while the developer's
+    /// coding turn on it needed the same answer). A folder that is not a
+    /// repository root is still refused, and a project folder (what the
+    /// owner's answer creates) is admitted.
+    #[test]
+    fn an_unregistered_git_root_asks_where_to_work_and_a_plain_folder_is_refused() {
+        use crate::magician_v2::execution::error::ExecutionError;
+        let tmp = TempDir::new().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let scope = base.join("scope");
+        let task = scope.join("internal_tasks").join("t-1").join("workdir");
+        let repo = base.join("magician");
+        let plain = base.join("plain");
+        for dir in [task.clone(), repo.join(".git"), repo.join("skills"), plain.clone()] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let resolve = |requested: &Path| {
+            resolve_workspace_working_directory(
+                Some(&requested.display().to_string()),
+                &task,
+                &scope,
+                &[],
+                Some("t-1"),
+            )
+        };
+
+        let asked = resolve(&repo).unwrap_err();
+        assert!(matches!(
+            governed_dispatch_error(asked),
+            ExecutionError::WorkLocationRequired { folder } if folder == repo.display().to_string()
+        ));
+        let skills = repo.join("skills");
+        for folder in [plain.as_path(), skills.as_path()] {
+            let error = resolve(folder).unwrap_err();
+            assert!(error.contains("is not usable"), "{error}");
+            assert!(matches!(
+                governed_dispatch_error(error),
+                ExecutionError::Refused(_)
+            ));
+        }
+
+        // A project owns the folder but the task is not bound yet: the same
+        // ask, which the executor answers by binding without a question. A
+        // call with no task keeps the older rule and runs there.
+        let other = base.join("other");
+        fs::create_dir_all(&other).unwrap();
+        let store = crate::magician_v2::vibedev::projects::vibedev_project_store_path(&scope);
+        fs::create_dir_all(store.parent().unwrap()).unwrap();
+        let write_store = |bound: bool| {
+            let links = if bound {
+                serde_json::json!({"t-1": {"work_location": {
+                    "mode": "sandboxed", "repo_path": repo.display().to_string()
+                }}})
+            } else {
+                serde_json::json!({})
+            };
+            fs::write(
+                &store,
+                serde_json::json!({"projects": [
+                    {
+                        "project_id": "p-1", "name": "magician", "chat_thread_id": "vibedev",
+                        "chat_session_id": "", "created_at_ms": 0, "updated_at_ms": 0,
+                        "repo_path": repo.display().to_string(),
+                        "run_links": links
+                    },
+                    {
+                        "project_id": "p-2", "name": "other", "chat_thread_id": "vibedev",
+                        "chat_session_id": "", "created_at_ms": 0, "updated_at_ms": 0,
+                        "repo_path": other.display().to_string()
+                    }
+                ]})
+                .to_string(),
+            )
+            .unwrap();
+        };
+        write_store(false);
+        assert!(matches!(
+            governed_dispatch_error(resolve(&other).unwrap_err()),
+            ExecutionError::WorkLocationRequired { folder } if folder == other.display().to_string()
+        ));
+        assert_eq!(
+            resolve_workspace_working_directory(
+                Some(&other.display().to_string()),
+                &task,
+                &scope,
+                &[],
+                None,
+            )
+            .unwrap(),
+            (other.clone(), None)
+        );
+
+        // Bound: its own project's folder runs; another project's folder is
+        // refused, naming the task's project.
+        write_store(true);
+        assert_eq!(resolve(&repo).unwrap(), (repo.clone(), None));
+        assert_eq!(
+            resolve(&repo.join("skills")).unwrap(),
+            (repo.join("skills"), None)
+        );
+        let refused = resolve(&other).unwrap_err();
+        assert!(refused.contains("“magician”"), "{refused}");
+        assert!(matches!(
+            governed_dispatch_error(refused),
+            ExecutionError::Refused(_)
+        ));
+    }
+
+    /// Since goal workspaces (c2f0f17a5, 2026-10-20) every non-admin agent's
+    /// `static_http.read` (htmltotext) and `tinyfish.discover` were refused
+    /// "`<scope root>` holds goal workspace content this agent may not read":
+    /// content sources invoke their CLIs from `default_for_runtime()` with no
+    /// task work root, and a workspace-mode CLI then defaulted to the scope
+    /// root, an ancestor of every task's evidence folder. Refusing that cwd is
+    /// right; defaulting to it was the bug. Such a call now runs in its own
+    /// runtime-owned lease, which holds nothing hidden.
+    #[test]
+    fn a_taskless_workspace_cli_runs_in_its_own_lease_never_the_scope_root() {
+        use crate::magician_v2::execution::goal_workspace_access as access;
+        let fixture = Fixture::new();
+        let mut ctx = PrimitiveExecCtx::default_for_runtime();
+        ctx.storage_base_path = fixture.storage.clone();
+        let authority = ScopedPathAuthority::open(fixture.storage.join("scopes")).unwrap();
+        let scope_root = authority
+            .resolve_scope_root(&CredentialScope::new("owner", "default").unwrap())
+            .unwrap();
+        let scope = fs::canonicalize(scope_root.revalidated_path().unwrap()).unwrap();
+
+        // A goal workspace the acting agent is no member of, and another
+        // task's evidence folder under the scope root that read from it.
+        let notes = TempDir::new().unwrap();
+        let notes_root = fs::canonicalize(notes.path()).unwrap();
+        let workspaces = notes_root.join("Workspaces");
+        let ws = workspaces.join("Magican");
+        fs::create_dir_all(ws.join("Goals/X")).unwrap();
+        fs::write(ws.join("README.md"), "---\nmembers: [cmo]\n---\n# Magican\n").unwrap();
+        let goal = ws.join("Goals/X/x.md");
+        fs::write(
+            &goal,
+            "---\nmagician_kind: goal\nowner: cmo\nvisibility: internal\n---\n# x\n",
+        )
+        .unwrap();
+        let evidence = scope.join("internal_tasks/other/executions/e1");
+        fs::create_dir_all(&evidence).unwrap();
+
+        access::with_test_roots(vec![workspaces], || {
+            let _reads = access::install_test_reads_file(notes_root.join("reads.json"));
+            access::record_read_in(Some(evidence.as_path()), &goal);
+            crate::magician_v2::execution::native_executors::ACTING_AGENT.sync_scope(
+                Some("ambassador".to_string()),
+                || {
+                    // The guard stays: from the scope root, relative paths
+                    // reach the other task's evidence.
+                    assert!(governed_goal_workspace_check(Some(scope.as_path()), &[]).is_err());
+
+                    // Settled before admission, from the planned path alone:
+                    // nothing is on disk until the call is admitted.
+                    let planned = subprocess_lease_path(&ctx, &scope_root, "tool-taskless");
+                    assert!(!planned.exists());
+                    for requested in [None, Some("."), Some(" ")] {
+                        let (root, descendant) = settle_workspace_working_directory(
+                            WorkingDirectoryMode::Workspace,
+                            requested.map(str::to_owned),
+                            &ctx,
+                            &scope_root,
+                            &planned,
+                        )
+                        .unwrap();
+                        assert_eq!(root.as_deref(), Some(planned.as_path()), "{requested:?}");
+                        assert_eq!(descendant, None);
+                    }
+                    let guard =
+                        bind_subprocess_storage_envelope(&ctx, &scope_root, "tool-taskless")
+                            .unwrap();
+                    assert_eq!(guard.path(), planned.as_path());
+                    let lease = guard.path().to_path_buf();
+                    let canonical = fs::canonicalize(&lease).unwrap();
+                    assert_ne!(canonical, scope);
+                    assert!(canonical.starts_with(&scope), "{}", canonical.display());
+                    assert!(!evidence.starts_with(&canonical));
+                    assert_eq!(governed_goal_workspace_check(Some(lease.as_path()), &[]), Ok(()));
+                    assert!(
+                        GovernedWorkingDirectoryRoot::open(WorkingDirectoryMode::Workspace, &lease)
+                            .is_ok()
+                    );
+                    // The call's end scavenges its lease and clears the
+                    // thread's active-lease marker.
+                    drop(guard);
+                    assert!(!lease.exists());
+                    assert_eq!(
+                        crate::magician_v2::subprocess_owners::active_skill_working_lease(),
+                        None
+                    );
+                },
+            );
+        });
+
+        // A task's own work root still wins over the lease.
+        let task = scope.join("internal_tasks/current/workdir");
+        fs::create_dir_all(&task).unwrap();
+        let in_task = ctx.clone().with_task_work_root(Some(task.clone()));
+        let lease = scope.join("workdirs/skill-working/unused");
+        let (root, _) = settle_workspace_working_directory(
+            WorkingDirectoryMode::Workspace,
+            None,
+            &in_task,
+            &scope_root,
+            &lease,
+        )
+        .unwrap();
+        assert_eq!(root, Some(task));
     }
 
     // ---- P4 Task 4.5: the CLI lane answers declared prompts from the run's
@@ -5006,6 +5357,132 @@ metadata:
         );
     }
 
+    /// The agentmail / tgcli / higgsfield shape: a skill's own `bin/` entry
+    /// links onto a `#!` launcher inside an installed npm package that imports
+    /// a file beside itself, and the package ships no `.bin_real` or native
+    /// artifact to stand in for it. Containment under the skill directory found
+    /// no package, so it resolved, and then every call died once the copy ran
+    /// alone. It is refused at resolution, naming the skill and the fix.
+    #[test]
+    fn a_skill_bin_link_into_a_package_script_is_refused_with_the_fix() {
+        let root = tempfile::tempdir().expect("temp root");
+        let package = root.path().join("node_modules/@vendor/tool");
+        let skill_bin = root.path().join("skill/bin");
+        fs::create_dir_all(&package).expect("package");
+        fs::create_dir_all(&skill_bin).expect("skill bin");
+        fs::write(
+            package.join("package.json"),
+            b"{\"name\":\"@vendor/tool\"}\n",
+        )
+        .expect("package metadata");
+        let launcher = package.join("cli.js");
+        fs::write(
+            &launcher,
+            b"#!/usr/bin/env node\nimport './store-lock.js'\n",
+        )
+        .expect("launcher");
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755))
+            .expect("launcher permissions");
+        symlink(&launcher, skill_bin.join("probe-cli")).expect("skill link");
+
+        assert_eq!(
+            reviewed_executable_directory(
+                &skill_bin,
+                "probe-cli",
+                ExecutableRole::SnapshotTarget
+            ),
+            None,
+            "a package launcher cannot survive relocation into the snapshot"
+        );
+        assert_eq!(
+            reviewed_executable_directory(
+                &skill_bin,
+                "probe-cli",
+                ExecutableRole::PathCompanion
+            ),
+            Some(fs::canonicalize(&skill_bin).expect("canonical skill bin")),
+            "only the copy is the problem: in place, through PATH, it runs"
+        );
+
+        let error = companion_probe_directories("probe-cli", skill_bin, root.path())
+            .expect_err("a package script entry point must not reach exec");
+        let launcher = fs::canonicalize(&launcher)
+            .expect("canonical launcher")
+            .display()
+            .to_string();
+        for expected in [
+            "`probe-cli`",
+            "`companion-probe`",
+            launcher.as_str(),
+            "self-contained adapter or a native binary",
+        ] {
+            assert!(error.contains(expected), "{expected} missing from: {error}");
+        }
+    }
+
+    /// What stays admitted beside that refusal: a native image and a
+    /// self-contained script reached through a skill's link, and a venv console
+    /// script whether found directly or through a link -- its absolute
+    /// interpreter imports from `site-packages`, nothing from beside itself.
+    /// A script placed directly inside a package tree is refused like the
+    /// linked one: the shape decides, not the spelling.
+    #[test]
+    fn native_and_self_contained_entry_points_stay_admitted_beside_the_package_rule() {
+        let root = tempfile::tempdir().expect("temp root");
+        let package = root.path().join("node_modules/vendor-cli");
+        let package_bin = package.join("bin");
+        let skill_bin = root.path().join("skill/bin");
+        let venv_bin = root.path().join("venv/bin");
+        let source = root.path().join("adapter-source");
+        for directory in [&package_bin, &skill_bin, &venv_bin, &source] {
+            fs::create_dir_all(directory).expect("fixture directory");
+        }
+        fs::write(package.join("package.json"), b"{\"name\":\"vendor-cli\"}\n")
+            .expect("package metadata");
+        let native = package_bin.join("native-cli");
+        fs::write(&native, b"\xcf\xfa\xed\xfe native fixture").expect("native executable");
+        symlink(&native, skill_bin.join("native-cli")).expect("native link");
+        let adapter = source.join("adapter-cli");
+        fs::write(&adapter, b"#!/bin/sh\nexec /usr/bin/true \"$@\"\n").expect("adapter");
+        symlink(&adapter, skill_bin.join("adapter-cli")).expect("adapter link");
+        let console = venv_bin.join("venv-cli");
+        fs::write(
+            &console,
+            b"#!/opt/venv/bin/python3\nfrom tool.cli import main\nmain()\n",
+        )
+        .expect("console script");
+        symlink(&console, skill_bin.join("venv-cli")).expect("console link");
+        let packaged = package_bin.join("packaged-cli");
+        fs::write(&packaged, b"#!/usr/bin/env node\nrequire('../lib/run.js')\n")
+            .expect("packaged script");
+
+        let canonical_skill_bin = fs::canonicalize(&skill_bin).expect("canonical skill bin");
+        for name in ["native-cli", "adapter-cli", "venv-cli"] {
+            assert_eq!(
+                reviewed_executable_directory(&skill_bin, name, ExecutableRole::SnapshotTarget),
+                Some(canonical_skill_bin.clone()),
+                "{name} is snapshot-safe"
+            );
+            assert_eq!(installed_package_script(&skill_bin, name), None, "{name}");
+        }
+        assert_eq!(
+            reviewed_executable_directory(&venv_bin, "venv-cli", ExecutableRole::SnapshotTarget),
+            Some(fs::canonicalize(&venv_bin).expect("canonical venv bin"))
+        );
+        assert_eq!(
+            reviewed_executable_directory(
+                &package_bin,
+                "packaged-cli",
+                ExecutableRole::SnapshotTarget
+            ),
+            None
+        );
+        assert_eq!(
+            installed_package_script(&package_bin, "packaged-cli"),
+            Some(fs::canonicalize(&packaged).expect("canonical packaged script"))
+        );
+    }
+
     /// The `/usr/bin`-backed skills resolve the host tool directly.
     ///
     /// These three used to ship a `#!/bin/sh` wrapper that re-execed the system
@@ -5263,6 +5740,14 @@ exit 7
             )
             .unwrap();
             fs::set_permissions(&higgsfield, fs::Permissions::from_mode(0o700)).unwrap();
+            // The pack's real entrypoint: the tracked adapter execs the stub above.
+            let higgsfield_adapter = bin.join("higgsfield-adapter");
+            fs::write(
+                &higgsfield_adapter,
+                include_str!("../../../../../skillshub/higgsfield/bin/higgsfield-adapter"),
+            )
+            .unwrap();
+            fs::set_permissions(&higgsfield_adapter, fs::Permissions::from_mode(0o700)).unwrap();
             let tavily_executable = bin.join("tavily-search");
             fs::write(
                 &tavily_executable,
@@ -6330,11 +6815,165 @@ printf '{"success":true,"output_path":"outputs/v.mp4","model":"fixture"}\n'
             )
             .await
             .expect_err("unapproved absolute workspace");
-        assert_eq!(
-            error,
-            "refused: governed implicit CLI requested workspace is not authorized"
+        // The same settlement, and so the same answer, as every other route.
+        assert!(
+            error.starts_with("refused: working directory `") && error.contains("is not usable"),
+            "{error}"
         );
         assert!(!workspace.join(".cli-owned-ran").exists());
+    }
+
+    /// A pack whose one action prints the folder it was launched in. `auth`
+    /// is the contract's whole `auth` (and `policy_floor`) block.
+    fn cwd_probe_pack(mode: &str, auth: &str) -> String {
+        format!(
+            r#"---
+name: cwd-probe
+description: Working-directory probe.
+metadata:
+  magician:
+    runtime_contract:
+      schema_version: tool-runtime.skill-runtime.v1
+      requires:
+        bins: [cwd-probe]
+      runtime:
+        protocol: cli
+        command_prefix: []
+        interaction: batch
+        working_directory: {{mode: {mode}}}
+        limits:
+          timeout_secs: 30
+          stdout_bytes: 4096
+          stderr_bytes: 4096
+{auth}
+    runtime_actions:
+      schema_version: tool-runtime.typed-action-overrides.v1
+      actions:
+        run:
+          description: Print the launch folder.
+---
+"#
+        )
+    }
+
+    const CWD_PROBE_CLI_OWNED_AUTH: &str = "      auth:
+        kind: cli_profile
+        requirement: required
+        provider: fixture-provider
+        profile_selection: {mode: implicit}
+        storage: {kind: cli_owned}
+      policy_floor:
+        approval: conditional_external_side_effect
+        resource_scopes: [workspace]";
+
+    const CWD_PROBE_NO_AUTH: &str = "      auth:
+        kind: none
+        requirement: none";
+
+    async fn probe_cwd(fixture: &Fixture, source: &str, ctx: PrimitiveExecCtx) -> PathBuf {
+        let probe = fixture.bin.join("cwd-probe");
+        fs::write(
+            &probe,
+            r#"#!/bin/sh
+printf '{"cwd":"%s"}\n' "$(pwd -P)"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o700)).unwrap();
+        let result = fixture
+            .run_action(
+                "cwd-probe",
+                source,
+                "run",
+                serde_json::json!({}),
+                "unused@example.com",
+                Some(ctx),
+            )
+            .await
+            .expect("cwd probe dispatch");
+        assert!(result.success, "{}", result.stderr);
+        let cwd = result
+            .parsed_json
+            .as_ref()
+            .and_then(|json| json["cwd"].as_str())
+            .map(PathBuf::from);
+        cwd.unwrap_or_else(|| panic!("probe printed no folder: {}", result.stdout))
+    }
+
+    /// The call's own lease below the scope's `workdirs/skill-working`, gone
+    /// once the call ended -- never the process's own cwd.
+    fn assert_ran_in_a_lease(scope: &Path, cwd: &Path) {
+        assert!(
+            cwd.starts_with(scope.join("workdirs").join("skill-working")),
+            "{}",
+            cwd.display()
+        );
+        let process = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        assert_ne!(cwd, process.as_path());
+        assert!(!cwd.exists(), "the call's end scavenges its lease");
+    }
+
+    /// An implicit CLI-owned skill (ocr's shape) stands where every other
+    /// workspace route stands: the task's work root, else its own lease. It
+    /// used to stand in Magician's own cwd, where its relative `--input-file`
+    /// missed the task's files and its `--output-file` landed in the repo.
+    #[tokio::test]
+    async fn implicit_cli_owned_workspace_calls_run_in_the_task_workdir_else_a_lease() {
+        let fixture = Fixture::new();
+        let source = cwd_probe_pack("workspace", CWD_PROBE_CLI_OWNED_AUTH);
+        let scope = fixture.scope_paths.home_root.clone();
+        let task = scope.join("internal_tasks/t-cwd/workdir");
+        fs::create_dir_all(&task).unwrap();
+
+        let in_task = fixture
+            .ctx("unused@example.com")
+            .with_task_work_root(Some(task.clone()));
+        let in_task = probe_cwd(&fixture, &source, in_task).await;
+        assert_eq!(
+            fs::canonicalize(&in_task).unwrap(),
+            fs::canonicalize(&task).unwrap()
+        );
+
+        let taskless = probe_cwd(&fixture, &source, fixture.ctx("unused@example.com")).await;
+        assert_ran_in_a_lease(&scope, &taskless);
+    }
+
+    /// `denied` refuses the caller's choice of folder; it never meant "wherever
+    /// Magician was started" (the repository on a development host). On the
+    /// implicit CLI-owned and the profile-free route alike the call stands in
+    /// its own empty lease -- even beside a task work root, which a denied tool
+    /// never asked for -- and a chosen folder is still refused before launch.
+    #[tokio::test]
+    async fn denied_working_directory_calls_run_in_a_lease_never_the_process_cwd() {
+        let fixture = Fixture::new();
+        let scope = fixture.scope_paths.home_root.clone();
+        let task = scope.join("internal_tasks/t-denied/workdir");
+        fs::create_dir_all(&task).unwrap();
+        for auth in [CWD_PROBE_CLI_OWNED_AUTH, CWD_PROBE_NO_AUTH] {
+            let source = cwd_probe_pack("denied", auth);
+            for ctx in [
+                fixture.ctx("unused@example.com"),
+                fixture
+                    .ctx("unused@example.com")
+                    .with_task_work_root(Some(task.clone())),
+            ] {
+                let cwd = probe_cwd(&fixture, &source, ctx).await;
+                assert_ran_in_a_lease(&scope, &cwd);
+            }
+
+            let error = fixture
+                .run_action(
+                    "cwd-probe",
+                    &source,
+                    "run",
+                    serde_json::json!({"working_dir": task}),
+                    "unused@example.com",
+                    None,
+                )
+                .await
+                .expect_err("a denied tool cannot be handed a folder");
+            assert!(error.starts_with("refused: "), "{error}");
+        }
     }
 
     #[tokio::test]

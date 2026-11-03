@@ -3,7 +3,8 @@
 //! Where it is on: `execution.god_mode.enabled` is the default, for every
 //! chat and for runs no chat started (scheduled, triggers, background). A chat
 //! can override it from the composer (the Magician orb): on or off for that
-//! chat, its harness turns and every run it launches. VibeDev is unaffected.
+//! chat, its harness turns and every run it launches, coding runs included
+//! (their VibeDev engines stay boxed).
 //!
 //! With god mode on, a trusted agent's `shell`, file and `http` tools may go
 //! beyond `execution.shell_sandbox`, `execution.file_sandbox` and
@@ -53,9 +54,15 @@
 //! An approval answered after the script changed is refused.
 //!
 //! Who may use it: the call must run under a [`GodSession`], which the run
-//! seam, the chat turn and the plane dispatcher set only for trusted agents,
-//! and never for a VibeDev coding run ([`current_session`] is `None` inside
-//! one). A call with no session is refused with the normal sandbox's error.
+//! seam, the chat turn and the plane dispatcher set only for trusted agents.
+//! Coding runs are runs like any other: an engineer's or a VibeDev
+//! coordinator's own tools follow its chat's choice, else the default, so a
+//! chat's god mode reaches the coding work it starts. Their shell runs in
+//! the general OS box like any run's and asks before leaving it; an explicit
+//! working directory in the live Magician repo asks every time, allow once
+//! only, whatever grants or auto-approve say. The coding engines themselves
+//! stay boxed; only super god mode's per-launch card lifts that.
+//! A call with no session is refused with the normal sandbox's error.
 //! An approval answered after what it rests on changed (the settings, the
 //! chat's choice, super god mode) is refused and not recorded.
 
@@ -75,7 +82,8 @@ use crate::magician_v2::user_requests::service::{RequestOption, UserRequest, Use
 pub mod shell_scope;
 use shell_scope::{ScriptRun, ScriptRunner, ShellCommand, ShellReading};
 
-/// Whether a run is a VibeDev coding run, which god mode never applies to.
+/// Whether a run is a VibeDev coding run (coding budgets; its engines stay
+/// boxed unless super god mode lifts them).
 pub use crate::magician_v2::execution::agentic::types::is_vibedev_coding_context;
 
 /// How long an approval waits for the owner before it counts as "deny"
@@ -798,12 +806,10 @@ pub fn active() -> bool {
 /// process only for built-in and local agents (lower trust takes the
 /// task-backed executor path), so that call is trusted.
 ///
-/// Never inside a VibeDev coding run (`coding_engine::coding_context_active`):
-/// god mode does not apply to VibeDev, whatever an outer scope set.
+/// A coding run's calls (`coding_engine::coding_context_active`) get the
+/// same session as any other: god mode flows from the chat into the coding
+/// work it starts.
 pub fn current_session() -> Option<GodSession> {
-    if crate::magician_v2::execution::coding_engine::coding_context_active() {
-        return None;
-    }
     match current_scope().session {
         Some(explicit) => explicit,
         None => chat_compiled_session(),
@@ -1408,6 +1414,11 @@ pub enum GodAction<'a> {
         violation: &'a str,
         /// Matched a blocked fragment: only an exact invocation grant applies.
         catastrophic: bool,
+        /// Why this call asks the owner every time, if it must: no grant
+        /// covers it, auto-approve never approves it, and it can be allowed
+        /// once only. Set for an explicit working directory in the live
+        /// Magician repo inside a coding run (`native_executors`).
+        always_ask: Option<&'a str>,
     },
     Path {
         path: &'a Path,
@@ -1702,6 +1713,7 @@ async fn assess_off_runtime(action: &GodAction<'_>) -> Assessment {
         working_dir,
         stdin,
         catastrophic,
+        always_ask: None,
         ..
     } = action
     else {
@@ -1814,8 +1826,18 @@ fn assess_with(
             working_dir,
             stdin,
             catastrophic,
+            always_ask,
             ..
         } => {
+            // What must ask every time asks before anything else is read:
+            // no grant, interpreter or exact, may cover it.
+            if let Some(reason) = always_ask {
+                return Assessment {
+                    needs: vec![Need::OnceOnly],
+                    scope_note: Some((*reason).to_string()),
+                    scopes: &[],
+                };
+            }
             let reading = shell_scope::read(command);
             // A line that runs one Python interpreter alone may still be
             // allowed for the rest of this chat or run (never "always"). A
@@ -1943,18 +1965,23 @@ fn lasting_choices(uncovered: &[&Need], scopes: &[Scope]) -> Vec<(Scope, Vec<Str
 /// Decide whether god mode lets `action` go beyond the normal sandbox.
 /// `Ok(())` means run it unrestricted; `Err` is the reason to refuse.
 /// Why auto-approve still asks the owner about `action`, if it does: a shell
-/// line on the blocked-command list, one that deletes or runs as root, or
-/// one whose code the line does not show; an MCP tool whose name deletes; a
-/// staged edit that deletes a file; and every super god mode launch, which
-/// asks by design. `None` approves it.
+/// call that must always ask (an explicit working directory in the live
+/// Magician repo inside a coding run), a line on the blocked-command list,
+/// one that deletes or runs as root, or one whose code the line does not
+/// show; an MCP tool whose name deletes; a staged edit that deletes a file;
+/// and every super god mode launch, which asks by design. `None` approves it.
 pub fn auto_approve_holds_back(action: &GodAction<'_>) -> Option<String> {
     match action {
         GodAction::Capability { .. } => Some("new tool access requires owner approval".into()),
         GodAction::Shell {
             command,
             catastrophic,
+            always_ask,
             ..
         } => {
+            if let Some(reason) = always_ask {
+                return Some((*reason).to_string());
+            }
             if *catastrophic {
                 return Some("it matches the blocked-command list".to_string());
             }
@@ -2983,6 +3010,7 @@ mod tests {
             stdin: None,
             violation: "it would run outside the OS sandbox",
             catastrophic,
+            always_ask: None,
         };
         for command in [
             "printf 'x'; find . -name '*.py' -print; command -v ocr || true",
@@ -3245,6 +3273,7 @@ mod tests {
                 stdin: None,
                 violation: "v",
                 catastrophic,
+                always_ask: None,
             });
             assert_eq!(assessment.needs, vec![Need::OnceOnly], "{command}");
             assert!(assessment.scope_note.is_some());
@@ -3256,6 +3285,7 @@ mod tests {
             stdin: None,
             violation: "v",
             catastrophic: false,
+            always_ask: None,
         });
         assert!(clear.scope_note.is_none());
         assert_eq!(clear.scopes, &Scope::SHELL);
@@ -3281,6 +3311,7 @@ mod tests {
                 working_dir,
                 stdin,
                 catastrophic,
+                always_ask: None,
                 violation: "outside",
             })
             .needs
@@ -3343,6 +3374,7 @@ mod tests {
             stdin: None,
             violation: "outside",
             catastrophic: false,
+            always_ask: None,
         })
         .needs
         .remove(0)
@@ -3442,6 +3474,7 @@ mod tests {
                 stdin: None,
                 violation: "v",
                 catastrophic: false,
+                always_ask: None,
             });
             assert_eq!(
                 assessment.needs,
@@ -3469,6 +3502,7 @@ mod tests {
             stdin: None,
             violation: "v",
             catastrophic: true,
+            always_ask: None,
         });
         assert_eq!(blocked.needs, vec![Need::OnceOnly]);
         assert!(!covered(
@@ -3498,6 +3532,7 @@ mod tests {
                 stdin: None,
                 violation: "v",
                 catastrophic: false,
+                always_ask: None,
             });
             assert!(
                 !matches!(assessment.needs.as_slice(), [Need::Interpreter(_)]),
@@ -3648,6 +3683,7 @@ mod tests {
                     stdin: None,
                     violation: "v",
                     catastrophic,
+                    always_ask: None,
                 });
                 assert_eq!(assessment.needs, vec![Need::OnceOnly], "{command}");
                 assert!(assessment.once_only());
@@ -3689,6 +3725,7 @@ mod tests {
                 stdin: None,
                 violation: "outside",
                 catastrophic: false,
+                always_ask: None,
             })
         };
         for command in [
@@ -3846,6 +3883,7 @@ mod tests {
                 stdin: None,
                 violation: "outside",
                 catastrophic: false,
+                always_ask: None,
             };
             assert_eq!(
                 assess_off_runtime(&action).await.needs,
@@ -3905,6 +3943,7 @@ mod tests {
             stdin: None,
             violation: "outside",
             catastrophic: false,
+            always_ask: None,
         };
         with_test_approver(service.clone(), async {
             let answer = async {
@@ -3927,6 +3966,69 @@ mod tests {
         assert!(grants_for(&chat).is_empty());
     }
 
+    /// A shell call that must always ask (an explicit working directory in
+    /// the live repo inside a coding run) asks every time, allow once only:
+    /// a program grant that covers the same line otherwise, and auto-approve,
+    /// do not cover it, and a lasting answer is refused.
+    #[tokio::test]
+    async fn a_live_repo_shell_call_always_asks_allow_once_only() {
+        let _god = test_scope(true);
+        let dir = tempfile::tempdir().unwrap();
+        let chat = session("live-repo-always-asks");
+        set_chat_auto_override("live-repo-always-asks", Some(true));
+        grant_for_session_in_test(&chat, &[program_grant("git")]);
+        let line = |always_ask| GodAction::Shell {
+            command: "git checkout -b x",
+            working_dir: Some(dir.path()),
+            stdin: None,
+            violation: "the live repo",
+            catastrophic: false,
+            always_ask,
+        };
+        let fenced = line(Some("its working directory is in the live Magician repo"));
+        let assessment = assess(&fenced);
+        assert_eq!(assessment.needs, vec![Need::OnceOnly]);
+        assert!(assessment.once_only());
+        assert!(assessment.scopes.is_empty());
+        assert!(auto_approve_holds_back(&fenced).is_some());
+        assert_eq!(auto_approve_holds_back(&line(None)), None);
+        // The same line without the fence is covered by the grant, no card.
+        with_session(Some(chat.clone()), authorize(line(None)))
+            .await
+            .expect("the program grant covers the plain line");
+        let service = Arc::new(UserRequestService::new(Arc::new(
+            crate::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(64),
+        )));
+        with_test_approver(service.clone(), async {
+            for (decision, allowed) in [
+                ("allow_once", true),
+                ("allow_once", true),
+                ("session:exact", false),
+                ("always:program", false),
+                ("deny", false),
+            ] {
+                let answer = async {
+                    let request = next_request(&service).await;
+                    assert_eq!(option_ids(&request), ["allow_once", "deny"]);
+                    assert!(
+                        request.question.contains("can only be allowed once")
+                            && request.question.contains("live Magician repo"),
+                        "{}",
+                        request.question
+                    );
+                    assert!(request.context.get("auto_approve_held_back").is_some());
+                    answer_request(&service, request.id, decision).await;
+                };
+                let (result, ()) = tokio::join!(
+                    with_session(Some(chat.clone()), authorize(fenced.clone())),
+                    answer
+                );
+                assert_eq!(result.is_ok(), allowed, "{decision}: {result:?}");
+            }
+        })
+        .await;
+    }
+
     /// An approval rests on the files the line ran when the owner was asked.
     #[tokio::test]
     async fn a_script_rewritten_while_the_owner_is_asked_is_refused() {
@@ -3944,6 +4046,7 @@ mod tests {
             stdin: None,
             violation: "outside",
             catastrophic: false,
+            always_ask: None,
         };
         with_test_approver(service.clone(), async {
             let answer = async {
@@ -3979,6 +4082,7 @@ mod tests {
                 working_dir: Some(dir.path()),
                 stdin: Some("input"),
                 catastrophic: true,
+                always_ask: None,
                 violation: "blocked",
             };
             // Each case starts without a grant, including the preceding always case.
@@ -4046,6 +4150,7 @@ mod tests {
                         working_dir: Some(dir.path()),
                         stdin: Some("input"),
                         catastrophic: true,
+                        always_ask: None,
                         violation: "blocked",
                     })
                 )
@@ -4127,6 +4232,7 @@ mod tests {
             stdin: None,
             violation: "outside",
             catastrophic: false,
+            always_ask: None,
         })
         .await
         .unwrap_err();
@@ -4212,6 +4318,7 @@ mod tests {
                 stdin: None,
                 violation: "outside",
                 catastrophic: false,
+                always_ask: None,
             })
             .await
             .expect("granted for the session");
@@ -4222,6 +4329,7 @@ mod tests {
                     stdin: None,
                     violation: "outside",
                     catastrophic: false,
+                    always_ask: None,
                 })
                 .await
                 .is_err(),
@@ -4234,6 +4342,7 @@ mod tests {
                     stdin: None,
                     violation: "blocked",
                     catastrophic: true,
+                    always_ask: None,
                 })
                 .await
                 .is_err(),
@@ -4247,20 +4356,23 @@ mod tests {
         });
     }
 
-    /// God mode does not apply to VibeDev: inside a coding run there is no
-    /// session, whatever an outer scope set.
+    /// God mode reaches a coding run: inside the coding context a call keeps
+    /// the session its run set, and follows the chat turning it off.
     #[tokio::test]
-    async fn god_mode_never_applies_inside_a_vibedev_coding_run() {
+    async fn god_mode_follows_the_chat_into_a_coding_run() {
         let _scope = test_scope(true);
         let chat = session("vd1");
-        let outside = with_session(Some(chat.clone()), async { current_session() }).await;
-        assert_eq!(outside, Some(chat.clone()));
-        let inside = crate::magician_v2::execution::coding_engine::with_coding_context(
-            true,
-            with_session(Some(chat), async { (current_session(), active()) }),
-        )
-        .await;
-        assert_eq!(inside, (None, false));
+        let inside = || {
+            crate::magician_v2::execution::coding_engine::with_coding_context(
+                true,
+                with_session(Some(chat.clone()), async { (current_session(), active()) }),
+            )
+        };
+        assert_eq!(inside().await, (Some(chat.clone()), true));
+        // `_scope`'s drop clears every chat's override (`configure`), so a
+        // failed assertion here cannot leak this one into later tests.
+        set_chat_override("vd1", Some(false));
+        assert_eq!(inside().await, (None, false), "the chat turned it off");
     }
 
     /// An approval answered after what it rests on changed is refused: the
@@ -4275,6 +4387,7 @@ mod tests {
             stdin: None,
             violation: "v",
             catastrophic: false,
+            always_ask: None,
         };
         let chat = session("late1");
         let god_before = fingerprint(&settings());

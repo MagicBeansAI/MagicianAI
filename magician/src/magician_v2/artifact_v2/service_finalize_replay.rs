@@ -304,6 +304,7 @@ pub async fn replay_finalization(
         source_output_ids: Vec::new(),
         verified_terminal_projection: None,
         llm_routing_overrides: None,
+        delivered_files: Vec::new(),
         now: now_rfc3339(),
     };
     if let Ok(bundle) = builder.build_task_user_output_bundle(&task_ctx).await {

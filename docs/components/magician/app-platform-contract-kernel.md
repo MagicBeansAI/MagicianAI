@@ -303,6 +303,11 @@ surface, purge and projection: `magician-apps/src/apps/`. HTTP:
   members and missing prompt/asset/vendor references. Production ceilings are
   fixed; readers are capped before allocation; identity covers every path,
   length and digest.
+- A package ZIP (`package_transfer.rs`) is read member by member, never with
+  the zip crate's `extract()`. A member whose name is not UTF-8, cannot be
+  decoded or exceeds the path ceiling is rejected as an unsafe member before
+  staging; duplicate names, directories, backslashes, NULs and non-regular
+  Unix modes are rejected the same way.
 - Dependency locks accept no name-only or self-asserted digests: registry
   evidence is non-deserializable, minted from an exact positive revision and
   computed digest. Vendored identity and `vendor/skills/<name>/SKILL.md` derive

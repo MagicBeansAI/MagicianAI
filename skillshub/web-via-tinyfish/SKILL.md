@@ -1,6 +1,6 @@
 ---
 name: web-via-tinyfish
-version: 0.1.1
+version: 0.1.2
 description: "Fast public web search and multi-URL extraction via TinyFish. Prefer it for quick public lookup/extraction on agents without `content_search`; ordinary research uses `content_search`, where TinyFish is the first free discovery adapter."
 metadata:
   magician:
@@ -81,10 +81,9 @@ metadata:
           page: /page
           total_results: /total_results
     requires:
-      # The official launcher uses `#!/usr/bin/env node`; declaring the
-      # interpreter lets the governed runtime add its reviewed directory to
-      # the child PATH without a wrapper.
-      bins: [tinyfish, node]
+      # `tinyfish-adapter` is the snapshot-safe entrypoint; the official
+      # launcher uses `#!/usr/bin/env node`, so the interpreter is declared too.
+      bins: [tinyfish-adapter, tinyfish, node]
       env: [TINYFISH_API_KEY]
     install_hint:
       docs: "Run `make setup-all` to install the pinned official CLI, then set TINYFISH_API_KEY in the scoped secret authority."
@@ -104,22 +103,20 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        # Execute the reviewed interpreter and keep the official multi-file ESM
-        # package in place. Snapshotting its index.js alone would detach the
-        # sibling imports that comprise the CLI. Both binaries that land in
-        # bin/ are declared here: `node` is the interpreter, `tinyfish` is the
-        # launcher named by command_prefix below. Every file a governed skill
-        # materializes into bin/ must be declared (see higgsfield, metabase).
-        bins: [node, tinyfish]
-        entrypoint: node
+        # The runtime snapshots its entrypoint alone, and the official CLI is a
+        # multi-file ESM package (dist/index.js imports ./program.js), so the
+        # entrypoint is the tracked `bin/tinyfish-adapter`, which execs the
+        # `tinyfish` PATH companion in place. `node` is that launcher's
+        # interpreter. Every file a governed skill materializes into bin/ must
+        # be declared (see higgsfield, metabase).
+        bins: [tinyfish-adapter, tinyfish, node]
+        entrypoint: tinyfish-adapter
       runtime:
         protocol: cli
-        command_prefix: [skills/web-via-tinyfish/bin/tinyfish]
+        command_prefix: []
         interaction: batch
         stdin: {mode: denied, sensitivity: public}
         working_directory:
-          # The materializer installs the official launcher at this stable
-          # scope-relative path; Node follows it into the pinned npm package.
           mode: workspace
         limits:
           # Fetch permits a provider-owned per-URL deadline up to 110 seconds;

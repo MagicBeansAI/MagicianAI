@@ -2,6 +2,7 @@
 	import { isTaskSelectionHref, resolvedWorkTaskHref } from '$lib/work/routes';
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import { page } from '$app/stores';
 	import { get } from 'svelte/store';
 	import { onDestroy, onMount, tick } from 'svelte';
@@ -1734,7 +1735,7 @@
 			return;
 		}
 		if (item.thread_id) {
-			await goto(`/t/${encodeURIComponent(item.thread_id)}`, {
+			await goto(threadHref(item.thread_id), {
 				replaceState: false,
 				noScroll: true
 			});
@@ -2207,7 +2208,7 @@
 			const sourceThreadId = item.ui_thread_id || readMetadataString(item, 'source_chat_session_id');
 			if (sourceThreadId) {
 				const params = new URLSearchParams({ selected_item: item.id });
-				await goto(`/t/${encodeURIComponent(sourceThreadId)}?${params.toString()}`, {
+				await goto(threadHref(sourceThreadId, `?${params.toString()}`), {
 					replaceState: false,
 					noScroll: true
 				});
@@ -2256,7 +2257,7 @@
 		}
 		if (item.item_type === 'agent_message' && item.ui_thread_id) {
 			const params = new URLSearchParams({ selected_item: item.id });
-			await goto(`/t/${encodeURIComponent(item.ui_thread_id)}?${params.toString()}`, {
+			await goto(threadHref(item.ui_thread_id, `?${params.toString()}`), {
 				replaceState: false,
 				noScroll: true
 			});

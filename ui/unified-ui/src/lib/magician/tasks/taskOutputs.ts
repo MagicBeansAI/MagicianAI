@@ -22,9 +22,11 @@ import {
 	type TaskFilePreview
 } from './taskFilePreview';
 import {
+	orderTaskDeliverables,
 	outputFilesFrom,
 	reportSourcePath,
 	sidecarFilesFrom,
+	withPrimaryDeliverable,
 	type PanelOutputFile,
 	type TaskOutputRef,
 	type TaskSidecarRef
@@ -67,11 +69,19 @@ export async function fetchTaskOutputFiles(
 		// The panel lists deliverables under Output and the rest under Technical
 		// details; keeping them in one list keeps the row indexes the drawer's
 		// events carry pointing into a single array.
+		//
+		// The deliverables then read primary deliverable, the other delivered
+		// files, the summary (`orderTaskDeliverables`); the primary is named on
+		// each row and once at the top, and either is enough.
 		const sidecars = payload?.outputs?.internal_files;
-		const files = [
-			...outputFilesFrom(refs as TaskOutputRef[], urlFor),
+		const marked = withPrimaryDeliverable(
+			refs as TaskOutputRef[],
+			payload?.outputs?.primary_deliverable_output_id
+		);
+		const files = orderTaskDeliverables([
+			...outputFilesFrom(marked, urlFor),
 			...(Array.isArray(sidecars) ? sidecarFilesFrom(sidecars as TaskSidecarRef[], urlFor) : [])
-		];
+		]);
 		// The file the task's written report is read from, so the panel can give
 		// the rendered report that file's row rather than listing it twice.
 		const source = reportSourcePath(

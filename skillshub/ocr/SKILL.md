@@ -1,6 +1,6 @@
 ---
 name: ocr
-version: 0.3.1
+version: 0.3.2
 description: 'Transcribe text from images and scanned/image-only PDFs. Prefer document-to-markdown for
   ordinary document reading and pdftotext for PDF-specific extraction controls. For visual layout,
   clipping, overlap, margins, or legibility review, use image analysis instead. Inspect images already
@@ -18,6 +18,7 @@ metadata:
       # activation requirements for hosts that only use tesseract.
       - tesseract
       - pdftoppm
+      - python3
     install_hint:
       docs: requires `python3`. tesseract engine also needs `tesseract` + `pdftoppm` (brew install tesseract
         poppler). agy engine needs `agy` CLI on PATH. codex engine needs `codex` CLI (npm i -g @openai/codex)
@@ -32,23 +33,10 @@ metadata:
       # so the path below names the installed fixture relative to the scope
       # root.
       #
-      # The scope root is the governed working directory for a static-secret
-      # CLI, but NOT for this one. `auth.kind: cli_profile` with
-      # `profile_selection.mode: implicit` and `storage.kind: cli_owned` — the
-      # three facts below that let `agy` and `codex` reach their own completed
-      # logins — route this skill through the implicit-CLI lane, whose working
-      # directory is the *calling process's* current directory rather than the
-      # scope.
-      #
-      # No relative spelling can name both bases, because they are different
-      # directories. So this declaration keeps the one spelling that means
-      # something — the installed path, relative to the working directory — and
-      # the pairing of a fixture with a skill's real working directory is
-      # resolved where it belongs: the canary runner reads the same three auth
-      # fields the router reads, and materializes this package's fixture under
-      # the base this skill will actually be launched in
-      # (the runner's `tests/tool_skill_canary.rs` —
-      # `governed_working_directory` and `stage_packaged_fixtures`).
+      # Every governed route, this implicit CLI-owned one included, runs in the
+      # task's work folder, so the runner stages this package's fixture there
+      # (`tests/tool_skill_canary.rs` — `governed_working_directory` and
+      # `stage_packaged_fixtures`).
       #
       # The tesseract engine is pinned deliberately: it is the only free,
       # offline, deterministic engine, so the probe reports on this package
@@ -82,6 +70,7 @@ metadata:
         - pdftoppm
         - agy
         - codex
+        - python3
         # Required whenever more than one binary is named — see
         # `validate_requirements` in tool-runtime-core. Without it the contract
         # is invalid, the pack never loads, and every engine is lost, not just

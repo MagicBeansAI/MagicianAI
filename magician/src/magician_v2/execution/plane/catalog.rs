@@ -1142,11 +1142,11 @@ mod tests {
         assert!(!harness.permits("run_coding_task"), "only shell is lifted");
     }
 
-    /// God mode does not apply to VibeDev: a coding agent's harness turn
-    /// (the engineer, or a coordinator dispatched a Build) keeps `shell` on
-    /// the floor with god mode on, and is never offered it.
+    /// God mode reaches coding runs: a coding agent's harness turn (the
+    /// engineer, or a coordinator dispatched a Build) gets `shell` off the
+    /// floor with god mode on, like any agent's turn.
     #[test]
-    fn god_mode_never_offers_shell_to_a_vibedev_coding_turn() {
+    fn god_mode_offers_shell_to_a_vibedev_coding_turn() {
         let names = ["shell", "read_file", "run_coding_task"];
         let mut engineer = test_spawned_bare_grant_with_index(&names);
         engineer.live_harness_turn = true;
@@ -1160,8 +1160,8 @@ mod tests {
         coordinator.ctx.coding_coordinator_run = true;
         let _on = crate::magician_v2::god_mode::test_scope(true);
         for grant in [&engineer, &coordinator] {
-            assert!(!grant.permits("shell"));
-            assert!(!advertised_names(grant).contains(&"shell".to_string()));
+            assert!(grant.permits("shell"));
+            assert!(advertised_names(grant).contains(&"shell".to_string()));
         }
         assert!(
             engineer.permits("run_coding_task"),

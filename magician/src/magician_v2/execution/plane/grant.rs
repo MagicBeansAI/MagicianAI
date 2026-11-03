@@ -369,8 +369,11 @@ impl Drop for RevokeGrantOnDrop {
 
 /// God mode (`execution.god_mode`) lifts one name off the nesting floor for
 /// a live harness turn whose chat or run has god mode on: `shell`. Its calls
-/// then ask the owner for anything the normal sandbox refuses. Terminal
-/// grants keep the floor.
+/// then ask the owner for anything the normal sandbox refuses. A coding
+/// run's harness turn gets it too: its calls run in the coding context, but
+/// a god-mode shell call there runs in the general OS box and asks before it
+/// leaves it, as in any run (`native_executors::authorize_bash_action`).
+/// Terminal grants keep the floor.
 pub(crate) fn god_mode_lifts_floor(tool: &str, grant: &PlaneGrant) -> bool {
     tool == "shell" && super::dispatch::plane_god_session(grant).is_some()
 }

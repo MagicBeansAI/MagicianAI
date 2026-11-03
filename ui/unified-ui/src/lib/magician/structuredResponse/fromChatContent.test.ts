@@ -184,6 +184,28 @@ describe('adaptLegacyChatContentToStructuredResponse', () => {
 		);
 	});
 
+	it('lists the primary deliverable first and the summary last, as Summary, without agent state', () => {
+		const source = { type: 'task_output' as const, task_id: 'task-1' };
+		const adapted = adaptLegacyChatContentToStructuredResponse({
+			type: 'task_status_update',
+			task_id: 'task-1',
+			status: 'completed',
+			summary: 'Done',
+			output_files: [
+				{ type: 'file', source, display_name: 'out_task_user_task-1_exec-1.md', relative_path: 'outputs/out_task_user_task-1_exec-1.md' },
+				{ type: 'file', source, display_name: 'out_task_continuation_task-1_exec-1.json', relative_path: 'outputs/out_task_continuation_task-1_exec-1.json' },
+				{ type: 'file', source, display_name: 'notes.md', relative_path: 'outputs/delivered/exec-1/notes.md' },
+				{ type: 'file', source, display_name: 'report.pdf', relative_path: 'outputs/delivered/exec-1/report.pdf', primary: true }
+			]
+		});
+		const artifacts = adapted.response?.blocks.find((block) => block.kind === 'artifacts');
+		expect(artifacts?.kind === 'artifacts' ? artifacts.items.map((item) => item.label) : null).toEqual([
+			'report.pdf',
+			'notes.md',
+			'Summary'
+		]);
+	});
+
 	it('uses speech_tts as task status summary when canonical summary is missing', () => {
 		const adapted = adaptLegacyChatContentToStructuredResponse({
 			type: 'task_status_update',

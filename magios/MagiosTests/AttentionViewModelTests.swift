@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import Magician
 
@@ -154,6 +155,18 @@ final class AttentionViewModelTests: XCTestCase {
             "metadata": ["input_type": inputType, "pause_state_id": correlationId, "question": "Q?"]
         ]
         return try! JSONDecoder().decode(AttentionItem.self, from: JSONSerialization.data(withJSONObject: dict))
+    }
+
+    /// Ends a tombstone now through the coordinator's own expiry, and returns
+    /// once every `expired` subscriber has run. A short wall-clock grace races
+    /// a loaded simulator, and the row shows as soon as the grace passes while
+    /// the counts move only when `expired` fires.
+    private func expireNow(_ key: OptimisticCardKey, in coordinator: CardMutationCoordinator) {
+        let expired = expectation(description: "tombstone expired")
+        let subscription = coordinator.expired.filter { $0 == key }.sink { _ in expired.fulfill() }
+        coordinator.commit(key, suppressFor: 0)
+        wait(for: [expired], timeout: 2)
+        subscription.cancel()
     }
 
     // MARK: - parseResolved (pure NDJSON pairing)
@@ -745,10 +758,11 @@ final class AttentionViewModelTests: XCTestCase {
             requests: LanePage(total: 0, nextCursor: nil, hasMore: false),
             approvals: nil, escalations: nil, failed: nil, running: nil
         )
-        coordinator.commit(.hitl("corr-1"), suppressFor: 0.01)
+        coordinator.commit(.hitl("corr-1"))
         vm.lanes["requests"] = [reissued]
 
         XCTAssertTrue(vm.items("requests").isEmpty)
+        expireNow(.hitl("corr-1"), in: coordinator)
         waitUntil { vm.items("requests").map(\.id) == ["item-1"] }
         XCTAssertEqual(vm.counts?.requests, 1)
         XCTAssertEqual(vm.counts?.needsAction, 1)
@@ -773,7 +787,7 @@ final class AttentionViewModelTests: XCTestCase {
         counts.needsAction = 2
         vm.counts = counts
         vm.badgeCount = 2
-        coordinator.commit(.hitl("corr-1"), suppressFor: 0.05)
+        coordinator.commit(.hitl("corr-1"))
         MockURLProtocol.handler = { request in
             if request.url?.path.hasSuffix("/user-requests") == true {
                 return (response(for: request), jsonData(["requests": []]))
@@ -794,6 +808,8 @@ final class AttentionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.total("requests"), 1)
         XCTAssertEqual(vm.counts?.requests, 1)
         XCTAssertEqual(vm.badgeCount, 1)
+        // The page reply must land inside the grace, so the grace ends only now.
+        expireNow(.hitl("corr-1"), in: coordinator)
         waitUntil { vm.items("requests").map(\.id) == ["item-2", "item-1"] }
         XCTAssertEqual(vm.total("requests"), 2)
         XCTAssertEqual(vm.counts?.requests, 2)

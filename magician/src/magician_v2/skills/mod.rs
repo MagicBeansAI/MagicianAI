@@ -26,11 +26,13 @@ pub mod active;
 pub mod catalog;
 pub mod deps;
 pub mod embedded_extensions;
+pub mod files;
 pub mod loader;
 pub mod manifest;
 pub mod path_rewrite;
 pub mod personality_mode;
 pub mod runner;
+pub mod scope_env;
 pub mod scope_layer;
 pub mod scope_loader;
 pub mod scripts;
@@ -43,6 +45,7 @@ pub use active::{
     ActiveProcedureSkill,
 };
 pub use catalog::{build_skill_descriptors, SkillDescriptor};
+pub use files::{linked_files, read_skill_file};
 pub use loader::SkillLoader;
 pub use manifest::{
     InferredKind, MagicianMetadata, PersonalitySpec, SkillManifest, SkillMetadata, SkillRequires,

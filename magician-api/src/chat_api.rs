@@ -908,6 +908,26 @@ async fn inbound_engagement_outcome(
     outcome
 }
 
+/// The canonical thread id for a `ui_thread_id` a client may have taken from
+/// a thread URL. A thread's URL carries its slug (which follows its name) or a
+/// former slug; sessions must be filed under the id, which never changes. A
+/// key naming no live thread passes through unchanged.
+async fn canonical_ui_thread_id(
+    chat_api: &ChatApi,
+    principal: &str,
+    workspace: &str,
+    requested: String,
+) -> String {
+    match chat_api.chat_service.ui_threads() {
+        Some(threads) => {
+            threads
+                .resolve_referenced_thread_id(principal, workspace, &requested)
+                .await
+        },
+        None => requested,
+    }
+}
+
 fn route_inbound_query(
     envoy_config: Option<&EnvoyConfig>,
     query: &ActiveSessionQuery,
@@ -1384,6 +1404,9 @@ pub async fn get_active_session_handler(
         request_is_authenticated(&req),
         engagement_outcome.into_lane(),
     );
+    let effective_ui_thread_id =
+        canonical_ui_thread_id(chat_api.get_ref(), &principal, &workspace, effective_ui_thread_id)
+            .await;
 
     debug!(
         "[CHAT-API] GET /chat/active principal={} workspace={} thread={} (requested={}) \
@@ -1511,6 +1534,9 @@ pub async fn new_session_handler(
         request_is_authenticated(&req),
         engagement_outcome.into_lane(),
     );
+    let effective_ui_thread_id =
+        canonical_ui_thread_id(chat_api.get_ref(), &principal, &workspace, effective_ui_thread_id)
+            .await;
 
     debug!(
         "[CHAT-API] POST /chat/new principal={} workspace={} thread={} (requested={}) \
@@ -1611,6 +1637,18 @@ pub async fn list_sessions_handler(
         "[CHAT-API] GET /chat/sessions principal={} workspace={}",
         principal, workspace
     );
+    let requested_thread = match query
+        .ui_thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(thread) => Some(
+            canonical_ui_thread_id(chat_api.get_ref(), &principal, &workspace, thread.to_string())
+                .await,
+        ),
+        None => None,
+    };
 
     let paged = query.limit.is_some()
         || query.offset.is_some()
@@ -1626,12 +1664,7 @@ pub async fn list_sessions_handler(
                 &principal,
                 &workspace,
                 ChatSessionPageQuery {
-                    ui_thread_id: query
-                        .ui_thread_id
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToOwned::to_owned),
+                    ui_thread_id: requested_thread.clone(),
                     history_lane,
                     archived,
                     search: search.to_string(),
@@ -1663,12 +1696,7 @@ pub async fn list_sessions_handler(
         .await
     {
         Ok(sessions) => {
-            let sessions = if let Some(ui_thread_id) = query
-                .ui_thread_id
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
+            let sessions = if let Some(ui_thread_id) = requested_thread.as_deref() {
                 sessions
                     .into_iter()
                     .filter(|session| session.ui_thread_id == ui_thread_id)

@@ -1,4 +1,4 @@
-import { writable, type Readable } from 'svelte/store';
+import { get, writable, type Readable } from 'svelte/store';
 
 /**
  * Server-side state of a chat turn (`chat::turn_state` in magician). The
@@ -18,6 +18,9 @@ export interface ChatTurnState {
 	ended_at?: number;
 	/** `user_stop`, a watchdog reason (`turn_stalled`, …), `error` or `interrupted`. */
 	reason?: string;
+	/** Settled here, not by the server (`recordStopOfTurnWithNoServerRun`): the
+	 *  server's own `running` for the turn still replaces it. */
+	client_settled?: boolean;
 }
 
 export const CHAT_TURN_STATE_EVENT = 'chat.turn.state_changed';
@@ -64,7 +67,13 @@ export function recordChatTurnState(state: ChatTurnState | null): void {
 	if (!state) return;
 	states.update((current) => {
 		const previous = current.get(state.chat_turn_id);
-		if (previous && previous.status !== 'running' && state.status === 'running') return current;
+		if (
+			previous &&
+			previous.status !== 'running' &&
+			!previous.client_settled &&
+			state.status === 'running'
+		)
+			return current;
 		const next = new Map(current);
 		next.set(state.chat_turn_id, state);
 		return next;
@@ -92,6 +101,33 @@ export function recordChatTurnStateFromResponse(data: unknown, sessionId: string
 		return next ?? current;
 	});
 	recordChatTurnState(latest);
+}
+
+/**
+ * Settle a turn the owner stopped that only this client shows as live: the
+ * server reports no running turn (after a restart it no longer knows the
+ * turn), so no state event will ever settle it. A state the server sent for
+ * the turn, settled or running, stands, and its later `running` still wins.
+ */
+export function recordStopOfTurnWithNoServerRun(
+	sessionId: string,
+	chatTurnId: string,
+	now: number = Date.now()
+): void {
+	if (!sessionId || !chatTurnId) return;
+	// Only a turn the server never reported (or one this client settled
+	// itself) is ours to settle: the server's settled or running state stands.
+	const known = get(states).get(chatTurnId);
+	if (known && !known.client_settled) return;
+	recordChatTurnState({
+		chat_turn_id: chatTurnId,
+		chat_session_id: sessionId,
+		status: 'stopped',
+		started_at: 0,
+		ended_at: now,
+		reason: USER_STOP_REASON,
+		client_settled: true
+	});
 }
 
 export function handleChatTurnStateEnvelope(envelope: { event_type: string; payload: unknown }): void {

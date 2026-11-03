@@ -192,6 +192,19 @@ fn sanitize_call_id(call_id: &str) -> String {
     }
 }
 
+/// Where [`install_skill_working_envelope`] places `call_id`'s lease, without
+/// creating anything.
+pub fn skill_working_lease_path(
+    workspace: &ArtifactV2Workspace,
+    principal: &str,
+    workspace_name: &str,
+    call_id: &str,
+) -> PathBuf {
+    workdirs_root(workspace, principal, workspace_name)
+        .join("skill-working")
+        .join(sanitize_call_id(call_id))
+}
+
 /// Create the classified skill-working lease and write the envelope there.
 pub fn install_skill_working_envelope(
     workspace: &ArtifactV2Workspace,
@@ -199,9 +212,7 @@ pub fn install_skill_working_envelope(
     workspace_name: &str,
     call_id: &str,
 ) -> Result<PathBuf> {
-    let lease = workdirs_root(workspace, principal, workspace_name)
-        .join("skill-working")
-        .join(sanitize_call_id(call_id));
+    let lease = skill_working_lease_path(workspace, principal, workspace_name, call_id);
     std::fs::create_dir_all(lease.join("inputs"))
         .with_context(|| format!("create {}", lease.display()))?;
     std::fs::create_dir_all(lease.join("outputs"))?;

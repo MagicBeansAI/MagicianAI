@@ -24,6 +24,21 @@ export const secondTick: Readable<number> = readable(Date.now(), (set) => {
 	return () => clearInterval(id);
 });
 
+/** How often a card's "Updated 2m ago" age advances. */
+export const AGE_TICK_MS = 60_000;
+
+/**
+ * `Date.now()`, refreshed every `AGE_TICK_MS` while subscribed: the clock for
+ * the chat cards' "Updated …" age, which must keep moving after the card's
+ * running work (and `secondTick`) has stopped. One interval for every card on
+ * screen, started with the first subscriber and stopped with the last.
+ */
+export const minuteTick: Readable<number> = readable(Date.now(), (set) => {
+	set(Date.now());
+	const id = setInterval(() => set(Date.now()), AGE_TICK_MS);
+	return () => clearInterval(id);
+});
+
 export interface LiveClock {
 	/** Hold the tick while `active` (some row is running); release it otherwise. */
 	sync(active: boolean): void;

@@ -6,7 +6,7 @@ use tracing::debug;
 use crate::magician_v2::realtime_events::RuntimeTransportBroadcaster;
 
 use super::{
-    events::{map_v2_realtime_event, ArtifactV2EventType},
+    events::{map_v2_realtime_event, status_hint_may_end_children_wait, ArtifactV2EventType},
     reducer::ArtifactV2Reducer,
     service::{ExecutionContext, ScopeRef, TaskFeedProjector, TaskProgressProjector},
 };
@@ -63,6 +63,7 @@ impl V3RuntimeEventBridge {
                                             mirrored.active_child_execution_ids.as_deref(),
                                             mirrored.current_step_id.as_deref(),
                                             &chrono::Utc::now().to_rfc3339(),
+                                            status_hint_may_end_children_wait(mirrored.event_type),
                                         )
                                         .await;
                                     // Handle step completion/failure events — update execution state

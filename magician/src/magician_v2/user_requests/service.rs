@@ -124,6 +124,28 @@ pub struct UserResponse {
     pub sensitive: Vec<SensitiveAnswer>,
 }
 
+impl UserResponse {
+    /// The id of the option this answer picked: `decision` when it names
+    /// one, else the typed `input` when it is an option's id or label
+    /// (case-insensitive). A client that showed the options but sent the
+    /// pick as text (`provide_input` + `"Original folder"`) still chose one.
+    pub fn chosen_option<'a>(&self, options: &'a [RequestOption]) -> Option<&'a str> {
+        let matches = |answer: &str| {
+            let answer = answer.trim();
+            options.iter().find(|option| {
+                option.id.eq_ignore_ascii_case(answer) || option.label.trim().eq_ignore_ascii_case(answer)
+            })
+        };
+        matches(&self.decision)
+            .or_else(|| {
+                (self.decision == "provide_input")
+                    .then(|| self.input.as_deref().and_then(matches))
+                    .flatten()
+            })
+            .map(|option| option.id.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum UserRequestStatus {
@@ -5123,6 +5145,47 @@ fn replay_or_conflict(
     })
 }
 
+/// The input types every client renders (the web's `KNOWN_INPUT_TYPES`,
+/// `lib/hitl/adapters.ts`). A client drops a request with any other spelling,
+/// so it cannot be answered there.
+const CANONICAL_HITL_INPUT_TYPES: &[&str] = &[
+    "text",
+    "password",
+    "otp",
+    "choice",
+    "multi_choice",
+    "confirmation",
+    "external_action",
+    "file_path",
+    "guidance",
+    "tool_authorization",
+    "sandbox_override",
+    "diff_approval",
+    "form",
+];
+
+/// The request's `context.input_type` when it is canonical, `choice` when it
+/// names none. A non-canonical spelling is announced as a `choice` when the
+/// request has options and as `text` when it has none, so a producer's private
+/// spelling never leaves an ask unanswerable.
+fn announced_input_type(request: &UserRequest) -> String {
+    let fallback = if request.options.is_empty() { "text" } else { "choice" };
+    match request.context.get("input_type").and_then(|value| value.as_str()) {
+        None => "choice".to_string(),
+        Some(declared) if CANONICAL_HITL_INPUT_TYPES.contains(&declared) => declared.to_string(),
+        Some(declared) => {
+            tracing::warn!(
+                request_id = %request.id,
+                request_type = %request.request_type,
+                declared,
+                announced = fallback,
+                "[USER-REQUEST] non-canonical input_type; announcing a renderable one"
+            );
+            fallback.to_string()
+        },
+    }
+}
+
 fn hitl_requested_event(request: &UserRequest) -> RuntimeTransportEvent {
     let request = request.clone().for_presentation();
     let canonical_options: Vec<serde_json::Value> = request
@@ -5136,12 +5199,7 @@ fn hitl_requested_event(request: &UserRequest) -> RuntimeTransportEvent {
             })
         })
         .collect();
-    let input_type = request
-        .context
-        .get("input_type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("choice")
-        .to_string();
+    let input_type = announced_input_type(&request);
     let mut input_schema = serde_json::json!({
         "options": canonical_options,
         "request_type": request.request_type,
@@ -7657,6 +7715,43 @@ mod tests {
             created_at: 0,
             sensitive: None,
         }
+    }
+
+    #[test]
+    fn an_answer_names_its_option_by_id_or_by_a_typed_label() {
+        let options = sample_request().options;
+        let answer = |decision: &str, input: Option<&str>| UserResponse {
+            request_id: "r".to_string(),
+            decision: decision.to_string(),
+            input: input.map(ToString::to_string),
+            channel: "ios".to_string(),
+            sensitive: Vec::new(),
+        };
+        assert_eq!(answer("allow_once", None).chosen_option(&options), Some("allow_once"));
+        assert_eq!(
+            answer("provide_input", Some(" allow once ")).chosen_option(&options),
+            Some("allow_once"),
+            "a pick sent as its label still names the option"
+        );
+        assert_eq!(answer("provide_input", Some("deny")).chosen_option(&options), Some("deny"));
+        assert_eq!(answer("provide_input", Some("maybe later")).chosen_option(&options), None);
+        assert_eq!(answer("cancel", Some("Deny")).chosen_option(&options), None);
+    }
+
+    #[test]
+    fn a_non_canonical_input_type_is_announced_as_one_every_client_renders() {
+        let mut request = sample_request();
+        assert_eq!(announced_input_type(&request), "choice", "no input_type is a choice");
+        request.context = serde_json::json!({"input_type": "sandbox_override"});
+        assert_eq!(announced_input_type(&request), "sandbox_override");
+        request.context = serde_json::json!({"input_type": "work_location"});
+        assert_eq!(
+            announced_input_type(&request),
+            "choice",
+            "a private spelling with options is still answerable as a choice"
+        );
+        request.options.clear();
+        assert_eq!(announced_input_type(&request), "text");
     }
 
     #[test]

@@ -5,6 +5,7 @@
     import { scopeIdentityStore, scopedRequestHeaders, getCurrentScopeCredentialRevision } from '$lib/stores/scopeIdentityStore';
     import { taskStore } from '$lib/stores/taskStore';
     import { workTaskHref } from '$lib/work/routes';
+    import { threadHrefs } from '$lib/threads/threadLinks';
     import { openAuthenticatedTaskOutput, taskOutputUrl, downloadAuthenticatedTaskOutput } from '$lib/magician/tasks/taskOutputs';
     export let sessionId: string | null;
     export let threadId = 'general';
@@ -13,7 +14,7 @@
     let generation = 0, filter: 'all' | 'artifacts' | 'uploads' = 'all', search = '';
     let controller: AbortController | null = null;
     let deleting = false, hasInventory = false, pendingDelete: Asset | null = null;
-    $: chatHref = `/t/${encodeURIComponent(threadId)}/chat${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`;
+    $: chatHref = $threadHrefs(threadId, `/chat${sessionId ? `?session=${encodeURIComponent(sessionId)}` : ''}`);
     $: nextTarget = JSON.stringify([sessionId, $scopeIdentityStore.principal, $scopeIdentityStore.workspace, getCurrentScopeCredentialRevision()]);
     $: if (nextTarget !== target) {
         target = nextTarget; generation++; controller?.abort(); files = []; error = ''; partial = false; chatTitle = ''; loading = false; pendingDelete = null; deleting = false; hasInventory = false;

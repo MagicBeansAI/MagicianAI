@@ -8,6 +8,7 @@
 	 * in /chat and /t/[name].
 	 */
 	import { createEventDispatcher } from 'svelte';
+	import { threadLabels } from '$lib/threads/threadLinks';
 
 	export let threadId: string | null = null;
 	export let sessionTitle: string | null = null;
@@ -90,14 +91,14 @@
 			aria-label="Open sessions and threads"
 			title={`${sessionTitle ?? (threadId ? 'New session' : 'No session')} — open sessions and threads`}
 		>
-			{#if threadId}<span class="thread">#{threadId}</span><span class="sep">/</span>{/if}
+			{#if threadId}<span class="thread">#{$threadLabels(threadId)}</span><span class="sep">/</span>{/if}
 			<span class="title">
 				{sessionTitle ?? (threadId ? 'New session' : 'No session')}
 				{#if relativeTime}<em class="ts">· {relativeTime}</em>{/if}
 			</span>
 		</button>
 	{:else}
-		{#if threadId}<span class="thread">#{threadId}</span><span class="sep">/</span>{/if}
+		{#if threadId}<span class="thread">#{$threadLabels(threadId)}</span><span class="sep">/</span>{/if}
 		<span class="title" title={sessionTitle ?? ''}>
 			{sessionTitle ?? (threadId ? 'New session' : 'No session')}
 			{#if relativeTime}<em class="ts">· {relativeTime}</em>{/if}

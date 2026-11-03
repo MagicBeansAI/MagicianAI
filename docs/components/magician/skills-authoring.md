@@ -185,11 +185,15 @@ Optional. Scripts read `$MAGICIAN_SKILL_DIR/config/`. Magician does not
 interpret `config/` — ship a `.example`, gitignore the real file.
 
 When the manifest itself needs a per-workspace value (a self-hosted MCP
-endpoint and OAuth issuer, say), keep `SKILL.md` valid with a reserved
-`https://<name>.invalid` placeholder and add `render.yaml`: setup writes each
-workspace its own `SKILL.md` from that workspace's `config/.env`. Code and
-`bin/` stay shared links. See
-[skillshub per-scope manifests](../../../skillshub/README.md#per-scope-manifests-rendered-not-linked)
+endpoint and OAuth issuer, say), write it as a scope env reference:
+`endpoint: ${METABASE_BASE_URL}/api/metabase-mcp`,
+`authorization_issuer: ${METABASE_BASE_URL}`. Only
+`runtime.transport.endpoint`, `runtime.discovery.endpoint_aliases.*` and
+`runtime.discovery.oauth.authorization_issuer` take one, and only as the whole
+origin (`${NAME}` or `${NAME}/path`). The value comes from each workspace's own
+`skills/<skill>/config/.env` and must be an https origin; ship it blank in
+`config/.env.example`. Every file, `SKILL.md` included, stays a shared link. See
+[skillshub per-scope values](../../../skillshub/README.md#per-scope-values-in-a-shared-manifest)
 and `skillshub/metabase-mcp/`.
 
 ## Classifying a remote MCP server's tools

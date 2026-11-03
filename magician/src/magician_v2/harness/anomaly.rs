@@ -109,6 +109,13 @@ pub fn classify_cycle_anomaly(
     episode_failed: bool,
     detail: &str,
 ) -> Option<(AnomalyKind, String)> {
+    // A cycle the owner stopped (pausing the harness, cancelling the run) ends
+    // with a failed episode whose error is the cancellation itself. That is the
+    // stop doing its job, not a reliability fault, so it opens no anomaly; a
+    // cancelled cycle whose episode could not be persisted still does.
+    if outcome != "episode_persist_failed" && is_cancellation_detail(detail) {
+        return None;
+    }
     if episode_failed || outcome == "episode_persist_failed" {
         if let Some((kind, summary)) = classify_failure_detail(detail) {
             return Some((kind, summary));
@@ -128,6 +135,17 @@ pub fn classify_cycle_anomaly(
         // dropped_disabled / dropped_paused / dropped_duplicate / dropped_reservation_changed = intentional/benign
         _ => None,
     }
+}
+
+/// The agentic loop's cancellation errors ("Execution cancelled" / "... by
+/// user"), as they appear in the caller's `episode_outcome=…; error=…` detail
+/// or as the bare last episode error.
+fn is_cancellation_detail(detail: &str) -> bool {
+    let error = detail
+        .rsplit_once("error=")
+        .map_or(detail, |(_, error)| error)
+        .trim();
+    matches!(error, "Execution cancelled" | "Execution cancelled by user")
 }
 
 /// Inspect the failure `detail` text of a failed cycle for markers that pin it
@@ -265,6 +283,40 @@ mod tests {
             classify_cycle_anomaly("dropped_disabled", false, "").map(|(k, _)| k),
             None
         ); // disabled is intentional, not an anomaly
+    }
+
+    #[test]
+    fn a_cancelled_cycle_is_not_an_anomaly_unless_its_episode_was_lost() {
+        for detail in [
+            "episode_outcome=failure; error=Execution cancelled",
+            "episode_outcome=failure; error=Execution cancelled by user",
+            "Execution cancelled",
+        ] {
+            assert_eq!(
+                classify_cycle_anomaly("episode_persisted", true, detail),
+                None,
+                "{detail}"
+            );
+        }
+        assert_eq!(
+            classify_cycle_anomaly(
+                "episode_persist_failed",
+                true,
+                "episode_outcome=failure; error=Execution cancelled"
+            )
+            .map(|(k, _)| k),
+            Some(AnomalyKind::CycleFailed)
+        );
+        // A failure that merely mentions cancellation is still a failure.
+        assert_eq!(
+            classify_cycle_anomaly(
+                "episode_persisted",
+                true,
+                "episode_outcome=failure; error=tool failed after Execution cancelled upstream"
+            )
+            .map(|(k, _)| k),
+            Some(AnomalyKind::CycleFailed)
+        );
     }
 
     #[test]

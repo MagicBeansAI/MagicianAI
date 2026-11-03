@@ -2735,9 +2735,9 @@ pub async fn execute_bash_action(
     // id or no step id.
     scrub: Option<Arc<std::sync::Mutex<crate::magician_v2::secrets::KnownSecretValues>>>,
 ) -> Result<ActionResult, ExecutionError> {
-    let (action, sandbox, unboxed) = authorize_bash_action(action, sandbox).await?;
-    let action = &action;
-    let boxed = (!unboxed).then_some(&sandbox);
+    let authorized = authorize_bash_action(action, sandbox).await?;
+    let action = &authorized.action;
+    let boxed = authorized.confinement();
 
     // If no streaming context or no output capture, use the original blocking path.
     if stream_ctx.is_none() || !action.capture_output {
@@ -2749,11 +2749,85 @@ pub async fn execute_bash_action(
     execute_bash_action_streaming(action, boxed, ctx).await
 }
 
+/// A shell command [`authorize_bash_action`] let run, and how it is confined.
+struct AuthorizedShell {
+    action: BashAction,
+    sandbox: ShellSandboxConfig,
+    /// God mode took it out of the box, with the owner's approval.
+    unboxed: bool,
+    /// The general OS box applies in a coding run too: the call runs under
+    /// god mode, whose shell is the same in every run.
+    box_in_coding_run: bool,
+    /// The owner allowed this one coding-run call into the live Magician
+    /// repo ([`LIVE_REPO_ALWAYS_ASKS`]): it runs without the coding profile
+    /// too, which would keep that repo read-only.
+    unconfined: bool,
+}
+
+impl AuthorizedShell {
+    /// How [`build_bash_command`] confines it.
+    fn confinement(&self) -> ShellConfinement<'_> {
+        if self.unconfined {
+            ShellConfinement::Unconfined
+        } else if self.unboxed {
+            ShellConfinement::Unboxed
+        } else {
+            ShellConfinement::Boxed {
+                sandbox: &self.sandbox,
+                in_coding_run: self.box_in_coding_run,
+            }
+        }
+    }
+}
+
+/// How [`build_bash_command`] confines a shell command.
+#[derive(Clone, Copy)]
+enum ShellConfinement<'a> {
+    /// The general OS box (`shell_box`) for `sandbox` where it applies;
+    /// otherwise, in a coding run, the coding profile. `in_coding_run`: a
+    /// god-mode call, boxed in a coding run too, with the live repo source
+    /// and the run's real repo unwritable (`shell_box::wrap_coding_call`).
+    Boxed {
+        sandbox: &'a ShellSandboxConfig,
+        in_coding_run: bool,
+    },
+    /// Out of the box: god mode, after the owner allowed it. In a coding run
+    /// the coding profile still applies.
+    Unboxed,
+    /// No box and no coding profile: a coding run's call into the live
+    /// Magician repo the owner allowed once.
+    Unconfined,
+}
+
+/// Why god mode asks every time before a coding run's shell works in the
+/// live Magician repo.
+const LIVE_REPO_ALWAYS_ASKS: &str =
+    "its working directory is in the live Magician repo, inside a coding run; if allowed, \
+     this one command runs with no sandbox at all";
+
+/// Why god mode must ask the owner every time before it lifts `refusal`, if
+/// it must: in a coding run, the refusal is the live-repo fence on an explicit
+/// working_dir (`fence`: the live repo and its scope sandbox base). Lifting
+/// it is then allow once only, never a grant or auto-approve (owner decision
+/// 2026-11-02, after the M3 incident: a delegated shell branched the live
+/// repo). Outside a coding run it is lifted like any other refusal.
+/// `fence` is read only when the rest holds (a `.git` stat).
+fn god_shell_always_ask(
+    action: &BashAction,
+    refusal: Option<&ExecutionError>,
+    fence: impl FnOnce() -> Option<(PathBuf, PathBuf)>,
+) -> Option<&'static str> {
+    (crate::magician_v2::execution::coding_engine::coding_context_active()
+        && refusal.is_some()
+        && shell_live_repo_fence_in(action, fence()).is_err())
+    .then_some(LIVE_REPO_ALWAYS_ASKS)
+}
+
 /// Resolve task confinement and obtain approval before a worker leaves this scope.
 async fn authorize_bash_action(
     action: &BashAction,
     sandbox: &ShellSandboxConfig,
-) -> Result<(BashAction, ShellSandboxConfig, bool), ExecutionError> {
+) -> Result<AuthorizedShell, ExecutionError> {
     let sandbox = task_shell_sandbox(sandbox);
     let task_action = TASK_SHELL_ROOT
         .try_with(|root| task_scoped_bash_action(action, root))
@@ -2773,12 +2847,27 @@ async fn authorize_bash_action(
         // fenced like that content (`goal_workspace_access`).
         crate::magician_v2::execution::goal_workspace_access::record_possible_reads();
     }
-    // The OS box (`shell_sandbox.os_enforce`) applies outside coding runs.
-    // God mode takes a command out of it only after the owner allows that
-    // command; with no box, only what the string checks refuse asks.
+    // The OS box (`shell_sandbox.os_enforce`) applies outside coding runs,
+    // and to a coding run's call that god mode is on for: god-mode shell is
+    // the same in every run (owner decision 2026-11-02), boxed with nested
+    // agent CLIs denied, secrets hidden and egress by the network policy (and
+    // the live repo and the run's real repo unwritable, as the coding profile
+    // keeps them: `shell_box::wrap_coding_call`). A
+    // coding run's shell without god mode keeps the coding profile, and the
+    // coding engines' own processes have their own box
+    // (`coding_engine::harness_command`). God mode takes a command out of the
+    // box only after the owner allows that command; with no box, only what
+    // the string checks refuse asks.
+    let coding = crate::magician_v2::execution::coding_engine::coding_context_active();
+    let god = crate::magician_v2::god_mode::active();
     let os_box = sandbox.os_enforce
         && crate::magician_v2::execution::shell_box::available()
-        && !crate::magician_v2::execution::coding_engine::coding_context_active();
+        && (!coding || god);
+    let always_ask = god_shell_always_ask(
+        action,
+        refusal.as_ref(),
+        crate::magician_v2::execution::coding_engine::live_repo_source_fence,
+    );
     // Goal workspaces this agent may not fully reach are fenced by the OS box
     // (or, in a coding run, the coding profile). With neither, the shell is
     // refused (fail closed), and god mode never takes such a command out of
@@ -2787,8 +2876,8 @@ async fn authorize_bash_action(
         crate::magician_v2::execution::goal_workspace_access::denies_for_current()
             .guards_workspaces;
     if workspace_fenced {
-        let coding_box = crate::magician_v2::execution::coding_engine::coding_context_active()
-            && crate::magician_v2::execution::coding_engine::os_sandbox_available();
+        let coding_box =
+            coding && crate::magician_v2::execution::coding_engine::os_sandbox_available();
         if !os_box && !coding_box {
             return Err(ExecutionError::Step(
                 "Shell is unavailable to this agent here: goal workspaces need the OS sandbox \
@@ -2798,29 +2887,37 @@ async fn authorize_bash_action(
             ));
         }
     }
-    let unboxed = if crate::magician_v2::god_mode::active() && workspace_fenced {
+    let unboxed = if god && workspace_fenced {
         if let Some(refusal) = refusal {
-            god_mode_shell_override(action, &sandbox, Some(refusal)).await?;
+            god_mode_shell_override(action, &sandbox, Some(refusal), always_ask).await?;
         }
         false
-    } else if crate::magician_v2::god_mode::active() && (os_box || refusal.is_some()) {
-        god_mode_shell_override(action, &sandbox, refusal).await?;
+    } else if god && (os_box || refusal.is_some()) {
+        god_mode_shell_override(action, &sandbox, refusal, always_ask).await?;
         true
     } else if let Some(refusal) = refusal {
         return Err(refusal);
     } else {
         false
     };
-    Ok((action.clone(), sandbox, unboxed))
+    Ok(AuthorizedShell {
+        action: action.clone(),
+        sandbox,
+        unboxed,
+        box_in_coding_run: coding && god,
+        // Lifting the fence is what the owner allowed: the coding profile
+        // would still refuse the write.
+        unconfined: unboxed && always_ask.is_some(),
+    })
 }
 
 pub(crate) async fn prepare_managed_shell(
     action: &BashAction,
     sandbox: &ShellSandboxConfig,
 ) -> Result<(BashAction, tokio::process::Command), ExecutionError> {
-    let (action, sandbox, unboxed) = authorize_bash_action(action, sandbox).await?;
-    let command = build_bash_command(&action, (!unboxed).then_some(&sandbox))?;
-    Ok((action, command))
+    let authorized = authorize_bash_action(action, sandbox).await?;
+    let command = build_bash_command(&authorized.action, authorized.confinement())?;
+    Ok((authorized.action, command))
 }
 
 /// The `sh -c <command>` invocation both bash paths spawn, short of stdio
@@ -2830,9 +2927,9 @@ pub(crate) async fn prepare_managed_shell(
 /// contract can be asserted without starting a process.
 fn build_bash_command(
     action: &BashAction,
-    // The sandbox to box the command in (`shell_box`), or `None` to run it
-    // unboxed (god mode, after the owner allowed it).
-    boxed: Option<&ShellSandboxConfig>,
+    // The box to run the command in (`shell_box`), or none (god mode,
+    // after the owner allowed it).
+    confinement: ShellConfinement<'_>,
 ) -> Result<tokio::process::Command, ExecutionError> {
     use std::ffi::{OsStr, OsString};
 
@@ -2851,16 +2948,38 @@ fn build_bash_command(
         OsString::from("-c"),
         OsString::from(action.command.as_str()),
     ];
-    // The general OS box (`shell_box`) when it applies; otherwise the coding
-    // OS-sandbox gate (repo read-only), identical to `sh -c <command>` when
-    // that gate is off. See `os_sandbox_command`.
-    let shell_box = boxed.and_then(|sandbox| {
-        crate::magician_v2::execution::shell_box::wrap(shell.as_os_str(), &shell_args, sandbox)
-    });
+    // The general OS box (`shell_box`) when it applies (in a coding run, for
+    // a god-mode call only); otherwise the coding OS-sandbox gate (repo
+    // read-only), identical to `sh -c <command>` when that gate is off (see
+    // `os_sandbox_command`), except for a live-repo call the owner allowed.
+    let shell_box = match confinement {
+        ShellConfinement::Boxed {
+            sandbox,
+            in_coding_run: true,
+        } => crate::magician_v2::execution::shell_box::wrap_coding_call(
+            shell.as_os_str(),
+            &shell_args,
+            sandbox,
+        ),
+        ShellConfinement::Boxed {
+            sandbox,
+            in_coding_run: false,
+        } => crate::magician_v2::execution::shell_box::wrap(
+            shell.as_os_str(),
+            &shell_args,
+            sandbox,
+        ),
+        ShellConfinement::Unboxed | ShellConfinement::Unconfined => None,
+    };
     let mut cmd = match &shell_box {
         Some(wrapped) => {
             let mut cmd = tokio::process::Command::new(&wrapped.program);
             cmd.args(&wrapped.args);
+            cmd
+        },
+        None if matches!(confinement, ShellConfinement::Unconfined) => {
+            let mut cmd = tokio::process::Command::new(&shell);
+            cmd.args(&shell_args);
             cmd
         },
         None => crate::magician_v2::execution::coding_engine::os_sandbox_command(
@@ -2909,7 +3028,7 @@ fn build_bash_command(
 /// Original blocking execution path (no streaming).
 async fn execute_bash_action_blocking(
     action: &BashAction,
-    boxed: Option<&ShellSandboxConfig>,
+    boxed: ShellConfinement<'_>,
     scrub: Option<Arc<std::sync::Mutex<crate::magician_v2::secrets::KnownSecretValues>>>,
 ) -> Result<ActionResult, ExecutionError> {
     use std::process::Stdio;
@@ -2960,9 +3079,7 @@ async fn execute_bash_action_blocking(
             result.map_err(|e| ExecutionError::Step(format!("Failed to wait for command: {e}")))?
         },
         Err(_) => {
-            return Err(ExecutionError::Step(format!(
-                "Command timed out after {timeout_secs} seconds"
-            )))
+            return Err(ExecutionError::Step(shell_timeout_message(timeout_secs)))
         },
     };
     group.terminate();
@@ -3014,7 +3131,7 @@ async fn execute_bash_action_blocking(
 /// every 100ms, and broadcasts `ShellOutputChunk` events via the event bus.
 async fn execute_bash_action_streaming(
     action: &BashAction,
-    boxed: Option<&ShellSandboxConfig>,
+    boxed: ShellConfinement<'_>,
     ctx: ShellStreamContext,
 ) -> Result<ActionResult, ExecutionError> {
     use std::process::Stdio;
@@ -3242,10 +3359,7 @@ async fn execute_bash_action_streaming(
     let mut stream_err: Option<ExecutionError> = match stream_result {
         Ok(Ok(())) => None,
         Ok(Err(e)) => Some(e),
-        Err(_elapsed) => Some(ExecutionError::Step(format!(
-            "Command timed out after {} seconds",
-            timeout_secs
-        ))),
+        Err(_elapsed) => Some(ExecutionError::Step(shell_timeout_message(timeout_secs))),
     };
 
     // Abort reader tasks so they don't leak if we exited early (C2 fix).
@@ -3289,9 +3403,7 @@ async fn execute_bash_action_streaming(
                 None
             },
             Err(_) => {
-                stream_err = Some(ExecutionError::Step(format!(
-                    "Command timed out after {timeout_secs} seconds"
-                )));
+                stream_err = Some(ExecutionError::Step(shell_timeout_message(timeout_secs)));
                 group.terminate();
                 let _ = child.kill().await;
                 let _ = child.wait().await;
@@ -3431,6 +3543,17 @@ fn broadcast_chunk(
 
 const DEFAULT_SHELL_TIMEOUT_SECS: u64 = 60;
 
+/// What a foreground shell call that ran out of time tells the agent: what
+/// happened, and the two forms that give long work the time it needs.
+fn shell_timeout_message(timeout_secs: u64) -> String {
+    format!(
+        "Command timed out after {timeout_secs} seconds and its process was killed; any partial \
+         work it left may be incomplete. If it needs longer, rerun it with a larger timeout_secs. \
+         For package installs, large downloads and builds inside a task, run it with \
+         background=true and check it with action=status."
+    )
+}
+
 /// God mode (`execution.god_mode`): a command the shell sandbox refuses runs
 /// when the owner allows it (once, for the session, or always). A malformed
 /// or empty command is refused as before; a blocked or opaque invocation
@@ -3441,6 +3564,9 @@ async fn god_mode_shell_override(
     action: &BashAction,
     sandbox: &ShellSandboxConfig,
     refusal: Option<ExecutionError>,
+    // Why the owner must be asked every time, allow once only, if so
+    // (`GodAction::Shell::always_ask`).
+    always_ask: Option<&str>,
 ) -> Result<(), ExecutionError> {
     use crate::magician_v2::god_mode;
     let violation = match &refusal {
@@ -3462,6 +3588,7 @@ async fn god_mode_shell_override(
         stdin: action.stdin.as_deref(),
         violation: &violation,
         catastrophic,
+        always_ask,
     })
     .await
     .map_err(|reason| ExecutionError::Step(format!("{violation} (god mode: {reason})")))
@@ -3634,6 +3761,39 @@ pub fn check_shell_sandbox_violation(
     }
 }
 
+/// The live-repo fence on a shell action's EXPLICIT `working_dir`: refused
+/// when it resolves into the live magician repo source tree (the scope
+/// sandbox base inside it and outside dirs are allowed). Unarmed when no live
+/// repo is set or the dir cannot be resolved. See [`validate_shell_action_hard`].
+fn shell_live_repo_fence(action: &BashAction) -> Result<(), ExecutionError> {
+    shell_live_repo_fence_in(
+        action,
+        crate::magician_v2::execution::coding_engine::live_repo_source_fence(),
+    )
+}
+
+/// [`shell_live_repo_fence`] against `fence` (repo source root, sandbox base).
+fn shell_live_repo_fence_in(
+    action: &BashAction,
+    fence: Option<(PathBuf, PathBuf)>,
+) -> Result<(), ExecutionError> {
+    let Some(explicit) = action.working_dir.as_deref() else {
+        return Ok(());
+    };
+    let Some((repo_source_root, sandbox_base)) = fence else {
+        return Ok(());
+    };
+    if let Ok(canonical) = explicit.canonicalize() {
+        crate::magician_v2::execution::coding_engine::reject_repo_source_tree(
+            &canonical,
+            &repo_source_root,
+            &sandbox_base,
+        )
+        .map_err(ExecutionError::Refused)?;
+    }
+    Ok(())
+}
+
 /// Hard violations — always blocked regardless of `on_violation`.
 /// Covers: blocked_command_fragments, syntax errors, empty commands, working dir.
 pub fn validate_shell_action_hard(
@@ -3656,22 +3816,12 @@ pub fn validate_shell_action_hard(
     // running make/cargo/npm whose target/ writes land in-repo) is not newly
     // rejected; a coding agent's Unrestricted shell into the repo is fenced (and
     // the OS sandbox is the real boundary there anyway).
+    //
+    // In a coding run god mode may lift this fence only by asking the owner
+    // every time (`authorize_bash_action`).
     let unrestricted = matches!(sandbox.mode, ShellSandboxMode::Unrestricted);
     if !unrestricted || crate::magician_v2::execution::coding_engine::coding_context_active() {
-        if let Some(explicit) = action.working_dir.as_deref() {
-            if let Some((repo_source_root, sandbox_base)) =
-                crate::magician_v2::execution::coding_engine::live_repo_source_fence()
-            {
-                if let Ok(canonical) = explicit.canonicalize() {
-                    crate::magician_v2::execution::coding_engine::reject_repo_source_tree(
-                        &canonical,
-                        &repo_source_root,
-                        &sandbox_base,
-                    )
-                    .map_err(ExecutionError::Refused)?;
-                }
-            }
-        }
+        shell_live_repo_fence(action)?;
     }
 
     if unrestricted {
@@ -6879,6 +7029,314 @@ mod tests {
         assert!(outside.path().join("out.txt").exists());
     }
 
+    /// God-mode shell is the same in a coding run as in any other (owner
+    /// decision 2026-11-02): a coding agent's or harness turn's call asks
+    /// before it leaves the general OS box, and in the box it gets the general
+    /// box (no write outside the roots), not the coding profile. Without god
+    /// mode a coding run's shell keeps the coding profile.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_coding_runs_god_mode_shell_is_boxed_and_asks_like_any_run() {
+        use crate::magician_v2::execution::coding_engine::{
+            os_sandbox_command, with_coding_context,
+        };
+        use crate::magician_v2::god_mode::{self, GodSession};
+        use crate::magician_v2::user_requests::service::{UserRequestService, UserResponse};
+        use std::ffi::{OsStr, OsString};
+        if !crate::magician_v2::execution::shell_box::available() {
+            return;
+        }
+        let work = TempDir::new().unwrap();
+        let outside = tempfile::tempdir_in(dirs::home_dir().unwrap()).unwrap();
+        let sandbox = ShellSandboxConfig {
+            allowed_working_dirs: vec![work.path().display().to_string()],
+            os_enforce: true,
+            ..ShellSandboxConfig::default()
+        };
+        let escape = BashAction {
+            command: format!("cd {} && touch out.txt", outside.path().display()),
+            working_dir: Some(work.path().to_path_buf()),
+            env: HashMap::new(),
+            timeout_secs: Some(10),
+            capture_output: true,
+            stdin: None,
+        };
+        // Each boxed call gets its own empty plane home (`none-<uuid>`).
+        let fresh_home = regex::Regex::new("none-[0-9a-f]{32}").unwrap();
+        let spawn_of = |cmd: &tokio::process::Command| {
+            let cmd = cmd.as_std();
+            (
+                cmd.get_program().to_os_string(),
+                cmd.get_args()
+                    .map(|arg| {
+                        OsString::from(
+                            fresh_home
+                                .replace_all(&arg.to_string_lossy(), "none-*")
+                                .into_owned(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let shell = runtime_core::process::resolve_program(OsStr::new("sh"), None);
+        let shell_args = [
+            OsString::from("-c"),
+            OsString::from(escape.command.as_str()),
+        ];
+
+        // Without god mode: the coding profile, as before.
+        {
+            let _off = god_mode::test_scope(false);
+            with_coding_context(true, async {
+                let authorized = authorize_bash_action(&escape, &sandbox)
+                    .await
+                    .expect("the string checks pass");
+                assert!(!authorized.unboxed);
+                assert!(!authorized.box_in_coding_run);
+                assert!(!authorized.unconfined);
+                let built =
+                    build_bash_command(&authorized.action, authorized.confinement()).unwrap();
+                assert_eq!(
+                    spawn_of(&built),
+                    spawn_of(&os_sandbox_command(shell.as_os_str(), &shell_args))
+                );
+            })
+            .await;
+        }
+
+        let _on = god_mode::test_scope(true);
+        let session = GodSession::for_chat("owner", "default", "coding-box-chat").unwrap();
+        // It asks before it leaves the box; the owner's no keeps it from running.
+        let service = Arc::new(UserRequestService::new(Arc::new(
+            crate::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(64),
+        )));
+        god_mode::with_test_approver(service.clone(), async {
+            let answer = async {
+                let request = tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let Some(request) = service.list_pending().await.into_iter().next() {
+                            break request;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("a coding run's god-mode shell asks before leaving the box");
+                assert_eq!(request.context["god_mode"], true);
+                assert!(
+                    service
+                        .respond(UserResponse {
+                            request_id: request.id,
+                            decision: "deny".into(),
+                            input: None,
+                            channel: "web".into(),
+                            sensitive: Vec::new(),
+                        })
+                        .await
+                );
+            };
+            let (refused, ()) = tokio::join!(
+                with_coding_context(
+                    true,
+                    god_mode::with_session(
+                        Some(session.clone()),
+                        execute_bash_action(&escape, &sandbox, None, None),
+                    ),
+                ),
+                answer
+            );
+            assert!(refused.is_err());
+        })
+        .await;
+        assert!(!outside.path().join("out.txt").exists());
+
+        // In the box it is the general box, which refuses the write.
+        let _ = with_coding_context(true, async {
+            let mut boxed = build_bash_command(
+                &escape,
+                ShellConfinement::Boxed {
+                    sandbox: &sandbox,
+                    in_coding_run: true,
+                },
+            )
+            .unwrap();
+            boxed
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            boxed.status().await
+        })
+        .await;
+        assert!(
+            !outside.path().join("out.txt").exists(),
+            "the general box refuses a write outside the roots in a coding run"
+        );
+
+        // A grant covers it as anywhere: it then runs outside the box.
+        god_mode::grant_for_session_in_test(
+            &session,
+            &[
+                god_mode::program_grant("cd"),
+                god_mode::program_grant("touch"),
+            ],
+        );
+        with_coding_context(
+            true,
+            god_mode::with_session(Some(session), async {
+                let authorized = authorize_bash_action(&escape, &sandbox)
+                    .await
+                    .expect("covered by the grant");
+                assert!(authorized.unboxed);
+                assert!(authorized.box_in_coding_run);
+                assert!(!authorized.unconfined, "not a live-repo call");
+                assert!(matches!(
+                    authorized.confinement(),
+                    ShellConfinement::Unboxed
+                ));
+                execute_bash_action(&escape, &sandbox, None, None).await
+            }),
+        )
+        .await
+        .expect("god mode runs a covered command outside the box");
+        assert!(outside.path().join("out.txt").exists());
+    }
+
+    /// In a coding run god mode lifts the live-repo fence on an explicit
+    /// working_dir only by asking every time, allow once only
+    /// (`GodAction::Shell::always_ask`). The scope sandbox inside the repo,
+    /// another folder, no working_dir, no refusal, no live repo, or a run that
+    /// is not coding asks as usual.
+    #[tokio::test]
+    async fn the_live_repo_fence_in_a_coding_run_always_asks() {
+        use crate::magician_v2::execution::coding_engine::with_coding_context;
+        let repo = TempDir::new().unwrap();
+        let root = repo.path().canonicalize().unwrap();
+        for dir in [".git", "src", "magician_data_v3/scopes"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let fence = || Some((root.clone(), root.join("magician_data_v3")));
+        let at = |working_dir: Option<PathBuf>| BashAction {
+            command: "git checkout -b x".to_string(),
+            working_dir,
+            env: HashMap::new(),
+            timeout_secs: Some(5),
+            capture_output: true,
+            stdin: None,
+        };
+        let in_repo = at(Some(root.join("src")));
+        let refusal = shell_live_repo_fence_in(&in_repo, fence()).unwrap_err();
+        assert!(matches!(refusal, ExecutionError::Refused(_)), "{refusal}");
+        let sandboxed = at(Some(root.join("magician_data_v3/scopes")));
+        assert!(shell_live_repo_fence_in(&sandboxed, fence()).is_ok());
+
+        let coding = with_coding_context(true, async {
+            [
+                god_shell_always_ask(&in_repo, Some(&refusal), fence),
+                god_shell_always_ask(&sandboxed, Some(&refusal), fence),
+                god_shell_always_ask(&at(Some(std::env::temp_dir())), Some(&refusal), fence),
+                god_shell_always_ask(&at(None), Some(&refusal), fence),
+                god_shell_always_ask(&in_repo, None, fence),
+                god_shell_always_ask(&in_repo, Some(&refusal), || None),
+            ]
+        })
+        .await;
+        assert_eq!(
+            coding,
+            [Some(LIVE_REPO_ALWAYS_ASKS), None, None, None, None, None]
+        );
+        // The fence (a `.git` stat) is read only in a coding run with a refusal.
+        let read = std::cell::Cell::new(0);
+        let counted = || {
+            read.set(read.get() + 1);
+            fence()
+        };
+        assert_eq!(
+            god_shell_always_ask(&in_repo, Some(&refusal), counted),
+            None,
+            "outside a coding run"
+        );
+        with_coding_context(true, async {
+            god_shell_always_ask(&in_repo, None, counted);
+        })
+        .await;
+        assert_eq!(read.get(), 0);
+    }
+
+    /// The owner's "allow once" on the live-repo card lifts the repo
+    /// protection for that call: it runs with neither the box nor the coding
+    /// profile (which would keep the live repo read-only). Every other
+    /// approved god-mode call in a coding run keeps the coding profile.
+    #[tokio::test]
+    async fn an_allowed_live_repo_call_runs_without_the_coding_profile() {
+        use crate::magician_v2::execution::coding_engine::{
+            os_sandbox_command, with_coding_context,
+        };
+        use std::ffi::{OsStr, OsString};
+        let action = BashAction {
+            command: "git checkout -b x".to_string(),
+            working_dir: None,
+            env: HashMap::new(),
+            timeout_secs: Some(5),
+            capture_output: true,
+            stdin: None,
+        };
+        let authorized = |unboxed, unconfined| AuthorizedShell {
+            action: action.clone(),
+            sandbox: ShellSandboxConfig::default(),
+            unboxed,
+            box_in_coding_run: true,
+            unconfined,
+        };
+        assert!(matches!(
+            authorized(true, true).confinement(),
+            ShellConfinement::Unconfined
+        ));
+        assert!(matches!(
+            authorized(true, false).confinement(),
+            ShellConfinement::Unboxed
+        ));
+        assert!(matches!(
+            authorized(false, false).confinement(),
+            ShellConfinement::Boxed {
+                in_coding_run: true,
+                ..
+            }
+        ));
+
+        // Each boxed call gets its own empty plane home (`none-<uuid>`).
+        let fresh_home = regex::Regex::new("none-[0-9a-f]{32}").unwrap();
+        let spawn_of = |cmd: &tokio::process::Command| {
+            let cmd = cmd.as_std();
+            (
+                cmd.get_program().to_os_string(),
+                cmd.get_args()
+                    .map(|arg| {
+                        OsString::from(
+                            fresh_home
+                                .replace_all(&arg.to_string_lossy(), "none-*")
+                                .into_owned(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let shell = runtime_core::process::resolve_program(OsStr::new("sh"), None);
+        let shell_args = vec![
+            OsString::from("-c"),
+            OsString::from(action.command.as_str()),
+        ];
+        let (unconfined, unboxed, profile) = with_coding_context(true, async {
+            (
+                spawn_of(&build_bash_command(&action, ShellConfinement::Unconfined).unwrap()),
+                spawn_of(&build_bash_command(&action, ShellConfinement::Unboxed).unwrap()),
+                spawn_of(&os_sandbox_command(shell.as_os_str(), &shell_args)),
+            )
+        })
+        .await;
+        assert_eq!(unconfined, (shell.clone().into_os_string(), shell_args));
+        assert_eq!(unboxed, profile, "other approved calls keep the coding profile");
+    }
+
     #[tokio::test]
     async fn test_bash_echo() {
         let action = BashAction {
@@ -6982,7 +7440,7 @@ mod tests {
         let shell = executable_shell_in(temp.path());
         let action = BashAction::new("true").with_env("PATH", temp.path().display().to_string());
 
-        let cmd = build_bash_command(&action, None).expect("build");
+        let cmd = build_bash_command(&action, ShellConfinement::Unboxed).expect("build");
         let std_cmd = cmd.as_std();
 
         assert_eq!(std_cmd.get_program(), shell.as_os_str());
@@ -7000,7 +7458,7 @@ mod tests {
     fn bash_shell_is_absolute_on_the_process_path_without_a_step_env_path() {
         use std::ffi::OsStr;
         let action = BashAction::new("true");
-        let cmd = build_bash_command(&action, None).expect("build");
+        let cmd = build_bash_command(&action, ShellConfinement::Unboxed).expect("build");
         let program = PathBuf::from(cmd.as_std().get_program());
         assert!(program.is_absolute(), "{}", program.display());
         assert!(program.is_file(), "{}", program.display());
@@ -7043,7 +7501,7 @@ mod tests {
         let mut action = BashAction::new("head -c 131072 /dev/zero; cat");
         action.stdin = Some(payload.clone());
         action.timeout_secs = Some(5);
-        let output = execute_bash_action_blocking(&action, None, None)
+        let output = execute_bash_action_blocking(&action, ShellConfinement::Unboxed, None)
             .await
             .unwrap();
         assert!(output.as_text().unwrap().ends_with(&payload));
@@ -7066,7 +7524,7 @@ mod tests {
             step_index: 0,
             scrub: None,
         };
-        let result = execute_bash_action_streaming(&action, None, ctx).await;
+        let result = execute_bash_action_streaming(&action, ShellConfinement::Unboxed, ctx).await;
         assert!(result.unwrap_err().to_string().contains("timed out"));
         assert!(!work.path().join("finished").exists());
     }
@@ -7101,6 +7559,18 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap().to_string();
         assert!(err.contains("timed out"));
+        assert!(err.contains("background=true"), "{err}");
+    }
+
+    /// The timeout names what happened and both ways to give long work its
+    /// time: a larger `timeout_secs`, or a tracked background job.
+    #[test]
+    fn shell_timeout_message_names_the_limit_and_both_remedies() {
+        let message = shell_timeout_message(120);
+        assert!(message.contains("timed out after 120 seconds"));
+        assert!(message.contains("timeout_secs"));
+        assert!(message.contains("background=true"));
+        assert!(message.contains("action=status"));
     }
 
     #[tokio::test]

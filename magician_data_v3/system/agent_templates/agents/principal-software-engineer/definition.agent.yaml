@@ -91,6 +91,10 @@ tools:
 - run_coding_task
 - apply_code_proposal
 - run_project_checks
+- validate_skill
+- test_skill
+- install_skill
+- impeccable
 - screenshot_preview
 - delegation_shell
 - delegation_files

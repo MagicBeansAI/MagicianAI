@@ -124,6 +124,9 @@ use crate::magician_v2::execution::agentic::executor::{
     MAX_TRANSIENT_RETRIES,
 };
 use crate::magician_v2::execution::agentic::loop_detector::LoopCheckResult;
+use crate::magician_v2::execution::agentic::yield_deliverables::{
+    declared_deliverable_evidence, record_declared_yield_deliverables,
+};
 use crate::magician_v2::execution::agentic::outward_settle::{
     reconcile_ref_for_dispatch, DispatchReconcileRef,
 };
@@ -1407,12 +1410,21 @@ async fn settle_without_dispatch(
                             return PhaseStep::exits(BoundaryOutcome::Advance);
                         },
                     };
+                    // A file declared in `deliverables` is durable output the
+                    // gates count like an inline artifact.
+                    let mut gate_artifacts = artifacts_beyond_the_answer(&payload.artifacts);
+                    gate_artifacts.extend(declared_deliverable_evidence(
+                        ctx,
+                        executors,
+                        &payload.deliverables,
+                        &payload.artifacts,
+                    ));
                     if let Some(rejection_reason) = terminal_success_rejection(
                         ctx,
                         executors,
                         &history,
                         Some(&evidence),
-                        &artifacts_beyond_the_answer(&payload.artifacts),
+                        &gate_artifacts,
                         completed,
                         prepared.state.as_ref(),
                     )
@@ -1534,6 +1546,7 @@ async fn settle_without_dispatch(
                                         ) => {
                                             if payload.completed.is_empty()
                                                 && payload.artifacts.is_empty()
+                                                && payload.deliverables.is_empty()
                                             {
                                                 warn!(
                                                     "[TERMINAL-GROUNDING] bounded evidence repair \
@@ -1793,6 +1806,17 @@ async fn settle_without_dispatch(
                         )
                         .heap_boxed()
                         .await;
+                        // Declared deliverable files, after the inline
+                        // artifacts land so `outputs/<name>` finds them.
+                        record_declared_yield_deliverables(
+                            ctx,
+                            executors,
+                            &payload.deliverables,
+                            &final_artifacts,
+                            iteration,
+                        )
+                        .heap_boxed()
+                        .await;
 
                         // Clean yields need the same durable completion
                         // projection as partial yields. Without this record,
@@ -1926,6 +1950,15 @@ async fn settle_without_dispatch(
                             executors,
                             &mut final_artifacts,
                             "outer_loop_yield_partial",
+                        )
+                        .heap_boxed()
+                        .await;
+                        record_declared_yield_deliverables(
+                            ctx,
+                            executors,
+                            &payload.deliverables,
+                            &final_artifacts,
+                            iteration,
                         )
                         .heap_boxed()
                         .await;

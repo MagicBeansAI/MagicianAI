@@ -2220,7 +2220,8 @@ fn activity_metadata(event: &CanonicalEvent) -> serde_json::Value {
             "trace_id",
         ]
     } else if event_type.starts_with("tool.") {
-        // `call_id` pairs a `tool.started` with its settlement.
+        // `call_id` pairs a `tool.started` with its settlement; `error` is
+        // the raw failure reason a `tool.failed` row carries.
         &[
             "latency_ms",
             "action_type",
@@ -2228,6 +2229,7 @@ fn activity_metadata(event: &CanonicalEvent) -> serde_json::Value {
             "target",
             "call_id",
             "started_at_ms",
+            "error",
         ]
     } else if event_type == "recipe.replay" {
         &[
@@ -2511,6 +2513,16 @@ fn activity_summary(event: &CanonicalEvent) -> Option<String> {
             .get("summary")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        // Say WHY the call failed, not just that it did. The runtime wraps
+        // the reason in executor framing ("step execution failed: …",
+        // "compiled-pack dispatch failed: …"); strip it so the row leads
+        // with the cause. The raw text stays in `metadata.error`.
+        "tool.failed" => event
+            .payload
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(tool_failure_reason)
+            .filter(|value| !value.is_empty()),
         // Surface what the LLM produced at each decision so the deep-work
         // feed shows substance, not a bare "llm succeeded" / "agentic
         // decision made" label. `decision_summary` is the model's stated
@@ -2548,6 +2560,28 @@ fn activity_summary(event: &CanonicalEvent) -> Option<String> {
             .and_then(|value| value.as_str())
             .map(str::to_string),
     }
+}
+
+/// The executor's framing around a tool error. They nest in either order
+/// ("compiled-pack dispatch failed: step execution failed: …").
+const TOOL_FAILURE_PREFIXES: [&str; 2] =
+    ["step execution failed:", "compiled-pack dispatch failed:"];
+
+/// The cause inside a tool error: every leading wrapper prefix stripped,
+/// ASCII case-insensitively, until none matches.
+fn tool_failure_reason(error: &str) -> String {
+    let mut reason = error.trim();
+    loop {
+        let Some(prefix) = TOOL_FAILURE_PREFIXES.iter().find(|prefix| {
+            reason
+                .get(..prefix.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        }) else {
+            break;
+        };
+        reason = reason[prefix.len()..].trim_start();
+    }
+    reason.to_string()
 }
 
 fn humanize_event_type(event_type: &str) -> String {
@@ -2955,7 +2989,7 @@ mod tests {
     use super::{
         activity_metadata, build_activity_log, build_clarification_question,
         build_delegation_groups, build_pause_clarification_question, collect_related_execution_ids,
-        parse_pause_options_json, project_execution_artifact, safe_task_relative_path,
+        parse_pause_options_json, project_execution_artifact, safe_task_relative_path, FeedItem,
         FeedItemStatus,
     };
     use std::collections::HashMap;
@@ -3482,6 +3516,113 @@ mod tests {
         let metadata = activity_metadata(&event);
         assert_eq!(metadata["cost_usd"], serde_json::json!(0.0042));
         assert_eq!(metadata["cost"], serde_json::json!(0.0042));
+    }
+
+    fn feed_items(events: &[CanonicalEvent]) -> Vec<FeedItem> {
+        build_activity_log(
+            "alpha",
+            "default",
+            "task_x",
+            "general",
+            "agent_a",
+            Some("exec_1"),
+            &[],
+            &HashMap::new(),
+            events,
+        )
+    }
+
+    #[test]
+    fn a_failed_tool_row_says_why_without_the_executor_wrapper() {
+        let failed = event_with(
+            1,
+            "tool.failed",
+            serde_json::json!({
+                "call_id": "call-1",
+                "action_type": "bash__run",
+                "error": "step execution failed: Command timed out after 120 seconds",
+            }),
+        );
+        let items = feed_items(&[failed]);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].status, FeedItemStatus::Failed);
+        assert_eq!(
+            items[0].summary.as_deref(),
+            Some("Command timed out after 120 seconds")
+        );
+        assert_eq!(
+            items[0].metadata["error"],
+            serde_json::json!("step execution failed: Command timed out after 120 seconds"),
+            "metadata keeps the raw error for clients that want the full text"
+        );
+    }
+
+    #[test]
+    fn a_failed_tool_row_strips_both_dispatch_prefixes_and_drops_a_blank_error() {
+        let wrapped = event_with(
+            1,
+            "tool.failed",
+            serde_json::json!({
+                "error": "  step execution failed: compiled-pack dispatch failed: pack `gmail` is not installed ",
+            }),
+        );
+        let blank = event_with(
+            2,
+            "tool.failed",
+            serde_json::json!({"error": "step execution failed: "}),
+        );
+        let missing = event_with(3, "tool.failed", serde_json::json!({"error": null}));
+        let items = feed_items(&[wrapped, blank, missing]);
+
+        assert_eq!(
+            items[0].summary.as_deref(),
+            Some("pack `gmail` is not installed")
+        );
+        assert_eq!(items[1].summary, None);
+        assert_eq!(items[2].summary, None);
+        assert!(items[2].metadata.get("error").is_none());
+    }
+
+    #[test]
+    fn a_failed_tool_row_strips_nested_prefixes_in_either_order_and_any_case() {
+        // The order compiled dispatch actually produces: its own framing outside
+        // the step executor's.
+        let nested = event_with(
+            1,
+            "tool.failed",
+            serde_json::json!({
+                "error": "compiled-pack dispatch failed: step execution failed: Command timed out after 120 seconds",
+            }),
+        );
+        let shouted = event_with(
+            2,
+            "tool.failed",
+            serde_json::json!({
+                "error": "Step Execution Failed:\tCOMPILED-PACK DISPATCH FAILED: step execution failed:  exit 2",
+            }),
+        );
+        let items = feed_items(&[nested, shouted]);
+
+        assert_eq!(
+            items[0].summary.as_deref(),
+            Some("Command timed out after 120 seconds")
+        );
+        assert_eq!(items[1].summary.as_deref(), Some("exit 2"));
+    }
+
+    #[test]
+    fn a_succeeded_tool_row_summary_is_unchanged() {
+        let succeeded = event_with(
+            1,
+            "tool.succeeded",
+            serde_json::json!({"call_id": "call-1", "action_type": "bash__run", "error": null}),
+        );
+        let items = feed_items(&[succeeded]);
+
+        assert_eq!(items[0].summary, None);
+        assert_ne!(items[0].status, FeedItemStatus::Failed);
+        assert!(items[0].metadata.get("error").is_none());
     }
 
     fn sample_pending_pause(input_type: UserInputType) -> PendingPauseInfo {

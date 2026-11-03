@@ -1,0 +1,79 @@
+#!/bin/sh
+# Snapshot-safe entrypoint for the dugite skill.
+#
+# The governed runtime copies its entrypoint ALONE into a private temporary
+# directory and runs that copy. Dugite's standalone git is built for prefix
+# `/`, so wherever it runs it reports `//libexec/git-core` as its exec path and
+# looks for templates in `//share/git-core/templates`: sub-commands that
+# shell out to helpers fail and `init`/`clone` warn about missing templates.
+# Dugite's own Node wrapper (build/lib/git-environment.js) fixes this by
+# deriving GIT_EXEC_PATH and GIT_TEMPLATE_DIR from the binary's real location;
+# this adapter does the same and nothing else.
+#
+# The declared PATH companion `git` runs in place from this skill's reviewed
+# bin/ directory (or the dugite package's libexec/git-core, which the runtime
+# may put on PATH instead). Its real path names the dugite distribution root.
+# argv is passed through unchanged.
+
+resolve() {
+  target=$1
+  hops=0
+  while [ -h "$target" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 16 ] || return 1
+    link=$(readlink "$target") || return 1
+    case $link in
+      /*) target=$link ;;
+      *) target=$(dirname "$target")/$link ;;
+    esac
+  done
+  directory=$(cd -P "$(dirname "$target")" 2>/dev/null && pwd) || return 1
+  printf '%s/%s\n' "$directory" "$(basename "$target")"
+}
+
+fail() {
+  echo "dugite: $1 (run: make setup-skill-bins)" >&2
+  exit 127
+}
+
+found=$(command -v git) || fail "the pinned dugite git is not installed"
+real=$(resolve "$found") || fail "cannot resolve the dugite git at $found"
+case $real in
+  */libexec/git-core/git) prefix=${real%/libexec/git-core/git} ;;
+  */bin/git) prefix=${real%/bin/git} ;;
+  *) fail "unexpected git location $real" ;;
+esac
+# Refuse a host git (for example /usr/bin/git) that PATH reached because the
+# dugite companion is missing: it is not the reviewed distribution.
+case $prefix in
+  "" | / | /usr | /usr/local | /opt/homebrew) fail "refusing host git at $real" ;;
+esac
+[ -x "$prefix/libexec/git-core/git" ] && [ -d "$prefix/share/git-core/templates" ] ||
+  fail "$prefix is not a dugite git distribution"
+
+GIT_EXEC_PATH=$prefix/libexec/git-core
+GIT_TEMPLATE_DIR=$prefix/share/git-core/templates
+export GIT_EXEC_PATH GIT_TEMPLATE_DIR
+# Commits made without a repository identity are signed as Magician, never as
+# a hostname guess. The reviewed config sits beside the companion in this
+# skill's bin/, or in the skill's tree when PATH reached the package itself;
+# as the system layer it yields to the repository's own user.* settings.
+for config in "$(dirname "$found")/dugite.gitconfig" "$prefix/../../../dugite/bin/dugite.gitconfig"; do
+  if [ -f "$config" ]; then
+    GIT_CONFIG_SYSTEM=$config
+    export GIT_CONFIG_SYSTEM
+    unset GIT_CONFIG_NOSYSTEM
+    break
+  fi
+done
+if [ "$(uname -s)" = Linux ]; then
+  # Mirrors dugite on Linux: a relocated build needs PREFIX, and it ships its
+  # own CA bundle when the caller did not choose one.
+  PREFIX=$prefix
+  export PREFIX
+  if [ -z "${GIT_SSL_CAINFO:-}" ] && [ -f "$prefix/ssl/cacert.pem" ]; then
+    GIT_SSL_CAINFO=$prefix/ssl/cacert.pem
+    export GIT_SSL_CAINFO
+  fi
+fi
+exec "$real" "$@"

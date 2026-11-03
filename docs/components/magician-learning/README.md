@@ -89,6 +89,13 @@ data_room_reader_api, execution_panel_api, outcome_learning_api, web_api,
 websocket_handler, work_modules_api) and `magician-bin` depend on
 `magician-learning`.
 
+## Failed tool rows in the panel
+
+A `tool.failed` row's `summary` is the call's error without the runtime's
+`step execution failed:` / `compiled-pack dispatch failed:` prefixes (empty
+means none), and `metadata.error` carries the error as journaled (up to
+2,000 characters).
+
 ## Stalled waits in the panel
 
 `run.waiting_without_question` is `true` when `run.needs_attention` carries a

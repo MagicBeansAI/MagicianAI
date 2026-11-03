@@ -95,6 +95,7 @@ tools:
 - run_coding_task
 - apply_code_proposal
 - run_project_checks
+- impeccable
 - screenshot_preview
 - delegation_shell
 - delegation_files

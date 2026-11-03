@@ -15,10 +15,15 @@
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import { timedFetch } from '$lib/shared/fetch';
 	import {
+		agentList,
+		agentStoreState,
+		loadAgents,
 		loadHarnessRuntimeStatus,
 		setHarnessRuntimeEnabled,
+		type AgentSummary,
 		type HarnessRuntimeStatus
 	} from '$lib/stores/agentStore';
+	import { focusAreaGoalId, titleOf } from '$lib/magician/square/derive';
 	import { v2Events, type ConnectionStatus } from '$lib/realtime/v2-websocket';
 
 	interface HarnessAnomaly {
@@ -58,38 +63,25 @@
 	type StatusFilter = 'all' | 'open' | 'fix_dispatched' | 'resolved' | 'dismissed';
 	type ViewMode = 'table' | 'cards';
 
-	const companyLoopTargets: CompanyLoopTarget[] = [
-		{
-			agentId: 'cmo',
-			goalId: 'harness:cmo:content-calendar',
-			label: 'Content Calendar',
-			role: 'Chief Marketing Officer'
-		},
-		{
-			agentId: 'cro',
-			goalId: 'harness:cro:weekly-gtm-review',
-			label: 'Weekly GTM Review',
-			role: 'Chief Revenue Officer'
-		},
-		{
-			agentId: 'cpo',
-			goalId: 'harness:cpo:backlog-grooming',
-			label: 'Backlog Grooming',
-			role: 'Chief Product Officer'
-		},
-		{
-			agentId: 'cto',
-			goalId: 'harness:cto:morning-engineering-standup',
-			label: 'Engineering Standup',
-			role: 'Chief Technology Officer'
-		},
-		{
-			agentId: 'ceo',
-			goalId: 'harness:ceo:morning-briefing',
-			label: 'Executive Briefing',
-			role: 'Chief Executive Officer'
-		}
-	];
+	// One stage per focus area of each harness agent, read from the live
+	// definitions: a hard-coded list kept triggering routines retired months ago.
+	function companyLoopTargetsOf(agents: AgentSummary[]): CompanyLoopTarget[] {
+		return agents
+			.filter((agent) => agent.harness !== undefined)
+			// agentList is most-recently-updated first; a sequence needs a stable order.
+			.sort((a, b) => a.agent_id.localeCompare(b.agent_id))
+			.flatMap((agent) =>
+				(agent.autonomous_config?.focus_areas ?? []).map((focusArea) => ({
+					agentId: agent.agent_id,
+					goalId: focusAreaGoalId(agent.agent_id, focusArea.name),
+					label: focusArea.name,
+					role: [agent.name, titleOf(agent)].filter(Boolean).join(' · ')
+				}))
+			)
+			// Two focus areas whose names slug alike are one goal on the server.
+			.filter((target, index, all) => all.findIndex((other) => other.goalId === target.goalId) === index);
+	}
+	$: companyLoopTargets = companyLoopTargetsOf($agentList);
 
 	let anomalies: HarnessAnomaly[] = [];
 	let loading = true;
@@ -392,11 +384,14 @@
 
 	async function runCompanyLoop(): Promise<void> {
 		if (companyLoopRunning || harnessRuntimeLoading || !harnessRuntime) return;
+		// The agent store can emit mid-sequence; dispatch the stages shown at start.
+		const targets = companyLoopTargets;
+		if (targets.length === 0) return;
 		const ticket = generation, scope = scopeKey(), signal = dispatchController.signal;
 		companyLoopRunning = true;
 		companyLoopError = '';
 		currentStageIndex = 0;
-		companyLoopResults = companyLoopTargets.map((target) => ({
+		companyLoopResults = targets.map((target) => ({
 			key: runKey(target),
 			label: target.label,
 			agent_id: target.agentId,
@@ -405,9 +400,9 @@
 			detail: 'Waiting to dispatch'
 		}));
 
-		for (let i = 0; i < companyLoopTargets.length; i++) {
+		for (let i = 0; i < targets.length; i++) {
 			if (!dispatchCurrent(ticket, scope, signal)) return;
-			const target = companyLoopTargets[i];
+			const target = targets[i];
 			currentStageIndex = i;
 			replaceRunResult({
 				key: runKey(target),
@@ -468,7 +463,7 @@
 	}
 
 	async function refreshAll(): Promise<void> {
-		await Promise.all([refreshAnomalies(), refreshRuntimeStatus()]);
+		await Promise.all([refreshAnomalies(), refreshRuntimeStatus(), loadAgents().catch(() => [])]);
 	}
 
 	onMount(() => {
@@ -592,7 +587,7 @@
 				<button
 					type="button"
 					class="crew-button crew-button-primary"
-					disabled={companyLoopRunning || harnessRuntimeLoading || !harnessRuntime}
+					disabled={companyLoopRunning || harnessRuntimeLoading || !harnessRuntime || companyLoopTargets.length === 0}
 					on:click={runCompanyLoop}
 				>
 					<Icon name="flag" size={14} />
@@ -608,10 +603,21 @@
 			</div>
 		{/if}
 
-		<!-- Stepper Sequence of the 5 Executives -->
+		<!-- One stage per harness focus area -->
 		<div class="cadence-stepper" role="region" aria-label="Cadence Sequence Pipeline">
-			{#each companyLoopTargets as target, idx (target.agentId)}
-				{@const result = companyLoopResults.find((r) => r.agent_id === target.agentId)}
+			{#if companyLoopTargets.length === 0}
+				<span class="step-role">
+					{#if $agentStoreState.error}
+						Could not load team routines: {$agentStoreState.error}
+					{:else if $agentStoreState.isLoading || $agentStoreState.lastLoadedAt === null}
+						Loading team routines…
+					{:else}
+						No team routines are configured: no harness agent has a focus area.
+					{/if}
+				</span>
+			{/if}
+			{#each companyLoopTargets as target, idx (runKey(target))}
+				{@const result = companyLoopResults.find((r) => r.key === runKey(target))}
 				{@const isCurrent = currentStageIndex === idx}
 				<div
 					class="stepper-step"

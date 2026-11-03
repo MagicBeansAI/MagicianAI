@@ -671,6 +671,7 @@ mod tests {
             skill: skill.to_string(),
             path: format!("/scope/skills/{skill}/SKILL.md"),
             reason: "failed to compile governed runtime package: bad bounds".to_string(),
+            withdrawn: false,
         }
     }
 

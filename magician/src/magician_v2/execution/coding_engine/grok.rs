@@ -525,8 +525,23 @@ where
             self.saw_agent_start = true;
         }
 
-        self.run_prompt(request, &session_id, &request.prompt)
-            .await?;
+        // ACP has no system-prompt channel (newer CLIs have a top-level
+        // `--rules`, but it is not in the qualified launch and is unproven
+        // under `agent stdio`), so the persona and playbook lead a new
+        // session's first prompt. A loaded session already has them in its
+        // history; one that fell back to `session/new` needs them again.
+        let resumed = request
+            .grok
+            .resume_session_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty())
+            && self.continuation_fresh_reason.is_none();
+        let first_prompt = if resumed {
+            request.prompt.clone()
+        } else {
+            request.prompt_with_appended_instructions(CodingEngineKind::GrokAcp, &request.prompt)
+        };
+        self.run_prompt(request, &session_id, &first_prompt).await?;
         loop {
             self.fail_if_stopped().await?;
             let Some(follow_up) = self.next_follow_up().await else {
@@ -2505,6 +2520,57 @@ mod tests {
             Some("sess-secret")
         );
         assert_eq!(load.pointer("/params/mcpServers"), Some(&json!([])));
+    }
+
+    fn with_persona_and_playbook(dir: &std::path::Path) -> CodingEngineRequest {
+        let persona = dir.join("persona.md");
+        let playbook = dir.join("playbook.md");
+        std::fs::write(&persona, "\n## IDENTITY\nYou are Ada.\n").unwrap();
+        std::fs::write(&playbook, "\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n").unwrap();
+        let mut request = request_for(dir);
+        request.append_system_prompt = vec![persona, playbook];
+        request
+    }
+
+    #[tokio::test]
+    async fn a_new_grok_session_gets_the_persona_and_playbook_ahead_of_its_first_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, server) = duplex(16 * 1024);
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let peer = tokio::spawn(capture_client_frames(server, happy_script, frames.clone()));
+        let (reader, writer) = tokio::io::split(client);
+        let request = with_persona_and_playbook(dir.path());
+        run_turn_over_stdio(&request, reader, writer, GrokSessionLimits::default())
+            .await
+            .expect("turn");
+        let _ = peer.await;
+        let captured = frames.lock().unwrap();
+        assert_eq!(
+            prompt_texts(&captured),
+            vec![format!(
+                "{}\n## IDENTITY\nYou are Ada.\n\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n{}\n\nadd a comment",
+                crate::magician_v2::execution::coding_engine::APPENDED_INSTRUCTIONS_BEGIN,
+                crate::magician_v2::execution::coding_engine::APPENDED_INSTRUCTIONS_END,
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_loaded_grok_session_is_not_handed_the_instructions_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (client, server) = duplex(16 * 1024);
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let peer = tokio::spawn(capture_client_frames(server, resume_script, frames.clone()));
+        let (reader, writer) = tokio::io::split(client);
+        let mut request = with_persona_and_playbook(dir.path());
+        request.grok.resume_session_id = Some("sess-secret".into());
+        run_turn_over_stdio(&request, reader, writer, GrokSessionLimits::default())
+            .await
+            .expect("turn");
+        let _ = peer.await;
+        let captured = frames.lock().unwrap();
+        assert_eq!(methods_named(&captured, "session/load"), 1);
+        assert_eq!(prompt_texts(&captured), vec!["add a comment".to_string()]);
     }
 
     #[tokio::test]

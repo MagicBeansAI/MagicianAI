@@ -12,7 +12,7 @@
  * computed hash of the Rust sources and fails the build with a clear
  * remediation message if codegen needs to be re-run.
  */
-// SOURCE_HASH: 10618ddf66ddf9114cbbc636b38edb01ee30db389e1160ba506e6ea4bc60b205
+// SOURCE_HASH: befc81fa192faae75f79157122597efdb85e6a0b29bf75935e52c169a92552b3
 
 export const EVENT_CATEGORIES = [
 	'pipeline',

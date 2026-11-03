@@ -2,6 +2,7 @@
 	import { createEventDispatcher, onMount } from 'svelte';
 	import { agentList, loadAgents, type AgentSummary } from '$lib/stores/agentStore';
 	import { timedFetch } from '$lib/shared/fetch';
+	import { threadLabels } from '$lib/threads/threadLinks';
 	import {
 		normalizeInteractiveSessionSummary,
 		scopedInteractiveSessionParams,
@@ -539,7 +540,7 @@
 						<div class="dev-launcher__session-row">
 							<div class="dev-launcher__session-main">
 								<span class="dev-launcher__session-program">{session.program ?? 'session'}</span>
-								<span class="dev-launcher__session-thread">{session.uiThreadId ? `#${session.uiThreadId}` : 'unthreaded'}</span>
+								<span class="dev-launcher__session-thread">{session.uiThreadId ? `#${$threadLabels(session.uiThreadId)}` : 'unthreaded'}</span>
 								<span class="dev-launcher__session-id">{session.id.slice(0, 8)}</span>
 							</div>
 							<div class="dev-launcher__session-meta">

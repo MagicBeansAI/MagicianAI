@@ -342,7 +342,7 @@ pub fn build_yield_tool() -> NativeExecutionTool {
         "summary".to_string(),
         json!({
             "type": "string",
-            "description": "The answer the reader receives. Always required. State the results themselves — every value, identifier, quotation and count the goal asked for, verbatim — then, briefly, what was done. The reader sees only this and any artifacts; a summary that says the values were written or returned without repeating them has not answered."
+            "description": "The answer the reader receives. Always required. State the results themselves — every value, identifier, quotation and count the goal asked for, verbatim — then, briefly, what was done. The reader sees only this, any artifacts and any declared deliverable files; a summary that says the values were written or returned without repeating them has not answered. Exception: content you delivered as a file declared in `deliverables` is named (file name and what it holds, plus the key findings), not repeated in full."
         }),
     );
     props.insert(
@@ -384,7 +384,7 @@ pub fn build_yield_tool() -> NativeExecutionTool {
         "artifacts".to_string(),
         json!({
             "type": "array",
-            "description": "Output artifacts this run produced (text, JSON, file paths). If you produced a written deliverable (script, report, draft, analysis, copy) attach its FULL text here as a {name, content_type, data} item — text that lives only inside a prior tool argument (e.g. an image-generation prompt) is NOT a captured deliverable and will be lost. Empty only when nothing durable was produced.",
+            "description": "Output artifacts this run produced (text, JSON). If you produced a written deliverable (script, report, draft, analysis, copy) that is NOT already a file declared in `deliverables`, attach its FULL text here as a {name, content_type, data} item — text that lives only inside a prior tool argument (e.g. an image-generation prompt) is NOT a captured deliverable and will be lost. A deliverable already written to a file needs no inline copy: declare its path in `deliverables` instead. Empty only when nothing durable was produced.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -394,6 +394,21 @@ pub fn build_yield_tool() -> NativeExecutionTool {
                     "artifact_type": {"type": "string"}
                 },
                 "required": ["name", "content_type", "data"]
+            }
+        }),
+    );
+    props.insert(
+        "deliverables".to_string(),
+        json!({
+            "type": "array",
+            "description": "Files you wrote that ARE the deliverable (report, dataset, document, code, any file type), primary first. `path` is absolute or relative to the task workdir; `outputs/<name>` names an item you attach in `artifacts` in this same yield. Each file must be a regular file inside this task's workdir or outputs. The user receives each one as a downloadable attachment, so the summary names the file rather than repeating its contents. Omit when the summary itself is the whole answer.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path, or a path relative to the task workdir."},
+                    "title": {"type": "string", "description": "Optional short title for the file."}
+                },
+                "required": ["path"]
             }
         }),
     );
@@ -429,7 +444,7 @@ pub fn build_yield_tool() -> NativeExecutionTool {
 
     NativeExecutionTool {
         name: "yield".to_string(),
-        description: "Yield control back to the orchestrator with a structured terminal outcome report — done / partial / blocked. The single terminal primitive: describe what happened in structured fields (`completed`, `open`, `blockers`, `artifacts`) and let the orchestrator classify the disposition. If the observed final state satisfies the goal, yield completed with empty open/blockers. To ASK the user a question, use `need_user_input` instead — that is a separate primitive with a different lifecycle.".to_string(),
+        description: "Yield control back to the orchestrator with a structured terminal outcome report — done / partial / blocked. The single terminal primitive: describe what happened in structured fields (`completed`, `open`, `blockers`, `artifacts`, `deliverables`) and let the orchestrator classify the disposition. If the observed final state satisfies the goal, yield completed with empty open/blockers. To ASK the user a question, use `need_user_input` instead — that is a separate primitive with a different lifecycle.".to_string(),
         parameters: build_parameters(props, vec!["summary"]),
         is_control_tool: true,
     }
@@ -515,7 +530,7 @@ fn delegate_to_agent_tool(chat: bool) -> NativeExecutionTool {
                 "type": "object",
                 "properties": {
                     "target_agent_id": {"type": "string", "description": "ID of the target agent"},
-                    "context": {"type": "string", "description": "Context/instructions for the delegate"},
+                    "context": {"type": "string", "description": "Context/instructions for the delegate: restate the user's actual request and the deliverable shape they asked for, and include any clarification they gave verbatim. Do not add quality bars, verification regimes, sourcing requirements or caveats the user did not ask for — each becomes work the delegate must finish first. For an open-ended enumeration or lookup, ask for a best-effort result delivered now with a short note on its limits, not exhaustive verification."},
                     "input_artifact_ids": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -2209,5 +2224,18 @@ mod yield_contract_tests {
         assert!(description.contains("verbatim"), "{description}");
         assert!(description.contains("State the results"), "{description}");
         assert!(!description.contains("what happened, in"), "{description}");
+        assert!(description.contains("deliverables"), "{description}");
+    }
+
+    /// `deliverables` is a declared property, so the closed schema
+    /// (`additionalProperties: false`) admits it, and each item needs a path.
+    #[test]
+    fn the_yield_schema_declares_deliverables_by_path() {
+        let tool = build_yield_tool();
+        assert_eq!(tool.parameters["additionalProperties"], json!(false));
+        let deliverables = &tool.parameters["properties"]["deliverables"];
+        assert_eq!(deliverables["type"], json!("array"));
+        assert_eq!(deliverables["items"]["required"], json!(["path"]));
+        assert!(deliverables["items"]["properties"]["title"].is_object());
     }
 }

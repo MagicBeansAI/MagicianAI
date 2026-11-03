@@ -322,6 +322,30 @@ class SharedBinTests(unittest.TestCase):
             installed = data / "scopes/alice/test/skills/whatsapp/bin/wu"
             self.assertTrue(installed.samefile(root / "node_modules/.bin/wu"))
 
+    def test_venv_interpreter_is_a_shim_that_keeps_the_venv(self):
+        # A link into .venv/bin starts the bare base Python; the shim must not.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            skill = fixture(root, ("python3",))
+            venv = root / ".venv"
+            subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+            resolver = shared_skill_bins.Resolver(root)
+            self.assertEqual(resolver.wire(skill), 1)
+            shim = skill / "bin/python3"
+            self.assertFalse(shim.is_symlink())
+            prefix = subprocess.run(
+                [str(shim), "-c", "import sys; print(sys.prefix)"], cwd=tempfile.gettempdir(),
+                env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, check=True).stdout.strip()
+            self.assertTrue(Path(prefix).samefile(venv))
+            self.assertEqual(resolver.wire(skill), 0)
+            # An old symlink is replaced; a pack-owned wrapper is still kept.
+            shim.unlink()
+            shim.symlink_to(venv / "bin/python3")
+            self.assertEqual(resolver.wire(skill), 1)
+            self.assertFalse(shim.is_symlink())
+            executable(shim, "#!/bin/sh\nexec /usr/bin/python3 \"$@\"\n")
+            self.assertEqual(resolver.wire(skill), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

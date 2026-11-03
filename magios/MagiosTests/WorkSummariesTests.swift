@@ -190,6 +190,24 @@ final class WorkSummariesTests: XCTestCase {
         XCTAssertEqual(shown.map(\.goal.name), ["Main 1", "Main 2", "Main 3"])
         XCTAssertEqual(shown.first.map(WorkGoalCopy.subGoals(of:)), "4 sub-goals")
     }
+
+    /// The team sequence dispatches each harness agent's live focus areas,
+    /// never a retired routine, with the backend's goal slug.
+    func testTeamRoutinesAreTheLiveFocusAreasOfHarnessAgents() throws {
+        func agent(_ id: String, harness: Bool, _ focus: [String]) -> String {
+            let areas = focus.map { "{\"name\":\"\($0)\",\"description\":\"\"}" }.joined(separator: ",")
+            return "{\"definition\":{\"agent_id\":\"\(id)\",\(harness ? "\"harness\":{}," : "")\"autonomous_config\":{\"schedule\":\"0 9 * * *\",\"focus_areas\":[\(areas)]}}}"
+        }
+        let body = "{\"agents\":[\(agent("cro", harness: true, ["prolific investors"])),\(agent("ceo", harness: true, ["accelerators", "Weekly Replan", "weekly replan"])),\(agent("cpo", harness: true, [])),\(agent("creative-mind", harness: false, ["general"]))]}"
+        let agents = try JSONDecoder().decode(WorkJSON.self, from: Data(body.utf8))
+        let targets = WorkOperationsView.teamRoutineTargets(agents)
+        XCTAssertEqual(targets.map(\.goal), ["harness:ceo:accelerators", "harness:ceo:weekly-replan", "harness:cro:prolific-investors"])
+        XCTAssertEqual(WorkOperationsView.harnessGoalSlug("  Weekly Replan!! "), "weekly-replan")
+        XCTAssertEqual(WorkOperationsView.harnessGoalSlug("Café"), "caf")
+        XCTAssertEqual(WorkOperationsView.harnessGoalSlug("***"), "unnamed")
+        let long = (0..<12).map { "word\($0)" }.joined(separator: " ")
+        XCTAssertEqual(WorkOperationsView.harnessGoalSlug(long), "word0-word1-word2-word3-word4-word5-word6-word7-word8-word9")
+    }
 }
 
 private actor RequestRecorder {

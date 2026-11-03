@@ -509,8 +509,12 @@ async fn project_claimed_terminal(
     let terminal = replayed
         .terminal
         .expect("terminal exactness was checked before projection");
+    // A nested segment retired into its parent (`retired_into_parent_segment`)
+    // ended only itself: its events are projected below, but the shared
+    // runtime execution is the parent's to settle.
     let runtime_settlement_required = terminal
         != crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind::HandedOff
+        && !committed.state.retired_into_parent_segment
         && (committed.state.identity.task_id.is_some()
             || committed.state.identity.execution_id.is_some())
         && (terminal
@@ -646,6 +650,10 @@ async fn project_claimed_terminal(
                     terminal,
                     watermark,
                     committed.state.terminal_settlement_receipt.as_ref(),
+                    matches!(
+                        terminal_settlement_lifecycle_exclusion,
+                        Some(crate::magician_v2::artifact_v2::service::TerminalLoopReceiptLifecycleExclusion::Agent { .. })
+                    ),
                 )),
             ) => accepted
                 .map_err(|_| ArtifactRuntimeSettlementFailure::TimedOut)

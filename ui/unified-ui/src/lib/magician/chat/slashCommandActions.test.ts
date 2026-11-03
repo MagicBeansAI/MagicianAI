@@ -254,6 +254,9 @@ describe('runSlashAction', () => {
 			)
 		).rejects.toThrow('Model choices could not be loaded');
 		expect(profiles.store.selectModel).not.toHaveBeenCalled();
+		// A failed pick leaves the engine unchanged too.
+		expect(select).not.toHaveBeenCalled();
+		expect(notifyDefault).not.toHaveBeenCalled();
 	});
 
 	it('/voice-mode saves where the voice switch saves', async () => {

@@ -1,6 +1,6 @@
 [package]
 name = "magician-desktop"
-version = "0.3.29"
+version = "0.3.30"
 edition = "2021"
 description = "Magican Desktop - system tray app for managing containerized Magician"
 license = "MIT OR Apache-2.0"

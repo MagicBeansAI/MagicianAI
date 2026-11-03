@@ -60,6 +60,9 @@ internal data class ActivityTurnRow(
     var toolName: String? = null,
     /** When the call began (epoch ms), for a running row's live elapsed clock. */
     var startedAtMs: Double? = null,
+    /** The earliest and latest event time (epoch ms) that touched the row, for the Steps card's times. */
+    var firstSeenAtMs: Double? = null,
+    var updatedAtMs: Double? = null,
 )
 
 internal class ChatTurnActivityAccumulator {
@@ -120,6 +123,8 @@ internal class ChatTurnActivityAccumulator {
             toolName = it.toolName,
             key = it.key,
             startedAtMs = it.startedAtMs,
+            firstSeenAtMs = it.firstSeenAtMs,
+            updatedAtMs = it.updatedAtMs,
         )
     }
 
@@ -159,8 +164,19 @@ internal class ChatTurnActivityAccumulator {
         row.taskId = row.taskId ?: ingestTaskId
         row.executionId = row.executionId ?: ingestExecutionId
         if (row.files.isEmpty()) row.files = ingestFiles
+        stampEventTime(row, rowsByKey[row.key])
         if (rowsByKey[row.key] == null) orderedKeys.add(row.key)
         rowsByKey[row.key] = row
+    }
+
+    /**
+     * Carry the replaced row's first/latest event times forward and widen them
+     * to the event being ingested when it has a time; out of order is fine.
+     */
+    private fun stampEventTime(row: ActivityTurnRow, previous: ActivityTurnRow?) {
+        val at = ingestStartedAtMs
+        row.firstSeenAtMs = listOfNotNull(row.firstSeenAtMs, previous?.firstSeenAtMs, at).minOrNull()
+        row.updatedAtMs = listOfNotNull(row.updatedAtMs, previous?.updatedAtMs, at).maxOrNull()
     }
 
     private fun drop(key: String) {
@@ -175,6 +191,7 @@ internal class ChatTurnActivityAccumulator {
         row.taskId = row.taskId ?: ingestTaskId
         row.executionId = row.executionId ?: ingestExecutionId
         if (ingestFiles.isNotEmpty()) row.files = ingestFiles
+        stampEventTime(row, null)
 
         // Web moves a row to the bounded tail when its terminal event lands,
         // so a long-running tool cannot finish off-screen behind newer work.

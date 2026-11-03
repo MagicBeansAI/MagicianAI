@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- 0.1.11: GPT-Live calls get ready without waiting for the chat prompt's memory lookup.
+### 2026-10-31 — 0.1.12
+
+- `CallChat` picks a call's chat: the one it names, a fresh one (`new_chat`), or the thread's open chat; a fresh chat is deleted if the call never starts.
+
+### 2026-10-30 — 0.1.11
 
 - GPT-Live calls get ready without waiting for the chat prompt's memory lookup: Live installs its own prompt and only needs the catalog snapshot that authorizes `delegate_to_chat`, which used to hold `session.ready` for up to 8 seconds.
 

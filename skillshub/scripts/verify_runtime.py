@@ -24,7 +24,7 @@ import sys
 import tempfile
 
 import shared_skill_bins
-import skill_render
+import scope_env
 
 ROOT = Path(__file__).resolve().parents[1]
 MEDIA = {"media-fetch", "youtube-search"}
@@ -110,7 +110,7 @@ class Audit:
                 continue
             scoped_manifest = scoped / "SKILL.md"
             if (scoped_manifest.exists() and not scoped_manifest.is_symlink()
-                    and not skill_render.is_render_managed(scoped)):
+                    and not scope_env.is_legacy_rendered(scoped)):
                 continue  # the scope's own copy of this skill
             if (only is None and skill.name in (ENGINES | {"browser"})
                     and not (bin_names(skill / "bin") | bin_names(scoped / "bin"))):

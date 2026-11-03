@@ -120,10 +120,27 @@ the transcript. `chat/turn_state.rs`; every inline turn
 - **Snapshot.** `turn_state` on `GET /chat/sessions/{id}`, `GET /chat/active`
   and `GET /chat/sessions/{id}/queue`: the session's latest turn,
   `{chat_turn_id, status, started_at, ended_at?, reason?}` (ms), or `null`
-  (no turn yet, or the server restarted). `status`: `running` | `completed` |
+  (no turn yet, or the server restarted with no turn left running).
+  `status`: `running` | `completed` |
   `stopped` | `failed`. `reason`: `user_stop` (Stop), `turn_stalled` /
   `turn_wall_clock_exceeded` (watchdog; its notice is a persisted assistant
-  message on the turn), `error`, `interrupted` (turn future dropped).
+  message on the turn), `error`, `interrupted` (turn future dropped, or its
+  process died).
+- **After a restart.** The state lives in memory, so a process killed mid-turn
+  leaves `running` as the turn's last state row. The startup orphan sweep
+  (`recover_orphan_delegate_terminals`) reads each turn file's last state row;
+  a `running` one that began before this process started is settled as
+  `failed` / `interrupted`, or as `completed` when the session holds the
+  turn's reply (only its settled row was lost). A resumed run's re-armed
+  watcher posts its task card, so the sweep does not post it as well. The event appends the settled row; the turn
+  becomes the session's `turn_state` only while it is still the session's
+  newest (no later message of another turn), and a deleted session's turn is
+  skipped.
+- **Stop with nothing running.** `DELETE …/run` answers `cancelled: false`
+  when the session has no run. When the server reports no running turn yet a
+  client still shows one as live (a restart lost its state), the web card's
+  Stop records that turn as stopped on the client, unless the server already
+  settled it.
 - **Live.** Agent event `chat.turn.state_changed` (websocket `AgentEvent`
   envelope; payload = the same fields plus `chat_session_id`) at start and at
   end. It carries `chat_turn_id`, so it is also a row in the turn's event file.

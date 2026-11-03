@@ -110,6 +110,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -1330,7 +1331,11 @@ private fun RunEventRow(event: DetailActivity, origin: Long?, delegatedAgent: St
                     }
                 }
                 event.body?.takeIf(String::isNotBlank)?.let {
-                    Text(it, style = livelyStepMetaStyle(), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    if (event.failure) {
+                        FailureDetailText(it)
+                    } else {
+                        Text(it, style = livelyStepMetaStyle(), maxLines = 3, overflow = TextOverflow.Ellipsis)
+                    }
                 }
                 event.model?.let { model ->
                     Text(
@@ -1341,6 +1346,34 @@ private fun RunEventRow(event: DetailActivity, origin: Long?, delegatedAgent: St
             }
         }
     }
+}
+
+/**
+ * Why a tool call failed, under its "… failed" title: two lines, and when it
+ * runs longer a tap opens the rest and a second tap folds it again. The
+ * screen reader reads the whole reason either way.
+ */
+@Composable
+private fun FailureDetailText(reason: String) {
+    var expanded by remember(reason) { mutableStateOf(false) }
+    var overflows by remember(reason) { mutableStateOf(false) }
+    val canToggle = expanded || overflows
+    Text(
+        reason,
+        style = livelyStepMetaStyle(activePalette.danger),
+        maxLines = if (expanded) Int.MAX_VALUE else 2,
+        overflow = TextOverflow.Ellipsis,
+        onTextLayout = { layout -> if (!expanded) overflows = layout.hasVisualOverflow },
+        modifier = if (canToggle) {
+            // A 48dp touch target once it is tappable; plain text keeps its own height.
+            Modifier.minimumInteractiveComponentSize().clickable(
+                onClickLabel = if (expanded) "Show less of the error" else "Show the whole error",
+                role = Role.Button,
+            ) { expanded = !expanded }
+        } else {
+            Modifier
+        },
+    )
 }
 
 // Plan
@@ -1711,10 +1744,13 @@ private class TaskDetailProjection(
                 val billed = call.settled?.obj("metadata") ?: metadata
                 val input = billed.double("input_tokens")
                 val outputTokens = billed.double("output_tokens")
+                // A failed tool call's body is why it failed.
+                val failure = TaskActivityCalls.failureDetail(call)
                 DetailActivity(
                     id = row.text("id") ?: "activity-$index",
                     title = TaskActivityCalls.title(call),
-                    body = row.text("summary") ?: row.text("message") ?: call.start?.text("summary"),
+                    body = failure ?: row.text("summary") ?: row.text("message") ?: call.start?.text("summary"),
+                    failure = failure != null,
                     status = row.text("status") ?: row.text("severity") ?: "info",
                     timestamp = row.text("created_at") ?: row.text("timestamp"),
                     model = call.model,
@@ -1925,6 +1961,8 @@ private data class DetailActivity(
     val attribution: PlanStepAttribution = PlanStepAttribution.NONE,
     /** When a call still running on a live run began; its row shows a ticking elapsed clock. */
     val liveSinceMillis: Long? = null,
+    /** The body is why a tool call failed: drawn two lines, a tap reads the rest. */
+    val failure: Boolean = false,
 )
 
 private data class DetailQuestion(

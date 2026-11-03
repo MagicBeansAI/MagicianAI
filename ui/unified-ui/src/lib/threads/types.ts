@@ -3,7 +3,13 @@ export type ThreadDisplayMode = 'chat' | 'dev';
 export interface UiThreadRecord {
 	principal: string;
 	workspace: string;
+	/** Permanent id; sessions, tasks and memory reference it. Never changes. */
 	id: string;
+	/**
+	 * URL key that follows the name (`/t/<slug>`); a rename moves it and the old
+	 * one keeps resolving. Absent on older servers: use `id`.
+	 */
+	slug?: string;
 	name: string;
 	archived: boolean;
 	sort_order: number;
@@ -21,7 +27,13 @@ export interface UiThreadRecord {
 export interface UiThreadDetail {
 	principal: string;
 	workspace: string;
+	/** Permanent id; sessions, tasks and memory reference it. Never changes. */
 	id: string;
+	/**
+	 * URL key that follows the name (`/t/<slug>`); a rename moves it and the old
+	 * one keeps resolving. Absent on older servers: use `id`.
+	 */
+	slug?: string;
 	name: string;
 	archived: boolean;
 	sort_order: number;

@@ -138,7 +138,12 @@ pub async fn for_execution_task(
         .map_err(|e| e.to_string())?;
     let Some(project_id) = super::projects::parse_vibedev_project_id(&task.manifest.description)
     else {
-        return Ok(None);
+        // A task VibeDev did not start: its work-location binding, keyed on
+        // the task itself.
+        return match super::work_location::project_bound_to_task(scope_root, task_id) {
+            Some(project) => for_task(scope_root, &project, task_id),
+            None => Ok(None),
+        };
     };
     let Some(project) = super::projects::read_vibedev_projects(scope_root)
         .into_iter()

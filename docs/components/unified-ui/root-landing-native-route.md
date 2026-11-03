@@ -109,6 +109,7 @@ sidekick; the person is the hero. The hero copy opens with **magican** raised to
 the cycling examples communicate work, play and side quests without another
 slogan. The landing footer and manifesto sign-off preserve **More You**. The repo
 README opens with **Powering Magican — Life assistant for work, play, and everything else**.
+The page title (**Magican — More You | Life assistant for work, play, and everything else**), social descriptions, `llms.txt` and the share image (`static/og-image.png`) carry the same proposition.
 **More You** explicitly uses Outfit Medium (500), upright, in the footer
 and manifesto sign-off. The footer tagline does not inherit the monospace face
 used for its navigation and other footer text.

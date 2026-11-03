@@ -29,6 +29,10 @@ impl StartupBarrier {
         Arc::clone(STARTUP.get_or_init(|| Arc::new(Self::new())))
     }
 
+    fn is_shutting_down(&self) -> bool {
+        self.shutdown.is_cancelled()
+    }
+
     async fn wait(&self) -> bool {
         tokio::select! {
             biased;
@@ -53,6 +57,23 @@ impl Default for StartupBarrier {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Error code of a run or task refused because the process is shutting down.
+pub const RUNTIME_DRAINING: &str = "runtime_draining";
+/// What the owner reads when a run is refused during shutdown.
+pub const RUNTIME_DRAINING_MESSAGE: &str =
+    "Magician is restarting, so this was not started. Ask again in a moment.";
+
+/// True once the shutdown signal has arrived. Nothing new may start then: the
+/// supervisor kills the process 10 s after the signal, so a run started during
+/// the HTTP drain is cut off mid-step and left for restart recovery to finish
+/// with no chat to report to. `false` when no barrier is installed (tests,
+/// embedded runtimes).
+pub fn is_shutting_down() -> bool {
+    STARTUP
+        .get()
+        .is_some_and(|state| state.is_shutting_down())
 }
 
 /// Wait for the full HTTP application to be usable, or abandon work when
@@ -106,7 +127,9 @@ mod tests {
         );
         state.ready.cancel();
         assert!(state.wait().await);
+        assert!(!state.is_shutting_down());
         state.shutdown.cancel();
+        assert!(state.is_shutting_down());
         assert!(!state.wait().await);
         assert!(state.admit().await.is_none());
     }

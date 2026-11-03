@@ -281,11 +281,11 @@ The task's stored outputs, classified for display. Handler
 
 (The second entry is abbreviated; every entry carries all `OutputRef` keys.)
 
-Each entry keeps its stored `OutputRef` keys and adds two:
+Each entry keeps its stored `OutputRef` keys and adds:
 
 - **`deliverable`** (`models::is_deliverable_output`): true for
-  `audience == "user"` with `role ∈ {primary_task_user, user_media}`, the same
-  rule Portable Export uses. Everything else is internal (the execution output,
+  `audience == "user"` with `role ∈ {primary_task_user, user_media,
+  user_attachment}`, the same rule Portable Export uses. Everything else is internal (the execution output,
   the continuation context used to resume the task, legacy
   `primary_task_agent` refs) and belongs under technical details.
 - **`absolute_path`**: the canonical path, set only when `relative_path` names an
@@ -293,6 +293,16 @@ Each entry keeps its stored `OutputRef` keys and adds two:
   the file is missing, resolves outside `outputs/` (including via a symlink), or
   `relative_path` is absolute or has a `..`/`.` component. The drawer copies it
   when you click an output name.
+- **`download_url`** (deliverables only, omitted otherwise): the served URL,
+  `/api/magician/v3/tasks/{task_id}/outputs/<path under outputs/>`, each path
+  segment percent-encoded. Link this, never `absolute_path`, on any surface
+  that is not the host machine.
+- **`primary`** (omitted when `false`): `true` on the one delivered file
+  (`role: user_attachment`) that is the run's primary deliverable — the first
+  path its terminal `yield` declared in `deliverables`.
+
+The record also carries **`primary_deliverable_output_id`** (omitted when the
+latest run declared no deliverable file), the output id of that entry.
 
 **`internal_files`** lists sidecars that exist on disk (`task_summary.json`,
 `voice_speech.json`); they are never deliverables.

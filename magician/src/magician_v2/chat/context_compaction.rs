@@ -149,13 +149,18 @@ pub fn estimated_tokens(value: &(impl Serialize + ?Sized)) -> Result<u64> {
     Ok((writer.bytes as u64).saturating_add(1) / 2)
 }
 
+/// Whether the provider refused the request for its size: too many tokens, or
+/// too large a payload (HTTP 413, too many images). Either way a compacted
+/// history, which also re-attaches fewer past images, may fit.
 pub fn is_context_overflow(error: &anyhow::Error) -> bool {
     if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<magicllm::LLMError>(),
-            Some(magicllm::LLMError::Context(
-                magicllm::chunking::ContextError::PhysicalContextWindowExceeded { .. }
-            ))
+            Some(
+                magicllm::LLMError::Context(
+                    magicllm::chunking::ContextError::PhysicalContextWindowExceeded { .. }
+                ) | magicllm::LLMError::ProviderStatus { status: 413, .. }
+            )
         )
     }) {
         return true;
@@ -168,6 +173,13 @@ pub fn is_context_overflow(error: &anyhow::Error) -> bool {
         "maximum context length",
         "exceeds the context window",
         "input token count exceeds",
+        // Payload size, not tokens. A bare "413" is not matched: ids and
+        // counts contain it.
+        "request_too_large",
+        "request entity too large",
+        "payload too large",
+        "too many images",
+        "http 413",
     ]
     .iter()
     .any(|marker| text.contains(marker))
@@ -1395,6 +1407,36 @@ mod tests {
         )));
         assert!(!is_context_overflow(&anyhow!("permission denied")));
         assert!(!is_context_overflow(&anyhow!("request timed out")));
+    }
+
+    /// A request refused for its payload size (many re-attached images) gets
+    /// the same compacted retry as a token overflow.
+    #[test]
+    fn overflow_detection_recognizes_request_too_large() {
+        assert!(is_context_overflow(&anyhow!(
+            "provider `anthropic` error: {{\"type\":\"error\",\"error\":{{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum size\"}}}}"
+        )));
+        assert!(is_context_overflow(&anyhow::Error::new(
+            magicllm::LLMError::ProviderStatus {
+                provider: "gemini".into(),
+                status: 413,
+                body: "payload".into(),
+            }
+        )));
+        assert!(is_context_overflow(&anyhow!("413 Request Entity Too Large")));
+        assert!(is_context_overflow(&anyhow!(
+            "invalid_request_error: too many images in this request"
+        )));
+        assert!(!is_context_overflow(&anyhow!(
+            "provider `openai` error: unknown tool call call_413 in response 4130"
+        )));
+        assert!(!is_context_overflow(&anyhow::Error::new(
+            magicllm::LLMError::ProviderStatus {
+                provider: "openai".into(),
+                status: 400,
+                body: "bad request".into(),
+            }
+        )));
     }
 
     #[test]

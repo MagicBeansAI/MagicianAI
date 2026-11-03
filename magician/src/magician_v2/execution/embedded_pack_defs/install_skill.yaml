@@ -1,0 +1,29 @@
+name: install_skill
+description: Install a skill from the repo's skillshub/ into the current workspace after the owner approves, so new chat sessions can use it.
+version: "1.0.0"
+guide: |
+  Tool name: `install_skill`
+
+  Installs `skillshub/<name>` into this workspace's skills layer — the same
+  linked install the Skills page and `make -C skillshub install-scope
+  NAMES=<name>` do — after the owner approves it on a card. The skill must
+  load (frontmatter `name` matches its folder). It reads the live checkout, so
+  a skill written in an isolated coding workspace must be applied first. Returns `{ skill, status:
+  installed | denied, scope, path }`. New chat sessions in the workspace find
+  the skill without a restart. Run `validate_skill` (and `test_skill` when the
+  skill has tests) first; never install a skill the owner did not ask for.
+parameters:
+  - name: name
+    required: true
+    param_type: string
+    description: The skill's folder name under skillshub/ (for example `impeccable`).
+implementation:
+  type: compiled
+  provider_name: install_skill
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 420
+  categories:
+    - filesystem
+  composition_category: action
+  sandbox: none

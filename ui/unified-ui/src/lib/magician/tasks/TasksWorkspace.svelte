@@ -13,6 +13,7 @@
 		type TaskPriority
 	} from '$lib/stores/taskStore';
 	import { threadStore } from '$lib/stores/threadStore';
+	import { threadHrefs } from '$lib/threads/threadLinks';
 	import { tasksInThread, filteredThreadTasks, threadTaskCounts } from '$lib/work/threadTasks';
 	import { loadAgents, personalAgentList, primaryAgent } from '$lib/stores/agentStore';
 	import { scopeIdentityStore, getCurrentScopeCredentialRevision } from '$lib/stores/scopeIdentityStore';
@@ -2035,7 +2036,7 @@
 		<div class="tasks-list-column">
   {#if threadContextId}
    <div class="work-thread-context" aria-label="Thread context">
-    <strong>#{threadContextTitle}</strong><a href={`/t/${encodeURIComponent(threadContextId)}`}>Back to chat</a><a href="/work">All threads</a>
+    <strong>#{threadContextTitle}</strong><a href={$threadHrefs(threadContextId)}>Back to chat</a><a href="/work">All threads</a>
     {#if threadContextLoading}<span role="status">Loading thread…</span>{/if}
     {#if threadContextError}<span role="alert">{threadContextError}</span><button on:click={() => hydrateThreadContext(threadContextId!)}>Retry thread</button>{/if}
    </div>

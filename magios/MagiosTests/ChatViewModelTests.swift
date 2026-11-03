@@ -1933,6 +1933,24 @@ final class ChatTurnStateTests: XCTestCase {
         XCTAssertTrue(m.messages.last?.activityIsLive == true)
     }
 
+    func testOpeningAConversationIsNotTheWelcomeScreenAndAFailureCanRetry() {
+        let m = makeVM()
+        MockURLProtocol.handler = { req in
+            if req.url?.path.hasSuffix("/chat/sessions/s1") == true {
+                return (response(for: req, status: 500), Data("{}".utf8))
+            }
+            return (response(for: req), Data("{}".utf8))
+        }
+        m.loadSession("s1")
+        XCTAssertEqual(m.openingSessionId, "s1", "an empty view is loading, not a new chat")
+        waitUntil(timeout: 5) { m.sessionOpenFailed }
+        XCTAssertNil(m.openingSessionId)
+
+        m.startNewSession("s2")
+        XCTAssertNil(m.openingSessionId, "a new chat is never shown as loading")
+        XCTAssertFalse(m.sessionOpenFailed)
+    }
+
     func testOlderServerWithoutTurnStateLeavesTheTranscriptAlone() {
         let m = makeVM()
         MockURLProtocol.handler = { req in

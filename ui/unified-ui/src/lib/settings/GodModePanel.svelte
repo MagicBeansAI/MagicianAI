@@ -166,7 +166,8 @@
 		you can, install software and reach the network. Anything beyond the normal sandbox asks you first: allow once, for
 		this session, or always. Ask / Accept still applies inside the normal sandbox. Commands on the blocked list (like
 		<code>rm -rf /</code>) can only be allowed once. Changing this setting forgets every approval and every chat’s own
-		choice. VibeDev is not affected: its coding engines stay in Magician’s box, and only super god mode below unrestricts them.
+		choice. It also covers the coding runs a chat starts: there a command in Magician’s own code folder asks you every
+		time, and the coding engines stay in Magician’s box (only super god mode below lifts it).
 	</div>
 	<div class="auto-approve" class:auto-approve-on={godState?.auto_approve}>
 		<div class="super-god-copy">

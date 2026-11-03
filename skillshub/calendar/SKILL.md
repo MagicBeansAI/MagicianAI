@@ -1,6 +1,6 @@
 ---
 name: calendar
-version: 0.2.0
+version: 0.2.1
 description: Google Calendar via Google Workspace CLI (gws) — view agendas, list calendars,
   and create or update events across multiple accounts
 metadata:
@@ -11,6 +11,7 @@ metadata:
       bins:
       - gws
       - calendar-adapter
+      - python3
     install_hint:
       docs: 'OAuth setup: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-{account}/cloudsdk
         GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-{account}
@@ -27,6 +28,7 @@ metadata:
         bins:
         - gws
         - calendar-adapter
+        - python3
         entrypoint: gws
       runtime:
         protocol: cli

@@ -810,6 +810,9 @@ data class ActivityRow(
     val key: String? = null,
     /** When a model or tool call began (epoch ms), for a running row's live elapsed clock. */
     val startedAtMs: Double? = null,
+    /** The earliest and latest event time (epoch ms) behind this row, for the Steps card's times. */
+    val firstSeenAtMs: Double? = null,
+    val updatedAtMs: Double? = null,
 )
 
 /**

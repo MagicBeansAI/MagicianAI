@@ -11,13 +11,16 @@ const store = vi.hoisted(() => ({
 	unsubscribe: { calls: 0 }
 }));
 
-vi.mock('$lib/stores/chatTurnEventsStore', async () => {
+vi.mock('$lib/stores/chatTurnEventsStore', async (importOriginal) => {
 	const { writable } = await import('svelte/store');
+	const { eventTimestampMs } =
+		await importOriginal<typeof import('$lib/stores/chatTurnEventsStore')>();
 	const chatTurnEventsStore = writable(store.events);
 	const chatTurnUsageBaselineStore = writable(store.usage);
 	return {
 		chatTurnEventsStore,
 		chatTurnUsageBaselineStore,
+		eventTimestampMs,
 		eventDedupeKey: (raw: Record<string, any>) =>
 			(raw?.data?.event?.payload?.event_id as string | undefined) ?? null,
 		subscribeToChatTurn: vi.fn(() => () => {
@@ -45,6 +48,8 @@ import * as eventsStore from '$lib/stores/chatTurnEventsStore';
 import { recordTaskLlmCall, recordTaskUsageSnapshot, resetTaskUsage } from '$lib/magician/chat/next/taskUsage';
 import type { ExecutionPanelState } from '$lib/types/executionPanel';
 import RequestActivityCard from './RequestActivityCard.svelte';
+import { chatTurnStateStore, resetChatTurnStates } from '$lib/magician/chat/turnState';
+import { get } from 'svelte/store';
 
 const seed = (eventsStore as unknown as { __seed: (id: string, e: unknown[]) => void }).__seed;
 const seedUsage = (eventsStore as unknown as { __seedUsage: (id: string, u: unknown) => void })
@@ -320,6 +325,78 @@ describe('RequestActivityCard', () => {
 		});
 		const renderTurn = (turn: string) =>
 			render(RequestActivityCard, { sessionId: 's1', chatTurnId: turn, live: true, embedded: true });
+
+		const nothingToCancel = () =>
+			vi.fn(async () =>
+				Response.json(
+					{ code: 'invalid_request', error: 'No active execution to cancel', details: { cancelled: false } },
+					{ status: 400 }
+				)
+			);
+
+		it('Stop on a run with nothing left to cancel settles the turn only the client showed as live', async () => {
+			resetChatTurnStates();
+			const fetchMock = nothingToCancel();
+			vi.stubGlobal('fetch', fetchMock);
+			try {
+				seed('turn-stop', [started({ call_id: 'act-1', detail: null })]);
+				const { container } = render(RequestActivityCard, {
+					sessionId: 's1',
+					chatTurnId: 'turn-stop',
+					live: true,
+					embedded: true,
+					controlTaskId: 'task-1',
+					controlExecutionId: 'exec-d',
+					stopsTurnWhenRunEnded: true
+				});
+				await tick();
+				const stop = container.querySelector('.request-activity__stop');
+				expect(stop).not.toBeNull();
+				await fireEvent.click(stop as Element);
+				await vi.waitFor(() =>
+					expect(get(chatTurnStateStore).get('turn-stop')).toMatchObject({
+						status: 'stopped',
+						chat_session_id: 's1',
+						client_settled: true
+					})
+				);
+				// Only the run's cancel was asked; the chat turn itself was not.
+				expect(fetchMock).toHaveBeenCalledTimes(1);
+				expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/executions/exec-d/cancel');
+				await tick();
+				expect(container.querySelector('.request-activity__stop')).toBeNull();
+			} finally {
+				vi.unstubAllGlobals();
+				resetChatTurnStates();
+			}
+		});
+
+		it('Stop leaves the turn alone unless the panel says only the client keeps it live', async () => {
+			resetChatTurnStates();
+			const fetchMock = nothingToCancel();
+			vi.stubGlobal('fetch', fetchMock);
+			try {
+				seed('turn-other', [started({ call_id: 'act-1', detail: null })]);
+				const { container } = render(RequestActivityCard, {
+					sessionId: 's1',
+					chatTurnId: 'turn-other',
+					live: true,
+					embedded: true,
+					controlTaskId: 'task-1',
+					controlExecutionId: 'exec-d'
+				});
+				await tick();
+				await fireEvent.click(container.querySelector('.request-activity__stop') as Element);
+				await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+				// Let the cancel handler finish reading the answer.
+				await new Promise((resolve) => setTimeout(resolve, 0));
+				await tick();
+				expect(get(chatTurnStateStore).has('turn-other')).toBe(false);
+				expect(container.querySelector('.request-activity__stop')).not.toBeNull();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
 
 		it('opens a running row at start and settles the same row by call_id', async () => {
 			seed('turn-agentic', [started({ call_id: 'act-1', detail: null })]);

@@ -2482,9 +2482,54 @@ fn forget_elevation_pause_authority(
             .map_err(|_| "protected app pause consumption failed closed".to_owned())?;
     }
     if let Some(authority) = magician::magician_v2::execution::trusted_store::process_authority() {
-        authority.forget(&elevation_pause_authority_key(pause_data));
+        // A replacement pause (a delegation checkpoint, a re-ask) shares this
+        // storage key. Forget only this generation's entry, so retiring the
+        // answered pause can never remove its successor's fresh authority.
+        // A hash that cannot be derived leaves the entry: whichever pause now
+        // holds the key still fails closed at its next resume, where the same
+        // derivation runs (`verify_elevation_pause_authority`), and an entry
+        // this pause never matched is not this pause's to remove.
+        let key = elevation_pause_authority_key(pause_data);
+        if let Ok(hash) = magician::magician_v2::execution::agentic::pause_authority_hash(pause_data)
+        {
+            authority.forget_if(&key, &hash);
+        }
     }
     Ok(())
+}
+
+/// Pause kinds that are runtime checkpoints, never prompts: the same set the
+/// pause store hides from HITL reads and from execution-keyed takes.
+fn is_internal_checkpoint_pause_kind(kind: Option<&ExecutionPauseKind>) -> bool {
+    matches!(
+        kind,
+        Some(
+            ExecutionPauseKind::Delegation
+                | ExecutionPauseKind::PlacementRetry
+                | ExecutionPauseKind::ManualResumeInflight
+        )
+    )
+}
+
+/// Whether a resumed run's `WaitingForChildren` outcome left a durable
+/// delegation checkpoint — a replacement for the answered pause, not a
+/// terminal handoff. `persist_delegation_wait_checkpoint` answers
+/// `DelegationChildrenSpawned` with a pause state only after the write landed;
+/// without one it is the legacy shape, which persists nothing.
+fn delegation_checkpoint_persisted(
+    outcome: &AgenticOutcome,
+    workflow_event: &magician::magician_v2::orchestrator::WorkflowEvent,
+) -> bool {
+    matches!(
+        workflow_event,
+        magician::magician_v2::orchestrator::WorkflowEvent::DelegationChildrenSpawned
+    ) && matches!(
+        outcome,
+        AgenticOutcome::WaitingForChildren {
+            pause_state: Some(_),
+            ..
+        }
+    )
 }
 
 async fn resolve_approval_service_for_pause_data(
@@ -14547,7 +14592,13 @@ async fn prepare_manual_trigger_with_store(
                     })),
                 ));
             }
-            if !available_goal_ids.is_empty()
+            // A `harness:{agent}:` goal names one of this agent's focus areas
+            // (the same prefix scheduler reconciliation prunes by), so one that
+            // matches none is stale even when the agent has no focus areas left;
+            // accepting it ran a retired routine with no program.
+            let names_retired_focus_area =
+                goal_id.starts_with(&format!("harness:{agent_id}:"));
+            if (!available_goal_ids.is_empty() || names_retired_focus_area)
                 && !available_goal_ids
                     .iter()
                     .any(|available_goal_id| available_goal_id == &goal_id)
@@ -22978,6 +23029,22 @@ impl MagicianV2Api {
         }
     }
 
+    /// Whether `key` currently holds an internal checkpoint rather than a
+    /// pause a person answers — live in memory, or in the durable index.
+    fn pause_key_holds_internal_checkpoint(&self, execution_id: &str, key: &str) -> bool {
+        self.full_pause_store
+            .peek(key)
+            .is_some_and(|pause| is_internal_checkpoint_pause_kind(pause.pause_kind.as_ref()))
+            || self
+                .full_pause_store
+                .get_internal_pending_for_execution(execution_id)
+                .iter()
+                .any(|pending| {
+                    pending.key == key
+                        && is_internal_checkpoint_pause_kind(pending.pause_kind.as_ref())
+                })
+    }
+
     async fn take_pause_for_request(
         &self,
         execution_id: &str,
@@ -22988,6 +23055,7 @@ impl MagicianV2Api {
         goal_id: Option<&str>,
         cycle_id: Option<&str>,
         request_scope: Option<&(String, String)>,
+        refuse_internal_checkpoints: bool,
     ) -> std::result::Result<Option<FullPauseData>, PauseSelectionError> {
         // Never deserialize unrelated legacy continuations on an HTTP request.
         // Explicit selectors recover their deterministic key directly; an
@@ -23063,6 +23131,23 @@ impl MagicianV2Api {
             goal_id,
             cycle_id,
         )?;
+        // An answer may only take the pause it answers. A delegation checkpoint
+        // (or another internal checkpoint) replaces the answered pause under
+        // the same storage key, so a repeated or late answer to that prompt
+        // names it exactly; taking it would consume the parent's continuation.
+        // Refuse it as the missing pause it is to this request.
+        if refuse_internal_checkpoints {
+            if let Some(key) = storage_key.as_deref() {
+                if self.pause_key_holds_internal_checkpoint(execution_id, key) {
+                    info!(
+                        %execution_id,
+                        %key,
+                        "[MAGICIAN-V2-API] V2: refusing an answer that names an internal checkpoint; the prompt it answers is gone"
+                    );
+                    return Ok(None);
+                }
+            }
+        }
         let selected = match storage_key.as_deref() {
             Some(key) => {
                 if let Some((principal, workspace)) = request_scope {
@@ -23088,6 +23173,44 @@ impl MagicianV2Api {
                 )
             },
             None => None,
+        };
+        // Backstop for a checkpoint the index did not show before the take
+        // (recovered from disk): put it back untouched, durably, and refuse.
+        let selected = match selected {
+            Some(pause)
+                if refuse_internal_checkpoints
+                    && is_internal_checkpoint_pause_kind(pause.pause_kind.as_ref()) =>
+            {
+                warn!(
+                    %execution_id,
+                    key = %pause.pause_state.storage_key(),
+                    "[MAGICIAN-V2-API] V2: an answer took an internal checkpoint; restoring it and refusing the answer"
+                );
+                // The parent's only continuation: a memory-only restore would
+                // not survive a restart, so an ordinary checkpoint goes back
+                // through the durable write. A protected one keeps its exact
+                // sealed restore.
+                let restored = if pause.pause_state.app_disclosure_checkpoint.is_some() {
+                    restore_taken_pause_exact(&self.full_pause_store, pause)
+                } else {
+                    match self.full_pause_store.store_durable(pause) {
+                        Ok(_) => true,
+                        Err(error) => {
+                            warn!(
+                                %execution_id,
+                                error = ?error,
+                                "[MAGICIAN-V2-API] V2: the taken internal checkpoint could not be restored durably"
+                            );
+                            false
+                        },
+                    }
+                };
+                if !restored {
+                    return Err(PauseSelectionError::TerminalSettlementPending);
+                }
+                None
+            },
+            other => other,
         };
         if request_scope.is_none()
             && selected.is_none()
@@ -23558,6 +23681,8 @@ impl MagicianV2Api {
                 req.goal_id.as_deref(),
                 req.cycle_id.as_deref(),
                 request_scope.as_ref(),
+                // An answer never takes an internal checkpoint.
+                true,
             )
             .heap_boxed()
             .await
@@ -24690,15 +24815,33 @@ impl MagicianV2Api {
                         ),
                         magician::magician_v2::execution::agentic::AgenticOutcome::WaitingForChildren {
                             child_execution_ids,
+                            pause_state,
                             ..
-                        } => (
-                            "waiting_for_children".to_string(),
-                            format!(
-                                "Execution is waiting on delegated child executions: {}",
-                                child_execution_ids.join(", ")
-                            ),
-                            magician::magician_v2::orchestrator::WorkflowEvent::DelegationChildrenSpawned,
-                        ),
+                        } => {
+                            // A resumed run that delegates parks on an exact
+                            // continuation exactly as a first run does. Mapping the
+                            // outcome without persisting it left nothing for the
+                            // readiness owner to hand off, and the parent never
+                            // resumed after its child finished (2026-11-01).
+                            let workflow_event = magician::off_frame!(
+                                MagicianV2Orchestrator::persist_delegation_wait_checkpoint(
+                                    Some(self.full_pause_store.as_ref()),
+                                    &effective_execution_id,
+                                    pause_state.as_deref(),
+                                    &executors_for_retry,
+                                )
+                                .heap_boxed()
+                                .await
+                            );
+                            (
+                                "waiting_for_children".to_string(),
+                                format!(
+                                    "Execution is waiting on delegated child executions: {}",
+                                    child_execution_ids.join(", ")
+                                ),
+                                workflow_event,
+                            )
+                        },
                         magician::magician_v2::execution::agentic::AgenticOutcome::Sleeping { wake_at, .. } => (
                             "sleeping".to_string(),
                             format!("Agent sleeping until {}", wake_at),
@@ -24722,11 +24865,17 @@ impl MagicianV2Api {
                                 ..
                             }
                     );
+                    // A persisted delegation checkpoint replaces the answered
+                    // pause under the same storage key, exactly as a re-ask does.
+                    // Counting it as a terminal handoff instead let the cleanup
+                    // below forget that key's authority — the checkpoint's own —
+                    // and restore the answered pause over it on a failed
+                    // transition.
                     let replacement_pause_persisted = matches!(
                         &workflow_event,
                         magician::magician_v2::orchestrator::WorkflowEvent::ExecutionPausedForInput
                             | magician::magician_v2::orchestrator::WorkflowEvent::UserPaused
-                    );
+                    ) || delegation_checkpoint_persisted(&outcome, &workflow_event);
 
                     let terminal_handoff_persisted = if has_execution_context {
                         if let Some(generation) = control_generation {
@@ -24758,6 +24907,16 @@ impl MagicianV2Api {
                                     "[MAGICIAN-V2-API] V2: Failed to transition execution {} after resume: {}",
                                     effective_execution_id, e
                                 );
+                                if replacement_pause_persisted {
+                                    // Not restored or forgotten below: the
+                                    // replacement is the continuation now.
+                                    warn!(
+                                        task_id = ?original_pause_data.pause_state.task_id,
+                                        execution_id = %effective_execution_id,
+                                        error = %e,
+                                        "[MAGICIAN-V2-API] V2: replacement pause persisted but the resumed execution's status transition failed"
+                                    );
+                                }
                                 false
                             },
                         };
@@ -25145,6 +25304,7 @@ impl MagicianV2Api {
                 req.goal_id.as_deref(),
                 req.cycle_id.as_deref(),
                 Some(&request_scope),
+                true,
             )
             .await
         {
@@ -25851,6 +26011,24 @@ impl MagicianV2Api {
                                 )
                             }
                         },
+                        // A continued run that delegates parks on its children
+                        // like any other run. Falling into the arm below failed
+                        // the parent while its children were still working. A
+                        // persisted checkpoint replaces the claimed pause under
+                        // its storage key, so it is not consumed or restored.
+                        AgenticOutcome::WaitingForChildren { pause_state, .. } => {
+                            let workflow_event =
+                                MagicianV2Orchestrator::persist_delegation_wait_checkpoint(
+                                    Some(full_pause_store.as_ref()),
+                                    &effective_execution,
+                                    pause_state.as_deref(),
+                                    &executors,
+                                )
+                                .heap_boxed()
+                                .await;
+                            let replaced = delegation_checkpoint_persisted(&outcome, &workflow_event);
+                            (workflow_event, replaced)
+                        },
                         _ => (
                             magician::magician_v2::orchestrator::WorkflowEvent::ExecutionFailed,
                             false,
@@ -25886,6 +26064,16 @@ impl MagicianV2Api {
                                     "[MAGICIAN-V2-API] V2: Failed to transition execution {} after continue: {}",
                                     effective_execution, e
                                 );
+                                if replacement_pause_persisted {
+                                    // Not restored or forgotten below: the
+                                    // replacement is the continuation now.
+                                    warn!(
+                                        task_id = ?original_pause_data.pause_state.task_id,
+                                        execution_id = %effective_execution,
+                                        error = %e,
+                                        "[MAGICIAN-V2-API] V2: replacement pause persisted but the continued execution's status transition failed"
+                                    );
+                                }
                                 false
                             },
                         };
@@ -26106,6 +26294,8 @@ impl MagicianV2Api {
                 req.goal_id.as_deref(),
                 req.cycle_id.as_deref(),
                 Some(&request_scope),
+                // Cancel may still retire a parked checkpoint.
+                false,
             )
             .await
         {
@@ -32312,6 +32502,55 @@ mod tests {
         assert!(!direct_source.contains("create_task_backed_direct_root_run_under_work"));
     }
 
+    /// A HITL resume (or a continue) that ends by delegating must persist the
+    /// same Delegation checkpoint a first run does. The resume reducer used to
+    /// map `WaitingForChildren` straight to `DelegationChildrenSpawned`, so the
+    /// readiness owner found no checkpoint to hand off and the parent never
+    /// resumed after its child finished (2026-11-01); the continue reducer
+    /// failed such a parent outright.
+    #[test]
+    fn resumed_and_continued_delegation_parks_persist_the_delegation_checkpoint() {
+        let source = include_str!("web_api.rs");
+        for (start, end) in [
+            (
+                "async fn resume_agentic_execution_with_scope_inner(",
+                "pub async fn continue_agentic_execution(",
+            ),
+            (
+                "pub async fn continue_agentic_execution(",
+                "pub async fn cancel_paused_execution(",
+            ),
+        ] {
+            let start_at = source.find(start).unwrap_or_else(|| panic!("{start}"));
+            let end_at = source[start_at..]
+                .find(end)
+                .map(|offset| start_at + offset)
+                .unwrap_or_else(|| panic!("{end}"));
+            let reducer = &source[start_at..end_at];
+            let arm = reducer
+                .find("AgenticOutcome::WaitingForChildren {")
+                .unwrap_or_else(|| panic!("{start} names the delegation outcome"));
+            // The arm runs to the next outcome it is matched against, and is
+            // short either way.
+            let arm_end = reducer[arm + 1..]
+                .find("AgenticOutcome::")
+                .map(|offset| arm + 1 + offset)
+                .unwrap_or(reducer.len())
+                .min(arm + 2_000)
+                .min(reducer.len());
+            let arm_source = &reducer[arm..arm_end];
+            assert!(
+                arm_source.contains("MagicianV2Orchestrator::persist_delegation_wait_checkpoint("),
+                "{start} must persist the delegation checkpoint through the shared writer"
+            );
+            assert!(arm_source.contains("pause_state.as_deref()"));
+            assert!(
+                !arm_source.contains("WorkflowEvent::DelegationChildrenSpawned"),
+                "{start} must not park the parent without its checkpoint"
+            );
+        }
+    }
+
     #[test]
     fn approval_decision_from_resume_value_maps_confirmation_and_abort() {
         assert_eq!(
@@ -32566,6 +32805,169 @@ mod tests {
             magician::magician_v2::execution::trusted_store::process_authority()
         {
             authority.forget(&elevation_pause_authority_key(&pause));
+        }
+    }
+
+    /// An elevation pause answered by a run that then delegates is replaced by
+    /// the delegation checkpoint under the same storage key, and the parent's
+    /// resume needs that key's authority entry (else
+    /// `pause_authorization_not_in_authority`). The replacement flag is the
+    /// main protection: a persisted checkpoint is never forgotten, consumed or
+    /// restored over. The hash-aware forget is the backup, and it only spares a
+    /// successor whose authorization hash differs — which a real checkpoint's
+    /// does, because the run moved on (its parked segment, its messages).
+    #[test]
+    fn retiring_an_answered_elevation_pause_keeps_its_delegation_checkpoint_authority() {
+        let _authority = magician::magician_v2::execution::trusted_store::install_process_authority(
+            Arc::new(magician::magician_v2::execution::trusted_store::TrustAuthority::new()),
+        );
+        let store = Arc::new(FullPauseStore::new());
+        store_scoped_approval_pause(
+            &store,
+            "exec-elevation-delegates",
+            TEST_PRINCIPAL,
+            TEST_WORKSPACE,
+        );
+        let pending = store.get_pending_for_execution("exec-elevation-delegates");
+        let answered = store
+            .take(&pending.first().expect("answered pause").key)
+            .expect("answered pause data");
+        assert!(answered.pause_state.is_elevation());
+        assert!(verify_elevation_pause_authority(&answered).is_ok());
+
+        // The resumed run delegates; its checkpoint replaces the answered pause.
+        // Like production, the resumed run's state has moved on: it now names
+        // the segment it parked in.
+        let mut resumed_state = answered.pause_state.clone();
+        resumed_state.stateless_parked_segment = Some("exec-elevation-delegates-r138".to_string());
+        let checkpoint =
+            MagicianV2Orchestrator::delegation_wait_pause_data(&resumed_state, &answered.executors);
+        assert_eq!(
+            checkpoint.pause_state.storage_key(),
+            answered.pause_state.storage_key(),
+            "the checkpoint and the answered pause share one authority key"
+        );
+        assert_ne!(
+            magician::magician_v2::execution::agentic::pause_authority_hash(&checkpoint)
+                .expect("checkpoint hash"),
+            magician::magician_v2::execution::agentic::pause_authority_hash(&answered)
+                .expect("answered hash"),
+            "the successor's authorization differs from the pause it replaced"
+        );
+        let checkpoint_key = store.store(checkpoint);
+        let checkpoint = store.take(&checkpoint_key).expect("checkpoint data");
+        assert!(verify_elevation_pause_authority(&checkpoint).is_ok());
+
+        let delegated = AgenticOutcome::WaitingForChildren {
+            child_execution_ids: vec!["exec-deleg-child".to_string()],
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 1,
+            pause_state: Some(Box::new(checkpoint.pause_state.clone())),
+        };
+        assert!(
+            delegation_checkpoint_persisted(
+                &delegated,
+                &magician::magician_v2::orchestrator::WorkflowEvent::DelegationChildrenSpawned,
+            ),
+            "a persisted checkpoint is a replacement, so the answered pause is neither forgotten nor restored"
+        );
+        assert!(!delegation_checkpoint_persisted(
+            &delegated,
+            &magician::magician_v2::orchestrator::WorkflowEvent::ExecutionFailed,
+        ));
+        let legacy = AgenticOutcome::WaitingForChildren {
+            child_execution_ids: vec!["exec-deleg-child".to_string()],
+            last_state: EnvironmentState::Uninitialized,
+            iterations_used: 1,
+            pause_state: None,
+        };
+        assert!(!delegation_checkpoint_persisted(
+            &legacy,
+            &magician::magician_v2::orchestrator::WorkflowEvent::DelegationChildrenSpawned,
+        ));
+
+        // Backup: even when a caller does retire the answered pause, only its
+        // own generation's entry goes.
+        forget_elevation_pause_authority(&store, &answered, true).expect("retire answered pause");
+        assert!(
+            verify_elevation_pause_authority(&checkpoint).is_ok(),
+            "the checkpoint's authority survives retiring the pause it replaced"
+        );
+        assert!(verify_elevation_pause_authority(&answered).is_err());
+        if let Some(authority) =
+            magician::magician_v2::execution::trusted_store::process_authority()
+        {
+            authority.forget(&elevation_pause_authority_key(&checkpoint));
+        }
+    }
+
+    /// A repeated or late answer names the answered prompt's key, which now
+    /// holds the parent's delegation checkpoint. The answer and continue takes
+    /// refuse it as a missing pause and leave the checkpoint in place; a
+    /// person's ordinary pause under a key is still taken.
+    #[tokio::test]
+    async fn a_late_answer_cannot_take_the_delegation_checkpoint_that_replaced_its_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let orchestrator = magician::magician_v2::test_support::build_test_orchestrator(tmp.path());
+        let store = Arc::new(FullPauseStore::new());
+        let api = MagicianV2Api::with_shared_pause_store(orchestrator, Arc::clone(&store));
+        store_scoped_approval_pause(&store, "exec-late-answer", TEST_PRINCIPAL, TEST_WORKSPACE);
+        let key = store
+            .get_pending_for_execution("exec-late-answer")
+            .first()
+            .expect("answerable pause")
+            .key
+            .clone();
+        let answered = api
+            .take_pause_for_request(
+                "exec-late-answer",
+                Some(&key),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .await
+            .expect("selection")
+            .expect("the first answer takes the person's pause");
+
+        let mut resumed_state = answered.pause_state.clone();
+        resumed_state.stateless_parked_segment = Some("exec-late-answer-r138".to_string());
+        let checkpoint_key = store.store(MagicianV2Orchestrator::delegation_wait_pause_data(
+            &resumed_state,
+            &answered.executors,
+        ));
+        assert_eq!(checkpoint_key, key, "the checkpoint replaced the prompt under its key");
+
+        assert!(
+            api.take_pause_for_request(
+                "exec-late-answer",
+                Some(&key),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
+            .await
+            .expect("selection")
+            .is_none(),
+            "a late answer is refused as a missing pause"
+        );
+        assert_eq!(
+            store.peek(&key).and_then(|pause| pause.pause_kind),
+            Some(ExecutionPauseKind::Delegation),
+            "the checkpoint is still there for the readiness owner"
+        );
+        if let Some(authority) =
+            magician::magician_v2::execution::trusted_store::process_authority()
+        {
+            authority.forget(&elevation_pause_authority_key(&answered));
         }
     }
 
@@ -38366,6 +38768,29 @@ tools: []
         assert_eq!(body["error"], "Execution not found");
         assert_eq!(body["details"]["execution_id"], "exec-2");
         assert!(!body.to_string().contains("/secret/path"));
+    }
+
+    #[tokio::test]
+    async fn manual_trigger_rejects_a_retired_harness_goal_on_an_agent_without_focus_areas() {
+        let tmp = tempfile::tempdir().unwrap();
+        let services = test_agent_api_services(tmp.path());
+        let _ =
+            create_agent_definition_impl(&services, sample_agent_definition("agent-a", "Alpha"))
+                .await;
+        assert!(goal_ids_for_definition(&sample_agent_definition("agent-a", "Alpha")).is_empty());
+
+        let response = manual_trigger_agent_impl(
+            &services,
+            "agent-a",
+            ManualAgentTriggerRequest {
+                goal_id: Some("harness:agent-a:backlog-grooming".to_string()),
+                trigger: Some("manual.harness.company_loop".to_string()),
+            },
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], "invalid_goal_id");
     }
 
     #[tokio::test]

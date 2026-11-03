@@ -259,10 +259,49 @@ describe('LiveTaskCard', () => {
 		expect(vi.getTimerCount()).toBe(0);
 	});
 
-	it('does not tick once the task is terminal', () => {
+	it('does not tick per second once the task is terminal', () => {
 		vi.useFakeTimers();
-		render(LiveTaskCard, props(taskMessage('m', 'completed')));
+		const { unmount } = render(LiveTaskCard, props(taskMessage('m', 'completed')));
+		// The one timer is the shared minute clock behind "Updated … ago".
+		expect(vi.getTimerCount()).toBe(1);
+		unmount();
 		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('shows when the task was created and last updated, and keeps the age current', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0 + 2 * 60_000);
+		const first = taskMessage('m1', 'running', 'e1', T0);
+		const latest = taskMessage('m2', 'completed', 'e1', T0 + 60_000);
+		render(LiveTaskCard, props(latest, [{ ...group('e1', latest), updates: [first, latest] }]));
+
+		const times = screen.getByTestId('live-task-times');
+		const created = new Date(T0).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		expect(times.textContent).toContain(`Created ${created}`);
+		expect(times.textContent).toContain('Updated 1m ago');
+		expect(times.getAttribute('title')).toContain('Updated ');
+
+		await vi.advanceTimersByTimeAsync(2 * 60_000);
+		expect(screen.getByTestId('live-task-times').textContent).toContain('Updated 3m ago');
+	});
+
+	it('takes the task record\'s creation and progress times when the store has them', () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0 + 10 * 60_000);
+		const update = taskMessage('m1', 'completed', 'e1', T0);
+		render(
+			LiveTaskCard,
+			props(update, [group('e1', update)], {
+				taskTimes: {
+					createdAt: new Date(T0 - 60 * 60_000).toISOString(),
+					lastProgressAt: T0 + 5 * 60_000
+				}
+			})
+		);
+		const created = new Date(T0 - 60 * 60_000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		const times = screen.getByTestId('live-task-times');
+		expect(times.textContent).toContain(created);
+		expect(times.textContent).toContain('Updated 5m ago');
 	});
 
 	function toggle(): HTMLElement {

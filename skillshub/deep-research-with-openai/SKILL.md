@@ -1,6 +1,6 @@
 ---
 name: "deep-research-with-openai"
-version: 0.2.4
+version: 0.2.5
 description: "Long-form autonomous research powered by OpenAI (`gpt-6.1-sol` with web search, run in the background). Use only when the caller explicitly requests a multi-source, multi-step investigation producing a comprehensive cited report. Not for ordinary Q&A (`content_search`), today's news lookup, or single-page extraction. Each call waits at most 35 minutes; research that runs longer keeps going at OpenAI, and the call returns a `response_id` to collect it with a later call."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.openai.com
     requires:
-      bins: ["openai-deep-research"]
+      bins: ["openai-deep-research", "python3"]
       env: ["OPENAI_API_KEY"]
     install_hint:
       docs: "requires env: OPENAI_API_KEY — set in vault before activating"
@@ -19,7 +19,9 @@ metadata:
       cost_tier: expensive
       action: run
       input:
-        query: "What is the Rust programming language?"
+        # A question the model cannot answer from memory: for a general-knowledge
+        # one, it answered in seconds with no web search and no cited sources.
+        query: "What is the latest stable Rust release and when was it published?"
         timeout_secs: 600
       expect:
         min_items: 1
@@ -35,7 +37,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [openai-deep-research]
+        bins: [openai-deep-research, python3]
+        entrypoint: openai-deep-research
       runtime:
         protocol: cli
         command_prefix: []

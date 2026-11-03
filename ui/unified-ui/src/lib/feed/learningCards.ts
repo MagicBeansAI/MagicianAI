@@ -1,4 +1,5 @@
 import type { FeedItem } from '$lib/feed/types';
+import { threadHref } from '$lib/threads/threadLinks';
 
 export interface LearningEvidenceRef {
 	kind?: string;
@@ -152,7 +153,7 @@ export function learningEvidenceHref(item: FeedItem): string {
 	if (sourceTaskId) return `/work?filter=all&selected=${encodeURIComponent(sourceTaskId)}`;
 	const sourceThreadId = item.ui_thread_id || readMetadataString(item, 'source_chat_session_id');
 	if (sourceThreadId) {
-		return `/t/${encodeURIComponent(sourceThreadId)}?selected_item=${encodeURIComponent(item.id)}`;
+		return threadHref(sourceThreadId, `?selected_item=${encodeURIComponent(item.id)}`);
 	}
 	return `/feed?selected_item=${encodeURIComponent(item.id)}`;
 }

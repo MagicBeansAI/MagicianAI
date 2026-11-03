@@ -643,17 +643,13 @@ where
                 .await?;
             self.request("thread/read", json!({ "threadId": thread_id }))
                 .await?;
+            // The resumed thread already holds, in its history, the
+            // `developerInstructions` it was started with (below), so they
+            // are not sent again.
             thread_id.to_string()
         } else {
             let started = self
-                .request(
-                    "thread/start",
-                    json!({
-                        "cwd": cwd,
-                        "approvalPolicy": "never",
-                        "sandbox": sandbox,
-                    }),
-                )
+                .request("thread/start", thread_start_params(request, &cwd, sandbox))
                 .await?;
             thread_id_from(&started)
                 .ok_or(CodexSessionError::Protocol("thread/start missing id"))?
@@ -1527,6 +1523,24 @@ fn message_id(value: &Value) -> Option<u64> {
         .and_then(|id| id.as_u64().or_else(|| id.as_str()?.parse().ok()))
 }
 
+/// `thread/start` params. The executing agent's persona and playbook
+/// ([`CodingEngineRequest::append_system_prompt`]) ride the stable
+/// `developerInstructions` field, which adds them as developer instructions
+/// and keeps Codex's own base instructions (`baseInstructions` would replace
+/// those).
+fn thread_start_params(request: &CodingEngineRequest, cwd: &str, sandbox: &str) -> Value {
+    let mut params = json!({
+        "cwd": cwd,
+        "approvalPolicy": "never",
+        "sandbox": sandbox,
+    });
+    if let Some(instructions) = request.append_system_prompt_text(CodingEngineKind::CodexAppServer)
+    {
+        params["developerInstructions"] = json!(instructions);
+    }
+    params
+}
+
 fn thread_id_from(result: &Value) -> Option<String> {
     result
         .pointer("/thread/id")
@@ -2016,6 +2030,43 @@ mod tests {
         request.codex.launch_profile = CodexLaunchProfile::PlaneHarness;
         request.codex.plane_unrestricted = unrestricted;
         request
+    }
+
+    #[tokio::test]
+    async fn a_new_codex_thread_gets_the_persona_and_playbook_as_developer_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request_for(dir.path());
+        let (thread, turn) = sandboxes_sent(&request).await;
+        assert!(thread.get("developerInstructions").is_none(), "{thread}");
+        let persona = dir.path().join("persona.md");
+        let playbook = dir.path().join("playbook.md");
+        std::fs::write(&persona, "\n## IDENTITY\nYou are Ada.\n").unwrap();
+        std::fs::write(&playbook, "\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n").unwrap();
+        request.append_system_prompt = vec![persona, playbook];
+        let (thread, turn_with) = sandboxes_sent(&request).await;
+        assert_eq!(
+            thread.get("developerInstructions").and_then(Value::as_str),
+            Some("## IDENTITY\nYou are Ada.\n\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.")
+        );
+        assert!(thread.get("baseInstructions").is_none(), "Codex keeps its own base");
+        // The task text is the turn's input, unchanged.
+        assert_eq!(turn_with["input"], turn["input"]);
+        assert_eq!(turn_with["input"][0]["text"], "add a comment");
+    }
+
+    #[test]
+    fn developer_instructions_are_a_stable_thread_start_field() {
+        let fixture: Value =
+            serde_json::from_str(super::super::codex_contract::CODEX_APP_SERVER_PROTOCOL_FIXTURE)
+                .expect("fixture");
+        let properties = fixture
+            .pointer("/load_bearing/thread~1start.params/properties")
+            .and_then(Value::as_array)
+            .expect("thread/start params");
+        assert!(properties
+            .iter()
+            .any(|field| field == "developerInstructions"));
+        assert_eq!(fixture["experimental_api"], false);
     }
 
     #[tokio::test]

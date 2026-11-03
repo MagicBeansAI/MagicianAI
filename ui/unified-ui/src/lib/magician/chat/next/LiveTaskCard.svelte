@@ -9,15 +9,19 @@
 	import { taskStore } from '$lib/stores/taskStore';
 	import { pendingHitlTaskIds } from '$lib/stores/pendingHitlStore';
 	import { formatUsd } from '$lib/magician/tasks/taskTimeline';
+	import { cardTimesLabel } from '$lib/shared/cardTimes';
+	import { taskCardTimes, type TaskRecordTimes } from '$lib/magician/chat/components/taskStatus';
+	import { minuteTick } from './liveClock';
 	// Chat-next live task card. Same props as TaskStatusCard so ChatPanel can
 	// swap it in; the card reads message + taskExecutionGroups (through
 	// toLiveTaskView). The collapsed card shows a status dot, the title, the
-	// status verb and the reason (the same summary TaskStatusCard renders,
-	// clamped to three lines). A finished task's outputs render in the card body
-	// (previews on by default; the first OUTPUT_PREVIEW_LIMIT, "+N more" for the
-	// rest). Clicking the card expands extras in place: live steps (the host's
-	// `activity` slot, once it has rendered something) or the run list when it
-	// carries information, and a running task's outputs. With none of those
+	// status verb, when it was created and last updated, and the reason (the
+	// same summary TaskStatusCard renders, clamped to three lines). A finished
+	// task's outputs render in the card body (previews on by default; the first
+	// OUTPUT_PREVIEW_LIMIT, "+N more" for the rest). Clicking the card expands
+	// extras in place: live steps (the host's `activity` slot, once it has
+	// rendered something) or the run list when it carries information, and a
+	// running task's outputs. With none of those
 	// the card is not expandable: no chevron, no toggle. The title row holds
 	// the Inspect chip and, while the task runs, a Cancel chip that confirms in
 	// a small popover. Props it does not use are accepted for a drop-in swap.
@@ -57,6 +61,9 @@
 	export let storeStatus: string | undefined = undefined;
 	/** Authoritative active root from the task store; historical run ids are inspection-only. */
 	export let activeExecutionId: string | undefined = undefined;
+	/** The task's record times as the task store has them, for "Created … ·
+	 *  Updated …"; without them the card's own updates give the times. */
+	export let taskTimes: TaskRecordTimes | undefined = undefined;
 	/** The task's plan as the task store has it: its steps, for the preview. */
 	export let plan: { status: string | null; steps: string[] } | null = null;
 	/** Start an approved, not-started task's run. No Run chip without it. */
@@ -168,6 +175,10 @@
 		view.startedAt === undefined || notStarted
 			? null
 			: formatElapsed((view.finishedAt ?? now) - view.startedAt);
+	// "Created … · Updated 2m ago": the age moves with the running ticker, and
+	// with the shared minute clock once the task has settled.
+	$: timesNow = Math.max(now, $minuteTick);
+	$: times = cardTimesLabel(taskCardTimes(message, taskExecutionGroups, taskTimes), timesNow);
 	// Accessible name: stable parts only (the ticking elapsed time would make
 	// screen readers re-announce the card every second).
 	$: fullTaskId = message.content.task_id?.trim() || null;
@@ -606,6 +617,11 @@
 				{/if}
 				{#if needsYou}
 					<span class="cn-live-task__pill">Needs you</span>
+				{/if}
+				{#if times}
+					<span class="cn-live-task__times" title={times.title} data-testid="live-task-times"
+						>{times.text}</span
+					>
 				{/if}
 			</div>
 			{#if stepBar}
@@ -1050,6 +1066,11 @@
 
 	.cn-live-task__elapsed {
 		font-variant-numeric: tabular-nums;
+	}
+
+	.cn-live-task__times {
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 
 	/* A status label: a rounded square (--radius-chip), never a pill. */

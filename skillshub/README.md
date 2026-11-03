@@ -130,6 +130,37 @@ server-produced sidecars deliver the same message across channels. Its
 Magician transport now requires a workspace-bound bearer and never serializes
 principal/workspace selectors into API, realtime, or artifact requests.
 
+## Impeccable design procedure
+
+[Impeccable](impeccable/SKILL.md) is an instruction-only procedure for frontend
+design, UX review and refinement, adapted from upstream `skill-v4.8.0`. Its 24
+design workflows (`audit`, `polish`, `layout`, …) are things to ask for, not
+commands or tools. The upstream launcher, detector, hooks and editor installers
+are excluded, so an audit is a manual review; see
+[provenance](impeccable/PROVENANCE.md). It needs no API key.
+
+Validate with `python3 skillshub/scripts/validate_skill_md.py skillshub/impeccable`
+and `python3 -m unittest discover -s skillshub/scripts/tests -p 'test_impeccable.py'`.
+Install it with
+`make -C skillshub install-scope -o build SCOPE=anonymous/default NAMES=impeccable`;
+the next chat session finds it without a restart.
+
+## Frontend Slides procedure
+
+[Frontend Slides](frontend-slides/SKILL.md) is a bounded, instruction-only HTML
+presentation workflow adapted from the owner-selected zarazhangrui upstream.
+It includes upstream style presets, HTML architecture, animation guidance and
+fixed-stage CSS, with three visual previews before full-deck generation.
+No deployment, auto-installing exporter, plugin installer or bold-template pack
+is included; no editable PPTX output is promised. See
+[provenance and scoped setup](frontend-slides/PROVENANCE.md).
+
+Validate with `python3 skillshub/scripts/validate_skill_md.py skillshub/frontend-slides`
+and `python3 -B -m unittest discover -s skillshub/scripts/tests -p 'test_frontend_slides.py'`.
+Through the native setup approval gate, install with
+`make -C skillshub install-scope -o build SCOPE=anonymous/default NAMES=frontend-slides`.
+The next chat session discovers the installed procedure without a restart.
+
 ## Drop-in workflow
 
 Adding a new tool, procedure, or personality skill starts with one
@@ -304,35 +335,38 @@ copies matching values into each installed skill's `config/.env` from its
 `config/.env.example`. This keeps secrets such as `GITHUB_TOKEN` scoped to the
 runtime skill directory; example files in git must keep secret values blank.
 
-### Per-scope manifests (rendered, not linked)
+### Per-scope values in a shared manifest
 
-Code is shared; a manifest that must differ per workspace is not. A skill whose
-`SKILL.md` carries a per-scope value (a self-hosted MCP endpoint and its OAuth
-issuer, for example) ships a **valid** template `SKILL.md` using a reserved
-placeholder origin (`https://<name>.invalid`, RFC 2606) plus `render.yaml`:
+Code and manifest are shared; a value that differs per workspace (a
+self-hosted MCP endpoint and its OAuth issuer) is a scope env reference:
 
 ```yaml
-schema_version: magician.skill-render.v1
-substitutions:
-  - placeholder: https://metabase.invalid
-    input: METABASE_BASE_URL   # read from <scope>/skills/<skill>/config/.env
-    kind: https_origin         # https, host[:port] only; no path/query/userinfo
+transport:
+  kind: streamable_http
+  endpoint: ${METABASE_BASE_URL}/api/metabase-mcp
+discovery:
+  oauth:
+    authorization_issuer: ${METABASE_BASE_URL}
 ```
 
-`scripts/skill_render.py` writes the scope's own `SKILL.md` (a regular file)
-and `.skill-render.json` (template, input and manifest hashes). `setup-env`
-renders right after it fills `config/.env`; `install_skill_layer.py` and
-`link_runtime.py` render after linking. Unchanged inputs are left alone, a
-changed template or input re-renders, and a hand edit is corrected. Inputs come
-only from the scope's own skill config, never the server-wide env, so
-workspaces sharing a server never see each other's endpoints. Missing or
-invalid input leaves the scope with **no** manifest, so the placeholder never
-reaches a catalog. The template and `render.yaml` are never linked into a
-scope (the Rust `skills::scope_layer` reconciler follows the same rule), and a
-marked manifest stays setup-managed: the skill's other files keep being linked.
-A real `SKILL.md` without the marker is still scope-owned and never touched.
-Only non-secret values belong in a rendered manifest. `metabase-mcp` is the
-first such skill.
+The runtime resolves it at load from `<scope>/skills/<skill>/config/.env`
+(Rust `skills::scope_env`; rules in
+[skills-spec](../docs/components/magician/skills-spec.md#scope-env-references)):
+only those URL fields, only as the whole origin, only an https origin, and
+only from the scope's own file, never the server-wide env, so workspaces
+sharing a server never see each other's endpoints and twenty users share one
+`SKILL.md` link. Missing or invalid: the skill is not offered in that scope,
+with a reason naming the variable. Setting it on the Skills page
+(Environment) applies on the next request; `setup-env` fills it from
+`config/.env.example` like any other key. Only non-secret values belong in a
+reference. `metabase-mcp` is the first such skill.
+
+Setup used to render a per-scope `SKILL.md` (`render.yaml`, retired) beside a
+`.skill-render.json` marker. `scripts/scope_env.py` and the Rust reconciler
+replace such a copy with the shared link on the next `link-scopes` / boot
+repair when its bytes still match the marker's digest, and drop the marker; an
+edited copy is reported and left alone, and a real `SKILL.md` without the
+marker stays scope-owned.
 
 ## Loader contract (what magician relies on)
 

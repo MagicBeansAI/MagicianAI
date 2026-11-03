@@ -9,6 +9,20 @@ changes made to the vendored work.
 
 ## [Unreleased]
 
+### 0.6.18 (versionCode 45) — 2026-11-02
+
+- A failed tool call in a task's Run timeline shows why it failed, two lines with tap to expand.
+- Tapping a chat link works: one router opens delivered task files in the authenticated viewer, sends host paths (including `file://`) to the host, resolves relative `/api/…` links against the server, routes app links in the app, and shows a "Can't open link" toast instead of failing silently. Summary, text and callout blocks render links, and artifact rows can be tapped.
+- Chat links to a conversation or thread open it in the app (the thread's latest session when none is named). `/history` opens History, and Settings, Notes, VibeDev and thread task links open in the app instead of the browser.
+- Renamed threads keep working: a `/t/<slug>` link, current or old, is resolved to its thread before opening. Thread chips show the thread's name, and a newly created thread opens right away.
+- Tapping a thread in History opens its newest session and keeps History open on Sessions, showing every session of that thread from both lanes; a `#thread ×` label replaces the Personal/Automated switch until × clears it, and New Session creates in that thread.
+- Chat task cards show when the task was created and last updated ("Created Oct 31, 14:28 · Updated 2 min. ago"), and an open Steps card shows when its steps started and last changed. Long-press the line for the exact updated time.
+
+### 0.6.17 (versionCode 44) — 2026-10-31
+
+- A partly typed command (`/eng`, `/budget defa`) opens that command on Send instead of reaching the model; a message that only starts with a command name (`/budget please help`) is still sent.
+- Team routines dispatch each harness crew member's current focus areas, read when the sequence starts, instead of five retired built-in routines.
+
 ### 0.6.16 (versionCode 43) — 2026-10-30
 
 - A structured reply whose rows carry numbers (an artifact's `size`) loads again: row values are read as text instead of failing the whole message with "String literal for key 'size' should be quoted".

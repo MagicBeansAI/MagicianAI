@@ -29,9 +29,14 @@ hours): ~5 minutes between stages, ~30 minutes between each agent's primary
 runs. Scheduler reconciliation picks up a cron change only after the runtime
 defs under `MAGICIAN_ROOT_DIR` are synced with the seed templates.
 
-`/harness` has a `Run now` debug shortcut that calls the normal manual
-trigger API (not a scheduler bypass) for the CMO, CRO, CPO, CTO and CEO focus
-areas and reports accepted/queued/failed per stage.
+`/harness` has a `Start team sequence` shortcut that calls the normal manual
+trigger API (not a scheduler bypass) once per focus area of each harness agent
+(a definition with a `harness` block), read from the live definitions in
+agent-id order, and reports accepted/queued/failed per stage. An agent with no
+focus areas contributes no stage. `POST /agents/{id}/trigger` rejects a
+`harness:{agent}:` goal id that names none of the agent's current focus areas
+(`invalid_goal_id`), also when the agent has none left, so a retired routine
+can no longer run without its program.
 
 ## Backlog store
 

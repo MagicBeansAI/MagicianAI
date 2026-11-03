@@ -1,6 +1,7 @@
 pub(crate) mod app_agent_tool;
 pub mod bridge;
 pub mod capabilities;
+pub mod delivered_links;
 pub mod claim_support_decisions;
 pub mod events;
 pub mod execution_artifacts;

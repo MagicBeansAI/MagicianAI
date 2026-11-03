@@ -179,6 +179,8 @@
 	// …`), so the picker steps aside and Enter sends it. Below it, the picker
 	// stays up — the user is mid-command.
 	$: slashOpen = !!slashView && (slashResolved.path.length > 0 || slashView.items.length > 0);
+	// The send options cannot send a command draft; keep them shut while it is one.
+	$: if (slashOpen) sendOptionsOpen = false;
 	$: if (slashView && slashActiveIndex >= slashView.items.length) {
 		slashActiveIndex = Math.max(slashView.items.length - 1, 0);
 	}
@@ -460,7 +462,7 @@
 
             {#if composerHasContent && variant !== 'dev' && (allowParallel || isSending)}
                 <button type="button" class="icon-btn" aria-label="Send options" aria-expanded={sendOptionsOpen}
-                    disabled={disabled || isReadOnly} on:click={() => sendOptionsOpen = !sendOptionsOpen}>
+                    disabled={disabled || isReadOnly || slashOpen} on:click={() => sendOptionsOpen = !sendOptionsOpen}>
                     <Icon name="chevron-down" size={14} />
                 </button>
             {/if}
@@ -482,7 +484,8 @@
 			{/if}
 		</div>
 
-        {#if sendOptionsOpen && composerHasContent}
+        <!-- A draft in the `/` picker is a command: none of these may send it. -->
+        {#if sendOptionsOpen && composerHasContent && !slashOpen}
             <div class="send-options" role="group" aria-label="Send options">
                 <button type="button" disabled={!canSend || disabled || isReadOnly} on:click={() => { sendOptionsOpen = false; dispatch('send'); }}>{isSending ? 'Queue message' : 'Send message'}</button>
                 {#if isSending}<button type="button" disabled={disabled || isReadOnly} on:click={() => { sendOptionsOpen = false; dispatch('stopAndSend'); }}>Stop &amp; send</button>{/if}

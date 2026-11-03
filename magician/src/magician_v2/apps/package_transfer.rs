@@ -123,24 +123,36 @@ pub fn admit_package_archive(
     if archive.len() == 0 || archive.len() > maximum_entries {
         return Err(AppPackageTransferError::TooManyEntries);
     }
+    // zip keys members by name, so a repeated name is collapsed to its last
+    // entry before the per-member check below could see the pair.
+    if archive.has_duplicate_names() {
+        return Err(AppPackageTransferError::DuplicateEntry(
+            "a ZIP member name appears more than once".to_owned(),
+        ));
+    }
 
     let mut names = HashSet::with_capacity(archive.len());
     let mut manifest_bytes = None;
     let mut declared_bundle_bytes = 0usize;
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
-        if std::str::from_utf8(file.name_raw()).is_err()
-            || file.name().len()
-                > BUNDLE_ENTRY_PREFIX
-                    .len()
-                    .saturating_add(package_limits.max_bundle_path_bytes())
-                    .max(PACKAGE_MANIFEST_ENTRY.len())
-        {
-            return Err(AppPackageTransferError::UnsafeMember(
-                "invalid or overlong ZIP member name".to_owned(),
-            ));
-        }
-        let name = file.name().to_owned();
+        let name = file
+            .name()
+            .ok()
+            .filter(|name| {
+                std::str::from_utf8(file.name_raw()).is_ok()
+                    && name.len()
+                        <= BUNDLE_ENTRY_PREFIX
+                            .len()
+                            .saturating_add(package_limits.max_bundle_path_bytes())
+                            .max(PACKAGE_MANIFEST_ENTRY.len())
+            })
+            .map(|name| name.into_owned())
+            .ok_or_else(|| {
+                AppPackageTransferError::UnsafeMember(
+                    "invalid or overlong ZIP member name".to_owned(),
+                )
+            })?;
         if !names.insert(name.clone()) {
             return Err(AppPackageTransferError::DuplicateEntry(name));
         }
@@ -190,7 +202,7 @@ pub fn admit_package_archive(
     let mut admission = AppBundleStagingAdmission::default();
     for index in 0..archive.len() {
         let mut file = archive.by_index(index)?;
-        let name = file.name().to_owned();
+        let name = file.name()?.into_owned();
         if name == PACKAGE_MANIFEST_ENTRY {
             continue;
         }
@@ -316,7 +328,7 @@ pub mod tests {
 
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         let names = (0..zip.len())
-            .map(|index| zip.by_index(index).unwrap().name().to_owned())
+            .map(|index| zip.by_index(index).unwrap().name().unwrap().into_owned())
             .collect::<Vec<_>>();
         assert!(names.iter().all(|name| {
             name == PACKAGE_MANIFEST_ENTRY || name.starts_with(BUNDLE_ENTRY_PREFIX)

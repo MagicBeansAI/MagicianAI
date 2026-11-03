@@ -582,6 +582,11 @@ pub enum ContentBlockRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         size: u64,
+        /// `true` on the task's primary deliverable — the file the run
+        /// declared first in `yield.deliverables`. Omitted when `false`, so
+        /// older rows and clients are unchanged.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        primary: bool,
     },
     Url {
         url: String,

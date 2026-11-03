@@ -422,10 +422,11 @@
 			const destination = await threadStore.ensureThread(target);
 			if (!current()) return;
 			if (!destination) throw new Error(get(threadStore).error || 'Could not load or create the destination thread. Try again.');
-			const moved = await taskStore.updateTask(taskId, { uiThreadId: target });
+			// File the task under the canonical id the server resolved.
+			const moved = await taskStore.updateTask(taskId, { uiThreadId: destination.id });
 			if (!current() || !moved) return;
 			await Promise.all([taskStore.loadTasks(), threadStore.refresh()]);
-			if (current()) showSuccess(`Moved task to #${target}.`);
+			if (current()) showSuccess(`Moved task to #${destination.name || destination.id}.`);
 		} catch (error) {
 			if (current()) showError(error instanceof Error ? error.message : 'Failed to move task');
 		} finally {

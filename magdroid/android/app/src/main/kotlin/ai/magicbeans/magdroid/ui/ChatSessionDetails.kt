@@ -1,6 +1,10 @@
 package ai.magicbeans.magdroid.ui
 
+import ai.magicbeans.magdroid.chat.ChatAppDestination
+import ai.magicbeans.magdroid.chat.ChatLinkTarget
+import ai.magicbeans.magdroid.chat.ChatLinks
 import ai.magicbeans.magdroid.chat.ChatLocalState
+import ai.magicbeans.magdroid.chat.ThreadDirectory
 import ai.magicbeans.magdroid.work.*
 import ai.magicbeans.magdroid.access.MagicianAccess
 import ai.magicbeans.magdroid.access.MagicianConnectionSnapshot
@@ -202,7 +206,7 @@ internal fun ChatThreadSettings(threadId: String, connection: MagicianConnection
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Thread settings") }, text = {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Saved name and context for #$threadId.", style = MaterialTheme.typography.bodySmall)
+            Text("Saved name and context for #${originalName.ifBlank { ThreadDirectory.label(threadId).removePrefix("#") }}.", style = MaterialTheme.typography.bodySmall)
             if (!loaded && error == null) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (!loaded && error != null) TextButton(onClick = { revision++ }) { Text("Retry") }
@@ -234,26 +238,118 @@ internal fun ChatThreadSettings(threadId: String, connection: MagicianConnection
     }, dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } })
 }
 
+/**
+ * The one opener for every link tapped in chat (Markdown replies, structured
+ * blocks). [ChatLinks.classify] — the twin of web `classifyRef` and iOS
+ * `classifyActivityLink` — decides what a link is; this decides what happens:
+ *
+ * - note links → the native Notes screen;
+ * - task outputs and `/api/magician/…` resources → downloaded with the device
+ *   bearer and opened through the app's FileProvider ([AuthenticatedArtifacts]);
+ * - host files (absolute paths, `file://`, workspace-relative) → open-file on
+ *   the paired machine through the chat session;
+ * - chat links (`/chat?session=…`, `/t/<thread>[/chat][?session=…]`) → that
+ *   conversation, else the thread's latest ([ChatDeepLinks]); task, Work,
+ *   Attention, Today, Observe, Settings, Notes and VibeDev routes → in-app
+ *   navigation ([ChatLinks.appDestination]); any other app route → the
+ *   machine's web page in the browser;
+ * - http(s), mailto, tel, `magican://` → the system.
+ *
+ * A tap it cannot open shows "Can't open link" instead of being dropped.
+ */
 @Composable
 internal fun rememberChatOutputHandler(fallback: androidx.compose.ui.platform.UriHandler, session: String? = LocalChatOutputSession.current): androidx.compose.ui.platform.UriHandler {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val connection = MagicianAccess.connectionSnapshot(context)
     return remember(session, context, fallback, connection) { object : androidx.compose.ui.platform.UriHandler {
-        override fun openUri(uri: String) {
-            val path = ChatLocalState.outputPath(uri)
-            if (session == null || path == null) { fallback.openUri(uri); return }
+        fun cannotOpen(detail: String? = null) {
+            android.widget.Toast.makeText(context, detail?.let { "$CANNOT_OPEN_LINK: $it" } ?: CANNOT_OPEN_LINK, android.widget.Toast.LENGTH_SHORT).show()
+        }
+
+        fun view(url: String) {
+            try {
+                context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: android.content.ActivityNotFoundException) { cannotOpen() } catch (e: RuntimeException) { cannotOpen() }
+        }
+
+        fun openAuthenticated(path: String, filename: String?) {
+            val base = MagicianAccess.baseUrl(context).ifBlank { return cannotOpen("no paired machine") }
+            scope.launch { AuthenticatedArtifacts.open(context, base + path, filename?.takeIf(String::isNotBlank), null, connection) }
+        }
+
+        fun openOnHost(path: String) {
+            if (session == null) return cannotOpen("this file is not attached to a chat")
             scope.launch {
-                if (connection == null || connection != MagicianAccess.connectionSnapshot(context)) return@launch
+                if (connection == null || connection != MagicianAccess.connectionSnapshot(context)) { cannotOpen(); return@launch }
                 val client = WorkRepository.usingConnection(connection)
                 try {
                     client.postJson("/api/magician/v2/chat/sessions/${WorkRepository.segment(session)}/outputs/open-file",
                         buildJsonObject { put("absolute_path", path) })
                     if (client.isCurrentConnection(context)) android.widget.Toast.makeText(context, "Opened on your Magician host", android.widget.Toast.LENGTH_SHORT).show()
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                    if (client.isCurrentConnection(context)) android.widget.Toast.makeText(context, e.message ?: "File could not be opened", android.widget.Toast.LENGTH_LONG).show()
+                    if (client.isCurrentConnection(context)) cannotOpen(e.message)
                 } finally { client.close() }
+            }
+        }
+
+        fun openRoute(route: String) {
+            fun web() {
+                val base = MagicianAccess.baseUrl(context).ifBlank { return cannotOpen("no paired machine") }
+                view(base + route)
+            }
+            // A `/t/<key>` link may carry the thread's slug (it follows the
+            // name) or an old one; open by the canonical id the server maps it to.
+            fun resolvingThread(key: String, then: (String) -> Unit) {
+                ThreadDirectory.canonicalId(key)?.let { return then(it) }
+                val snapshot = connection ?: return then(key)
+                scope.launch {
+                    val client = WorkRepository.usingConnection(snapshot)
+                    val id = try { ThreadDirectory.resolve(key) { path -> client.readJson(path) } } finally { client.close() }
+                    if (client.isCurrentConnection(context)) then(id)
+                }
+            }
+            when (val destination = ChatLinks.appDestination(route)) {
+                is ChatAppDestination.Chat -> {
+                    val threadKey = destination.threadId
+                    if (destination.sessionId != null || threadKey == null) ChatDeepLinks.openChat(destination.sessionId, threadKey)
+                    else resolvingThread(threadKey) { id -> ChatDeepLinks.openChat(null, id) }
+                }
+                ChatAppDestination.History -> ChatDeepLinks.openHistory()
+                is ChatAppDestination.Work -> {
+                    fun accept(target: String) { if (!TaskDeepLinks.accept(android.net.Uri.parse(target))) web() }
+                    val threadKey = ChatLinks.threadRouteKey(destination.route)
+                    if (threadKey == null) accept(destination.route)
+                    else resolvingThread(threadKey) { id -> accept(ChatLinks.withThreadId(destination.route, id)) }
+                }
+                is ChatAppDestination.Attention -> {
+                    AttentionDeepLinks.request(destination.itemId)
+                    AppShortcutLinks.request(AppShortcutTarget.OpenAttention)
+                }
+                ChatAppDestination.Today -> AppShortcutLinks.request(AppShortcutTarget.OpenToday)
+                is ChatAppDestination.Observe ->
+                    AppShortcutLinks.request(AppShortcutTarget.OpenObserve(ObservePane.fromDeepLink(destination.route)))
+                ChatAppDestination.Settings -> ChatDeepLinks.openSettings()
+                ChatAppDestination.Notes -> ChatDeepLinks.openNotes()
+                ChatAppDestination.VibeDev -> AppShortcutLinks.request(AppShortcutTarget.OpenVibeDev)
+                is ChatAppDestination.Web -> web()
+            }
+        }
+
+        override fun openUri(uri: String) {
+            if (NoteLinks.accept(context, uri)) return
+            val origin = MagicianAccess.baseUrl(context).takeIf(String::isNotBlank)
+            when (val target = ChatLinks.classify(uri, origin)) {
+                is ChatLinkTarget.External -> view(target.url)
+                is ChatLinkTarget.TaskOutput -> openAuthenticated(target.apiPath, target.filename)
+                is ChatLinkTarget.ServerResource -> openAuthenticated(target.path, null)
+                is ChatLinkTarget.HostFile -> openOnHost(target.path)
+                is ChatLinkTarget.AppRoute -> openRoute(target.route)
+                is ChatLinkTarget.Unknown -> cannotOpen()
             }
         }
     } }
 }
+
+private const val CANNOT_OPEN_LINK = "Can't open link"

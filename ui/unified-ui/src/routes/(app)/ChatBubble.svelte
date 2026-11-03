@@ -16,6 +16,10 @@
 	} from '$lib/stores/chatStore';
 	import ChatContentBlocks from '$lib/magician/components/chat/ChatContentBlocks.svelte';
 	import ChatMarkdown from '$lib/magician/components/chat/ChatMarkdown.svelte';
+	import { threadStore } from '$lib/stores/threadStore';
+	import { findThreadByKey, isReservedThreadKey, threadRouteKey } from '$lib/threads/threadKeys';
+	import type { UiThreadRecord } from '$lib/threads/types';
+	import { threadHref } from '$lib/threads/threadLinks';
 
 	let textareaEl: HTMLTextAreaElement;
 	let messagesContainerEl: HTMLDivElement;
@@ -49,15 +53,15 @@
 	// thread's active session, not the default `general`. Default
 	// `loadActiveSession()` is `'general'`, which on a thread page would
 	// clobber the page's loaded session and show the wrong conversation.
-	function currentThreadFromPath(pathname: string): string {
-		if (pathname.startsWith('/t/')) {
-			const slug = pathname.slice(3).split('/')[0];
-			const decoded = decodeURIComponent(slug ?? '').trim();
-			if (decoded) return decoded;
-		}
-		return 'general';
+	// The path carries the thread's slug (or a former slug / its id); sessions
+	// are filed under the id, so map a known key to it.
+	function currentThreadFromPath(pathname: string, threads: UiThreadRecord[]): string {
+		const key = threadRouteKey(pathname)?.trim().toLowerCase();
+		// `/t/new` is the new-thread page, not a thread.
+		if (!key || isReservedThreadKey(key)) return 'general';
+		return findThreadByKey(threads, key)?.id ?? key;
 	}
-	$: currentThreadId = currentThreadFromPath($page.url.pathname);
+	$: currentThreadId = currentThreadFromPath($page.url.pathname, $threadStore.threads);
 
 	// Scroll to bottom when messages change in bubble
 	$: if (bubbleOpen && recentMessages.length && browser) {
@@ -109,7 +113,7 @@
 		// /t/marketing, not the default /chat (general).
 		const target =
 			currentThreadId && currentThreadId !== 'general'
-				? `/t/${encodeURIComponent(currentThreadId)}`
+				? threadHref(currentThreadId)
 				: '/chat';
 		goto(target);
 	}

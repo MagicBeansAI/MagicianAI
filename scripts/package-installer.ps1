@@ -100,6 +100,11 @@ foreach ($file in @("tool-runtime-config.yaml", "MANIFEST.yaml", "SHA256SUMS", "
 foreach ($binary in @("magician.exe", "magicutor.exe", "magic-supervisor.exe")) {
     Copy-Item -LiteralPath (Join-Path $PackageRoot $binary) -Destination (Join-Path $Prefix $binary) -Force
 }
+# The pinned ripgrep the grep and glob tools run (fixture packages ship none).
+$ripgrep = Join-Path $PackageRoot "rg.exe"
+if (Test-Path -LiteralPath $ripgrep -PathType Leaf) {
+    Copy-Item -LiteralPath $ripgrep -Destination (Join-Path $Prefix "rg.exe") -Force
+}
 
 Write-Host "  OK installed to $Prefix"
 Write-Host "Open Magican Desktop to finish setup and register the per-user background task."

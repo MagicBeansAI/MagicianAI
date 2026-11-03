@@ -1327,53 +1327,102 @@ enum ActivityLinkDestination: Equatable {
     case artifact(String)
     case file(String)
     case webRoute(String)
+    /// A chat conversation (`/chat?session=…`, `/t/<thread>[/chat][?session=…]`):
+    /// the session when named, else the thread's latest one, else the chat tab.
+    case chat(sessionId: String?, threadId: String?)
+    case vibeDev
+    /// The Notes library (`/notes` without a note path).
+    case notes
     case unknown
 }
 
-/// Swift counterpart of web `classifyRef`: markdown links in activity details
-/// must open the same logical destination instead of falling through to an
-/// unusable relative URL on iOS.
-func classifyActivityLink(_ rawValue: String) -> ActivityLinkDestination {
+/// Swift counterpart of web `classifyRef` (ui/unified-ui/src/lib/magician/links/classifyRef.ts):
+/// the one rule set for what a link in a chat reply, a structured block or an
+/// activity detail points at. `ChatLinkRouter` turns the result into an action.
+///
+/// - `file://…` is read as the absolute path it names.
+/// - A path inside `…/tasks/<task_id>/[…/]outputs/…` (absolute, `file://` or
+///   `/api/magician/v3/…`) is that task's output, opened in the authenticated
+///   viewer; an execution's own `executions/<exec>/outputs/…` keeps its segment.
+/// - Other `/api/…` references are server resources on the paired machine.
+/// - Other absolute paths that look like files, and workspace-relative file
+///   mentions (`Pages/report.md`), are host files (open-file on the machine).
+/// - App routes (`/t/…`, `/tasks`, `/work?selected=…`, `/attention`, …) are
+///   named; anything else starting with one `/` is a web route.
+/// - http(s), mailto, tel and `magican://` are external. With `origin` (the
+///   paired machine), an absolute link on that machine is read by its path, so
+///   `https://<machine>/api/…` still gets the device bearer.
+func classifyActivityLink(_ rawValue: String, origin: URL? = nil) -> ActivityLinkDestination {
     let raw = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !raw.isEmpty else { return .unknown }
-    if raw.lowercased().hasPrefix("file:") {
-        guard let url = URL(string: raw), url.isFileURL else { return .unknown }
-        return .file(url.path)
+    let lowered = raw.lowercased()
+
+    if lowered.hasPrefix("file:") {
+        var rest = Substring(raw.dropFirst(5))
+        while rest.hasPrefix("/") { rest = rest.dropFirst() }
+        guard !rest.isEmpty else { return .unknown }
+        let path = chatLinkPercentDecoded("/" + rest)
+        return activityTaskOutput(path) ?? .file(path)
     }
-    if let scheme = URL(string: raw)?.scheme?.lowercased(),
-       ["http", "https", "mailto", "tel", "ftp"].contains(scheme) {
+    if lowered.hasPrefix("http:") || lowered.hasPrefix("https:") {
+        if let origin, let local = chatLinkSameOriginReference(raw, origin: origin) {
+            return classifyActivityLink(local)
+        }
+        return .external(raw)
+    }
+    if ["mailto:", "tel:", "ftp:", "sms:", "magican:"].contains(where: { lowered.hasPrefix($0) }) {
         return .external(raw)
     }
     if matchesActivityIdentifier(raw, prefix: "task_") { return .task(raw) }
     if matchesActivityIdentifier(raw, prefix: "exec_") { return .execution(raw) }
 
-    if let match = raw.range(
-        of: #"(?:^|/)tasks/(task_[0-9a-fA-F]{32})/(?:.*?/)?outputs/(.+)$"#,
-        options: .regularExpression
-    ) {
-        let matched = String(raw[match])
-        let components = matched.split(separator: "/", omittingEmptySubsequences: true)
-        if let taskIndex = components.firstIndex(where: { matchesActivityIdentifier(String($0), prefix: "task_") }),
-           let outputIndex = components.firstIndex(of: "outputs"), outputIndex + 1 < components.count {
-            return .taskOutput(
-                taskId: String(components[taskIndex]),
-                relativePath: components[(outputIndex + 1)...].joined(separator: "/")
-            )
-        }
-    }
+    let decodedPath = chatLinkPercentDecoded(chatLinkPathPart(raw))
+    if let output = activityTaskOutput(decodedPath) { return output }
 
-    guard let components = URLComponents(string: raw) else { return .unknown }
-    let path = components.path
+    // A scheme we do not know (javascript:, data:, …) or a protocol-relative
+    // escape never reaches the app's own routes.
+    if raw.hasPrefix("//") || raw.contains("://") || chatLinkHasScheme(raw) { return .unknown }
+
+    let components = URLComponents(string: raw)
+    let path = components?.path ?? decodedPath
     let queryValue: (String) -> String? = { name in
-        components.queryItems?.last(where: { $0.name == name })?.value
+        components?.queryItems?.last(where: { $0.name == name })?.value
     }
     if path == "/tasks" || path.hasPrefix("/tasks/") {
         let pathId = path.split(separator: "/").dropFirst().first.map(String.init)
         return .task(queryValue("selected") ?? queryValue("task_id") ?? pathId)
     }
-    if path.hasPrefix("/t/"), let thread = path.split(separator: "/").dropFirst().first {
-        return .thread(String(thread))
+    if path.hasPrefix("/t/") {
+        let segments = path.split(separator: "/").map(String.init)
+        let thread = segments.count > 1 ? segments[1] : ""
+        guard !thread.isEmpty else { return .unknown }
+        if thread.lowercased() == "vibedev" { return .vibeDev }
+        let tab = segments.count > 2 ? segments[2] : nil
+        // `/t/<thread>/tasks[/<id>]` is a thread-scoped task link (Work router);
+        // bare `/t/<thread>?selected=<task>` lands on that tab too, like web.
+        if tab == "tasks" { return .webRoute(raw) }
+        if tab == nil, let selected = queryValue("selected"), !selected.isEmpty {
+            let encoded = selected.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? selected
+            let threadSegment = thread.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? thread
+            return .webRoute("/t/\(threadSegment)/tasks/\(encoded)")
+        }
+        // The thread's chat (its default tab) and its chat-scoped settings,
+        // files and models pages all open the conversation in the app.
+        guard tab == nil || ["chat", "settings", "files", "models"].contains(tab!) else { return .webRoute(raw) }
+        let session = queryValue("session").flatMap { $0.isEmpty ? nil : $0 }
+        if tab == nil, session == nil { return .thread(thread) }
+        return .chat(sessionId: session, threadId: thread)
     }
+    if path == "/chat" || path.hasPrefix("/chat/") {
+        let session = queryValue("session").flatMap { $0.isEmpty ? nil : $0 }
+        let thread = queryValue("thread").flatMap { $0.isEmpty ? nil : $0 }
+        return .chat(sessionId: session, threadId: thread)
+    }
+    if path == "/history" { return .chat(sessionId: nil, threadId: nil) }
+    if ["/vibe", "/vibedev", "/coding-runs"].contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
+        return .vibeDev
+    }
+    if path == "/notes" { return .notes }
     if path == "/attention" || path.hasPrefix("/attention/") {
         return .attention(queryValue("item_id") ?? queryValue("attention_id") ?? queryValue("selected"))
     }
@@ -1381,20 +1430,217 @@ func classifyActivityLink(_ rawValue: String) -> ActivityLinkDestination {
     if path == "/settings" || path.hasPrefix("/settings/") { return .settings }
     if path == "/observe" || path.hasPrefix("/observe/") { return .observe }
     if path.hasPrefix("/api/") { return .artifact(raw) }
-    if path.hasPrefix("/Users/") || path.hasPrefix("/tmp/")
-        || path.hasPrefix("/private/tmp/") || path.contains("/magician_data_v3/") {
-        return .file(path)
-    }
     if path.hasPrefix("/debug"), let executionId = queryValue("execution_id") {
         return .execution(executionId)
     }
-    if path.hasPrefix("/"), !path.hasPrefix("//"), !raw.contains("://") {
+    if chatLinkAppRoutePrefixes.contains(where: { path == $0 || path.hasPrefix($0 + "/") }) {
         return .webRoute(raw)
     }
+    if path.hasPrefix("/"), !path.hasPrefix("//") {
+        let knownRoot = ["/Users/", "/Volumes/", "/tmp/", "/private/", "/var/folders/", "/home/"]
+            .contains(where: { path.hasPrefix($0) })
+        if knownRoot || path.contains("/magician_data_v3/") || chatLinkHasFileExtension(path) {
+            return .file(decodedPath)
+        }
+        return .webRoute(raw)
+    }
+    // Workspace-relative file mention (`Pages/report.md`, `Chapter%20Map.md`):
+    // the session's scoped resolver opens it, like web `filePath`.
+    if components?.query == nil, components?.fragment == nil, chatLinkHasFileExtension(decodedPath),
+       !decodedPath.split(separator: "/").contains(".."),
+       decodedPath.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) {
+        return .file(decodedPath)
+    }
     return .unknown
+}
+
+/// The thread key of a `/t/<key>…` route, decoded — the thread's slug, an old
+/// slug or its id (`ThreadDirectory.resolve` maps it); nil for other routes.
+func chatThreadRouteKey(_ route: String) -> String? {
+    let path = chatLinkPathPart(route)
+    let segments = path.split(separator: "/", omittingEmptySubsequences: false)
+    guard segments.count >= 3, segments[0].isEmpty, segments[1] == "t", !segments[2].isEmpty else { return nil }
+    return chatLinkPercentDecoded(String(segments[2]))
+}
+
+/// `route` with its `/t/<key>` segment replaced by the canonical thread `id`.
+func chatRoute(_ route: String, withThreadId id: String) -> String {
+    guard chatThreadRouteKey(route) != nil else { return route }
+    let rest = route.dropFirst(3)
+    let keyEnd = rest.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) ?? rest.endIndex
+    let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? id
+    return "/t/" + encoded + rest[keyEnd...]
+}
+
+/// App pages that are never file paths, even when a segment has a dot.
+private let chatLinkAppRoutePrefixes = [
+    "/work", "/notes", "/chat", "/crew", "/agents", "/skills", "/briefing", "/briefings",
+    "/dashboard", "/debug", "/vibedev", "/harness", "/relentless", "/memory", "/ops",
+]
+
+/// `…/tasks/<task_id>/[…/]outputs/<rel>` as that task's output, keeping an
+/// execution's own `executions/<exec>/outputs/<file>` (the task-level path 404s).
+private func activityTaskOutput(_ path: String) -> ActivityLinkDestination? {
+    let patterns = [
+        #"(?:^|/)tasks/(task_[0-9a-fA-F]{32})/(?:outputs/)?(executions/[^/]+/outputs/.+)$"#,
+        #"(?:^|/)tasks/(task_[0-9a-fA-F]{32})/(?:.*?/)?outputs/(.+)$"#,
+    ]
+    let range = NSRange(path.startIndex..., in: path)
+    for pattern in patterns {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: path, range: range),
+              let taskRange = Range(match.range(at: 1), in: path),
+              let relativeRange = Range(match.range(at: 2), in: path) else { continue }
+        let relative = String(path[relativeRange])
+        guard !relative.isEmpty else { continue }
+        return .taskOutput(taskId: String(path[taskRange]), relativePath: relative)
+    }
+    return nil
+}
+
+/// The reference before its query or fragment.
+private func chatLinkPathPart(_ raw: String) -> String {
+    String(raw[..<(raw.firstIndex(where: { $0 == "?" || $0 == "#" }) ?? raw.endIndex)])
+}
+
+/// Percent-decoded, or the input when it is not valid percent-encoding (a
+/// literal `%` in a path).
+func chatLinkPercentDecoded(_ value: String) -> String {
+    value.removingPercentEncoding ?? value
+}
+
+private func chatLinkHasScheme(_ raw: String) -> Bool {
+    guard let colon = raw.firstIndex(of: ":") else { return false }
+    let scheme = raw[..<colon]
+    guard let first = scheme.first, first.isLetter else { return false }
+    return scheme.allSatisfy { $0.isLetter || $0.isNumber || $0 == "+" || $0 == "-" || $0 == "." }
+}
+
+private func chatLinkHasFileExtension(_ path: String) -> Bool {
+    let last = path.split(separator: "/").last.map(String.init) ?? ""
+    guard let dot = last.lastIndex(of: "."), dot != last.startIndex else { return false }
+    let ext = last[last.index(after: dot)...]
+    return (1...12).contains(ext.count) && ext.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+}
+
+/// The path, query and fragment of an absolute http(s) link on `origin`; nil
+/// for any other machine.
+private func chatLinkSameOriginReference(_ raw: String, origin: URL) -> String? {
+    guard let link = URLComponents(string: raw),
+          let originParts = URLComponents(url: origin, resolvingAgainstBaseURL: false),
+          let scheme = link.scheme?.lowercased(), scheme == originParts.scheme?.lowercased(),
+          let host = link.host?.lowercased(), host == originParts.host?.lowercased(),
+          link.user == nil, link.password == nil else { return nil }
+    let defaultPort = scheme == "https" ? 443 : 80
+    guard (link.port ?? defaultPort) == (originParts.port ?? defaultPort) else { return nil }
+    var local = link.percentEncodedPath.isEmpty ? "/" : link.percentEncodedPath
+    if let query = link.percentEncodedQuery { local += "?" + query }
+    if let fragment = link.percentEncodedFragment { local += "#" + fragment }
+    return local
 }
 
 private func matchesActivityIdentifier(_ value: String, prefix: String) -> Bool {
     guard value.lowercased().hasPrefix(prefix), value.count == prefix.count + 32 else { return false }
     return value.dropFirst(prefix.count).allSatisfy { $0.isHexDigit }
+}
+
+// MARK: - Path linkification
+
+/// Turns file paths that chat text mentions — inline code holding a path and
+/// bare absolute paths in prose (`saved to /Volumes/x/report.pdf`), with or
+/// without `file://` — into Markdown links, like web `linkifyPaths` /
+/// `linkifyTextPaths`. Fenced code, existing links, autolinks and URLs are left
+/// as they are. The link target is the path itself (percent-encoded), so a tap
+/// goes through `classifyActivityLink` like any other link.
+enum ChatPathLinkifier {
+    private static let inline: NSRegularExpression? = {
+        let link = #"!?\[[^\]\n]*\]\([^)\n]*\)"#
+        let autolink = #"<[^>\n]*>"#
+        let code = #"`([^`\n]+)`"#
+        let path = #"(?:file:/{0,3})?/(?:[^\s<>"'`/()\[\]]+/)+[^\s<>"'`/()\[\]]+\.[A-Za-z0-9]{1,8}"#
+        let url = #"[A-Za-z][A-Za-z0-9+.\-]*://[^\s<>]+"#
+        return try? NSRegularExpression(pattern: "(\(link))|(\(autolink))|(\(code))|(\(path))|(\(url))")
+    }()
+
+    /// Characters a link destination keeps; everything else (spaces, parens,
+    /// `%`, `?`, `#`, non-ASCII) is percent-encoded.
+    private static let destinationAllowed = CharacterSet(
+        charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'*+,;=:@/"
+    )
+
+    static func markdown(_ text: String) -> String {
+        guard text.contains("/"), inline != nil else { return text }
+        var fence: Character?
+        var lines: [String] = []
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.drop(while: { $0 == " " })
+            let marker: Character? = trimmed.hasPrefix("```") ? "`" : trimmed.hasPrefix("~~~") ? "~" : nil
+            if let marker, line.count - trimmed.count <= 3 {
+                if fence == nil { fence = marker } else if fence == marker { fence = nil }
+                lines.append(line)
+                continue
+            }
+            lines.append(fence == nil ? linkifyLine(line) : line)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Inline code worth a link: a `file://` URL, an absolute path that names a
+    /// file or task output, or a workspace-relative `dir/file.ext`.
+    static func isLinkableCode(_ content: String) -> Bool {
+        let value = content.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, !value.contains("\n") else { return false }
+        let lowered = value.lowercased()
+        let absolute = value.hasPrefix("/") && !value.hasPrefix("//")
+        let relative = !absolute && !lowered.hasPrefix("file:") && value.contains("/")
+            && !value.contains(" ") && !value.contains(":")
+        guard absolute || relative || lowered.hasPrefix("file:") else { return false }
+        if absolute, value.split(separator: "/").count < 2 { return false }
+        switch classifyActivityLink(value) {
+        case .file, .taskOutput: return true
+        case .artifact: return absolute
+        default: return false
+        }
+    }
+
+    static func destination(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: destinationAllowed) ?? value
+    }
+
+    private static func escapedLabel(_ value: String) -> String {
+        var out = ""
+        for character in value {
+            if "\\`*_[]<>".contains(character) { out.append("\\") }
+            out.append(character)
+        }
+        return out
+    }
+
+    private static func linkifyLine(_ line: String) -> String {
+        guard let inline, line.contains("/") else { return line }
+        let source = line as NSString
+        var out = ""
+        var cursor = 0
+        for match in inline.matches(in: line, range: NSRange(location: 0, length: source.length)) {
+            let whole = match.range
+            out += source.substring(with: NSRange(location: cursor, length: whole.location - cursor))
+            let text = source.substring(with: whole)
+            cursor = whole.location + whole.length
+            if match.range(at: 3).location != NSNotFound {
+                let content = source.substring(with: match.range(at: 4))
+                out += isLinkableCode(content)
+                    ? "[\(text)](\(destination(content.trimmingCharacters(in: .whitespaces))))"
+                    : text
+            } else if match.range(at: 5).location != NSNotFound {
+                let before = whole.location > 0
+                    ? source.substring(with: NSRange(location: whole.location - 1, length: 1)) : " "
+                let boundary = before.rangeOfCharacter(from: .whitespaces) != nil || "(\"'*_>~".contains(before)
+                out += boundary ? "[\(escapedLabel(text))](\(destination(text)))" : text
+            } else {
+                out += text
+            }
+        }
+        out += source.substring(from: cursor)
+        return out
+    }
 }

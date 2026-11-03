@@ -75,10 +75,10 @@ metadata:
       # `convert` is the read-only action: it returns Markdown and writes
       # nothing. `convert_to_workspace` creates files and must never be canaried.
       #
-      # `input_file` is a brokered workspace_path, so the governed runtime
-      # resolves it beneath `<scope>/workdirs/` rather than the scope root. The
-      # fixture is therefore materialized at `workdirs/canary-fixtures/...`
-      # while the parameter names the same file relative to that root.
+      # `input_file` is a workspace_path, so the governed runtime resolves it
+      # beneath the call's task work root (the canary lane hands every call its
+      # own); the fixture key and the parameter name the same file relative to
+      # that root.
       #
       # CSV is the one supported format that is authorable as manifest text; it
       # is signature-less, so `format: csv` is required rather than optional.
@@ -87,7 +87,7 @@ metadata:
         format: "csv"
         pretty: false
       fixtures:
-        "workdirs/canary-fixtures/document-to-markdown-input.csv": |
+        "canary-fixtures/document-to-markdown-input.csv": |
           Region,Units,Revenue
           North,120,4800
           South,95,3800

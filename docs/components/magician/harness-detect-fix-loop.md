@@ -39,7 +39,10 @@ Anomaly kinds (`harness::anomaly::AnomalyKind`): a failed cycle is
 `StuckHitl`, `ToolUnavailable` or `NoProgress` (checked in that order); a cycle
 dropped before running is `CycleDropped`. `RosterDrift` is reserved.
 Intentional drops (`dropped_disabled`/`_paused`/`_duplicate`/
-`_reservation_changed`) are NOT anomalies.
+`_reservation_changed`) are NOT anomalies, and neither is a cycle whose
+failure is the cancellation itself (`Execution cancelled`, `... by user`), as
+when the owner pauses the harness mid-cycle, unless its episode could not be
+persisted.
 
 ## Store
 

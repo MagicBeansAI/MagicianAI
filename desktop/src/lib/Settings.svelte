@@ -1730,10 +1730,10 @@
                         id="voice-thread"
                         type="text"
                         bind:value={config.voice.default_thread_id}
-                        placeholder="general"
+                        placeholder="desktop-general"
                         spellcheck="false"
                       />
-                      <p class="field-help">Used when the Orb starts without an existing conversation context.</p>
+                      <p class="field-help">Where desktop voice talks. Each Orb conversation starts a new chat here; the default is a Desktop thread of its own.</p>
                     </div>
                     <div class="field">
                       <button class="secondary" type="button" onclick={() => openSharedSettings("voice")}>

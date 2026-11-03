@@ -385,6 +385,14 @@ there is no `spawn_blocking` (tune with `LANCE_CPU_THREADS`,
   allows one half-open retry, success deletes it. Meanwhile hybrid retrieval
   is suspended for the scope; writes and ingestion continue. Startup or
   periodic-audit failures also enqueue the scope for dirty retry.
+- **Cold start.** A dirty scope with no usable index (no
+  `memory/index/manifest.json`, or one with `document_count` 0) serves every
+  retrieval from the lexical fast stage alone. Its first build is due after
+  the ordinary quiet debounce or 60 seconds after the first dirty mark,
+  whichever comes first, even while writes continue. A failed build of such a
+  scope (dirty, startup or periodic) persists a short cooldown, marked
+  `cold_start`: 1 minute, doubling to the same one-hour cap. Once the index has
+  documents the scope follows the ordinary debounce and cooldown.
 - **Rebuild required.** A reconcile that fails only because the manifest
   shows `index_version_changed`, `schema_version_changed`, `backend_changed`,
   `embedding_config_changed` or `missing_manifest` (with table data) pauses the

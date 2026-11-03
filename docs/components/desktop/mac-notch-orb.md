@@ -199,6 +199,8 @@ a mode in Settings marks the seed complete.
 **Admission:** a conversation snapshots the mode once, so a racing Settings
 edit applies only to the next conversation.
 
+**Its own thread and chat:** desktop voice talks in a `desktop-general` ("Desktop") thread, created on first use (a saved `general` moves over once), and each Orb conversation starts a new chat there (`new_chat`); global voice notes and hotkey Live PTT join that thread's open chat.
+
 ### Dictation
 
 An iterative turn loop: record one utterance, detect its boundary, submit

@@ -87,6 +87,7 @@ pub mod screenshot_preview;
 pub mod search_memory;
 pub mod search_notes;
 pub mod shared;
+pub mod skillshub_skill;
 pub mod staged_file_edit;
 pub mod stop_task;
 pub mod switch_personality;

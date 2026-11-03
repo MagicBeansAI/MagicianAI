@@ -33,6 +33,7 @@
 	import { hasOpenOverlay } from '$lib/shell/overlayCoordinator';
 	import { timedFetch } from '$lib/shared/fetch';
 	import { goto } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import { page } from '$app/stores';
 	import { browser } from '$app/environment';
 	import { hideNativeAttentionWindow } from '$lib/attention/nativeWindow';
@@ -158,7 +159,7 @@
 
 	function openMeetingTranscript(threadId: string | null | undefined): void {
 		if (!threadId) return;
-		void openApplicationPath(`/t/${encodeURIComponent(threadId)}`);
+		void openApplicationPath(threadHref(threadId));
 	}
 
 	async function fetchResolved(): Promise<void> {

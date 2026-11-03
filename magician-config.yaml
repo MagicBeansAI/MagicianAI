@@ -241,7 +241,8 @@ coding:
   # inside Magician's box: writes only to its workspace copy and its own state,
   # secrets unreadable, other agent CLIs blocked, network by
   # execution.network_policy. false = the coding profile alone (pre-2026-10-14).
-  # God mode does not apply in VibeDev; super god mode lifts the box.
+  # A chat's god mode reaches the coding runs it starts (their Magician tools)
+  # but never lifts this box; only super god mode does.
   box_harness: true
   default_profile: pi/model/openai/gpt-6.1-sol/auto
   # Lead engineer that drives VibeDev coding runs (tasks tagged `vibedev`). Swapping the
@@ -1619,6 +1620,10 @@ app_platform:
         local_processing_eligible: true
         provider_retention: no_provider_storage
       "workload/app_processing/cloud":
+        class: external
+        local_processing_eligible: false
+        provider_retention: no_provider_storage
+      "workload/app_processing/chat_cloud":
         class: external
         local_processing_eligible: false
         provider_retention: no_provider_storage

@@ -243,7 +243,9 @@ Resume is spawn-time (`--session-dir` plus `--session <id>` or `--continue`;
 `PiTurnOptions` (Pi-only): `session_name`, `session_dir`
 (`scope_root/coding_engine/pi_sessions`, required by both resume flags),
 `resume_recent`, `resume_session_id`, `provider`, `model`, `thinking_level`,
-`extension_paths`, `append_system_prompt`, `images`. Handle verbs: `prompt`
+`extension_paths`, `images`. The persona/playbook files ride the common
+`CodingEngineRequest.append_system_prompt`; Pi passes each as
+`--append-system-prompt <path>`. Handle verbs: `prompt`
 (camelCase `streamingBehavior`; plain during streaming is a typed error),
 `steer`, `follow_up`, `abort`, `set_thinking_level` (before the turn; a failure
 is logged and the turn runs at Pi's default level), `get_session_stats`.
@@ -328,6 +330,9 @@ tracked files and `prune_shadow_strays`, never touching
 `node_modules`/`target`/`.venv` or home-level
 `.config`/`.local`/`.npm`/`.cargo`/`.rustup`/`.gradle`/`.m2`/`.docker`/`.kube`/
 `.aws`/`.azure`/`.gnupg`/`.ssh`/`.mozilla` (scope-home projects).
+A resync writes over the previous run's entries: a symlink with an unchanged
+target is kept, and any other leftover entry whose type or target differs is
+removed first, so nothing is written through a stale link.
 
 `stage_result` defaults true: after the turn `attach_staged_coding_proposal`
 byte-diffs shadow vs real (`read_bytes_bounded_local`, compare first).
@@ -362,6 +367,57 @@ a wrapped launch that then rejects fails closed. Codex/Grok/Claude/Agy need
 unwrapped) unless `coding.pi_allow_unsandboxed: true` (host is its own sandbox).
 Without a source checkout the gate still wraps, keeping the real-repo write
 deny and credential read denies.
+
+Work location (`vibedev::work_location`): a task with no `VibeDev project:`
+line (a chat-delegated task, every hop of it) whose `repo_path` resolves
+outside the scope runs only under a project. A live project that owns the
+folder binds the task to it; otherwise the handler returns
+`ExecutionError::WorkLocationRequired { folder }` (the nearest git root
+holding the path, else the folder; the home folder, `/` and their ancestors
+are refused as too broad) before anything is journaled, and the executor asks
+the owner once (`request_type: "work_location"`, saying so when the folder is
+Magician's own source): Isolated workspace (default, `sandboxed`), Isolated
+branch (`trusted`), Original folder (`original`) or Cancel. Parallel calls of
+the task on one folder share one question; the ask races the run's
+cancellation. An answer creates the project (folder name, de-duplicated,
+absolute `repo_path`, no cockpit conversation yet), writes the binding and
+dispatches the same call again under the same cancellation; Cancel refuses it
+and is remembered for the execution. The binding is the task's own
+`run_links` entry with a `work_location` (merged into an existing link, which
+keeps its lineage, crew and lane), read wherever the project line is
+(`coding_task_project`, `resolve_trusted_run_workspace`,
+`original_workspace::for_execution_task`), so a bound task never asks again
+and runs under the project's trust mode like a VibeDev run (shadow copy,
+`vibedev/…` clone, or original folder), with its build caches and project
+checks. A task belongs to one project: binding it to another is refused, and
+a bound turn whose `repo_path` names a folder outside both the scope and its
+project is refused naming the project (one inside the scope means the project
+folder). The process-wide `live_repo_source_fence()` then refuses Magician's
+own source tree unless the task's project owns it, matching the shell and file
+tools. A governed workspace CLI (`dugite`) admits an absolute cwd in the
+workspace, a granted folder, or the folder of the task's project; a live
+project's folder or a git repository root on a task with no project raises
+the same ask (an owned folder binds without a question); either on a task of
+another project is refused naming it; a call with no task still admits any
+live project folder.
+
+Platform faults: a setup failure the model cannot fix carries
+`"fault": "platform"` (and `"fix"` when there is one) beside `status`,
+`reason` and `stage`. `classify_setup_failure` is the table: `workspace_root`,
+the journal's own disk (`invocation_journal`; a refused admission such as the
+invocation cap is `invocation_admission` and model-facing), `shadow_root_parent`,
+`prepare_shadow_workspace`, `resolve_shadow_working_dir`, `pi_session_dir`,
+`build_dir`, `work_location_binding`, `adapter_factory` and
+`credential_preflight` (fix names the key and profile), and a `run_turn`
+whose engine could not start (the Pi version gate, probe or unreadable
+version, a missing binary; fix `make setup-pi-coding-agent` for Pi). When the
+model chose the profile or an engine binary, `adapter_factory` and
+`credential_preflight` stay model-facing and the reason says to pick another
+profile, unless the engine itself cannot start. A failed trusted clone is a
+platform fault with `"fault_scope": "project"`: its fix is what the owner does
+in the repository. Budgets, argument errors, resume authority and ordinary
+turn failures stay model-facing. The loop ends the run on the first platform
+fault ([agentic-loop-termination.md](agentic-loop-termination.md)).
 
 Environment: the spawn and the `--version` probe drop
 `operator_terminal_env_scrub_list()` (every runtime `.env` key,

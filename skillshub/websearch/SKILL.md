@@ -1,6 +1,6 @@
 ---
 name: websearch
-version: 0.3.0
+version: 0.3.1
 description: Search the web and return structured results (titles, URLs, snippets). Uses DuckDuckGo under
   the hood because Google blocks curl requests and requires a full browser session to render results.
   For Google-specific results, use the browser tool to navigate to google.com instead. On success this
@@ -12,6 +12,7 @@ metadata:
     requires:
       bins:
       - websearch
+      - python3
     install_hint:
       docs: 'requires binary on PATH: python3'
     runtime_canary:
@@ -37,6 +38,8 @@ metadata:
       requires:
         bins:
         - websearch
+        - python3
+        entrypoint: websearch
       runtime:
         protocol: cli
         command_prefix: []

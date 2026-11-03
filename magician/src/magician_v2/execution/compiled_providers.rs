@@ -185,6 +185,9 @@ const COMPILED_PROVIDERS: &[(&str, bool)] = &[
     ("working_set_read", true),
     ("apply_code_proposal", true),
     ("run_project_checks", true),
+    ("validate_skill", true),
+    ("test_skill", true),
+    ("install_skill", true),
     ("screenshot_preview", true),
     ("capture_reference", true),
     ("run_task", true),
@@ -958,6 +961,24 @@ pub fn default_compiled_handler_registry() -> CompiledHandlerRegistry {
         "run_project_checks",
         crate::compiled_handler!(
             crate::magician_v2::execution::compiled_handlers::run_project_checks::handle
+        ),
+    );
+    registry.register(
+        "validate_skill",
+        crate::compiled_handler!(
+            crate::magician_v2::execution::compiled_handlers::skillshub_skill::validate_handle
+        ),
+    );
+    registry.register(
+        "test_skill",
+        crate::compiled_handler!(
+            crate::magician_v2::execution::compiled_handlers::skillshub_skill::test_handle
+        ),
+    );
+    registry.register(
+        "install_skill",
+        crate::compiled_handler!(
+            crate::magician_v2::execution::compiled_handlers::skillshub_skill::install_handle
         ),
     );
     registry.register(
@@ -6188,6 +6209,28 @@ pub fn build_compiled_registry(
             }
         }
     }
+    // Skill maintenance from skillshub/: validate, test (owner-approved) and
+    // install (owner-approved) one skill. Same remove+register as the tools
+    // above, or dispatch fails with "not a compiled pack".
+    for skill_tool in ["validate_skill", "test_skill", "install_skill"] {
+        if let Some(pack) = pack_by_provider.remove(skill_tool) {
+            if let (Some(resources), Some(handler)) = (
+                agent_resources.as_ref(),
+                compiled_handlers
+                    .as_ref()
+                    .and_then(|reg| reg.get(skill_tool)),
+            ) {
+                let provider = GenericCompiledProvider::new(
+                    skill_tool,
+                    handler,
+                    Arc::clone(resources),
+                    scope_paths.clone(),
+                )
+                .with_pack_def(pack);
+                registry.register(Arc::new(provider));
+            }
+        }
+    }
     // Host-relayed macOS automation tools — handler-backed, deferred=true. Same
     // trap as the coding triad above: registering the handler + pack-def is NOT
     // enough; without this remove+register block no scoped provider is bound and
@@ -7110,6 +7153,18 @@ fn embedded_compiled_pack_source_table() -> &'static [(&'static str, &'static st
         (
             "run_project_checks",
             include_str!("embedded_pack_defs/run_project_checks.yaml"),
+        ),
+        (
+            "validate_skill",
+            include_str!("embedded_pack_defs/validate_skill.yaml"),
+        ),
+        (
+            "test_skill",
+            include_str!("embedded_pack_defs/test_skill.yaml"),
+        ),
+        (
+            "install_skill",
+            include_str!("embedded_pack_defs/install_skill.yaml"),
         ),
         (
             "screenshot_preview",
@@ -8247,20 +8302,28 @@ pub fn pack_def_from_app_computed_capability(
 /// parses can still fail here (typed action bounds, runtime contract), and a
 /// skill refused at this stage is absent from the capability registry while
 /// every parse-level check calls it healthy. Same parse, same projection,
-/// same reason text as the loader.
+/// same reason text as the loader. `scope_env` is where the contract's
+/// `${NAME}` references resolve: the scope's skill folder for an installed
+/// skill, [`ScopeEnvSource::Template`] for an authoring source such as a
+/// skillshub catalog row.
+///
+/// [`ScopeEnvSource::Template`]: crate::magician_v2::skills::scope_env::ScopeEnvSource::Template
 pub fn governed_runtime_package_rejection(
     name: &str,
     description: &str,
     skill_dir: &Path,
     source: &str,
+    scope_env: crate::magician_v2::skills::scope_env::ScopeEnvSource<'_>,
 ) -> Option<String> {
     if !(source.contains("runtime_contract:") || source.contains("runtime_actions:")) {
         return None;
     }
-    let package = match parse_skill_runtime_package(source) {
+    let package = match crate::magician_v2::skills::scope_env::parse_runtime_package(
+        source, scope_env,
+    ) {
         Ok(Some(package)) => package,
         Ok(None) => return None,
-        Err(error) => return Some(format!("failed to parse governed runtime package: {error}")),
+        Err(error) => return Some(error.to_string()),
     };
     let skill_path =
         crate::magician_v2::skills::path_rewrite::resolve_skill_path(&skill_dir.join("SKILL.md"));
@@ -8285,6 +8348,11 @@ pub struct SkillLoadFailure {
     pub skill: String,
     pub path: String,
     pub reason: String,
+    /// The scope's own configuration withdrew the skill (a `${NAME}`
+    /// reference its `config/.env` leaves unset or invalid), rather than the
+    /// skill failing. A withdrawal is a catalog change: the cache never holds
+    /// a served snapshot back for it, so a blanked endpoint stops serving.
+    pub withdrawn: bool,
 }
 
 /// What a skills directory loaded: the packs, the skills (by directory
@@ -8356,6 +8424,11 @@ impl SkillContractFingerprint {
     /// `None` when the file exists but cannot be read: an unreadable source
     /// is never answered from memory.
     fn of(path: &Path) -> Option<Self> {
+        Self::read(path).map(|(fingerprint, _)| fingerprint)
+    }
+
+    /// [`Self::of`] plus the bytes it hashed, for inputs derived from them.
+    fn read(path: &Path) -> Option<(Self, Option<Vec<u8>>)> {
         let unfollowed = std::fs::symlink_metadata(path).ok();
         let link_target = unfollowed
             .as_ref()
@@ -8363,19 +8436,24 @@ impl SkillContractFingerprint {
             .and_then(|_| std::fs::read_link(path).ok());
         let resolved = crate::magician_v2::skills::path_rewrite::resolve_skill_path(path);
         let is_file = std::fs::metadata(&resolved).is_ok_and(|meta| meta.is_file());
-        let content = if is_file {
-            let bytes = std::fs::read(&resolved).ok()?;
-            Some((bytes.len() as u64, blake3::hash(&bytes)))
+        let bytes = if is_file {
+            Some(std::fs::read(&resolved).ok()?)
         } else {
             None
         };
-        Some(Self {
-            present: unfollowed.is_some(),
-            link_target,
-            resolved,
-            is_file,
-            content,
-        })
+        let content = bytes
+            .as_ref()
+            .map(|bytes| (bytes.len() as u64, blake3::hash(bytes)));
+        Some((
+            Self {
+                present: unfollowed.is_some(),
+                link_target,
+                resolved,
+                is_file,
+                content,
+            },
+            bytes,
+        ))
     }
 
     fn is_absent(&self) -> bool {
@@ -8386,7 +8464,11 @@ impl SkillContractFingerprint {
 /// Every input [`load_skills_dir_uncached`] reads for one skill directory.
 /// Beside the two contract files, a governed package's projection depends
 /// on whether `bin/` (beside the resolved `SKILL.md`) is a directory and
-/// whether `config/.env` is a file; their contents are not read.
+/// whether `config/.env` is a file. Of that file's contents only the values a
+/// `${NAME}` reference in the contract resolves to are read
+/// ([`scope_env_stamp`]).
+///
+/// [`scope_env_stamp`]: crate::magician_v2::skills::scope_env::scope_env_stamp
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SkillDirFingerprint {
     name: std::ffi::OsString,
@@ -8397,6 +8479,9 @@ struct SkillDirFingerprint {
     tool_schema: SkillContractFingerprint,
     bin_dir: bool,
     legacy_env_file: bool,
+    /// How the contract's scope references resolve in this folder; `None`
+    /// when it has none.
+    scope_env: Option<blake3::Hash>,
 }
 
 /// The source fingerprint of one skills directory: the skill directories it
@@ -8422,7 +8507,7 @@ fn skills_dir_fingerprint(skills_dir: &Path) -> Option<SkillsDirFingerprint> {
             continue;
         }
         let real_dir = entry.file_type().ok()?.is_dir();
-        let skill_md = SkillContractFingerprint::of(&path.join("SKILL.md"))?;
+        let (skill_md, skill_md_bytes) = SkillContractFingerprint::read(&path.join("SKILL.md"))?;
         let tool_schema = SkillContractFingerprint::of(&path.join("tool_schema.yaml"))?;
         // A directory with neither contract contributes nothing to the load
         // (bookkeeping such as `.skill-state`). Its contracts are stat'ed on
@@ -8440,6 +8525,11 @@ fn skills_dir_fingerprint(skills_dir: &Path) -> Option<SkillsDirFingerprint> {
             real_dir,
             bin_dir: resolved_skill_dir.join("bin").is_dir(),
             legacy_env_file: path.join("config/.env").is_file(),
+            // The listed folder, not the resolved one: references resolve
+            // only from the scope's own env.
+            scope_env: skill_md_bytes.as_deref().and_then(|bytes| {
+                crate::magician_v2::skills::scope_env::scope_env_stamp(bytes, &path)
+            }),
             skill_md,
             tool_schema,
         });
@@ -8569,8 +8659,12 @@ fn load_skills_dir_uncached(skills_dir: &Path) -> SkillsDirLoad {
                 .unwrap_or_default(),
             path: path.display().to_string(),
             reason,
+            withdrawn: false,
         });
     };
+    // Skills this scope's own configuration withdrew (an unset or invalid
+    // `${NAME}` value): reported with their reason, never as breakage.
+    let mut withdrawals: Vec<SkillLoadFailure> = Vec::new();
 
     let mut paths: Vec<PathBuf> = match std::fs::read_dir(skills_dir) {
         Ok(entries) => entries
@@ -8634,14 +8728,28 @@ fn load_skills_dir_uncached(skills_dir: &Path) -> SkillsDirLoad {
                     if source.contains("runtime_contract:")
                         || source.contains("runtime_actions:") =>
                 {
-                    match parse_skill_runtime_package(&source) {
+                    // `skill_dir` is the folder as listed in this root, so a
+                    // `${NAME}` reference resolves from this scope's env only.
+                    match crate::magician_v2::skills::scope_env::parse_runtime_package(
+                        &source,
+                        crate::magician_v2::skills::scope_env::ScopeEnvSource::Skill(&skill_dir),
+                    ) {
                         Ok(package) => package,
-                        Err(error) => {
-                            fail(
-                                &skill_dir,
-                                &skill_path,
-                                format!("failed to parse governed runtime package: {error}"),
+                        Err(error) if error.withdraws_skill() => {
+                            debug!(
+                                "skill withdrawn in this scope: {error} ('{}')",
+                                skill_path.display()
                             );
+                            withdrawals.push(SkillLoadFailure {
+                                skill: skill_name_of(&skill_dir),
+                                path: skill_path.display().to_string(),
+                                reason: error.to_string(),
+                                withdrawn: true,
+                            });
+                            continue;
+                        },
+                        Err(error) => {
+                            fail(&skill_dir, &skill_path, error.to_string());
                             continue;
                         },
                     }
@@ -8814,6 +8922,7 @@ fn load_skills_dir_uncached(skills_dir: &Path) -> SkillsDirLoad {
     }
 
     drop(fail);
+    failures.extend(withdrawals);
     load.packs = packs;
     load.loaded_skills = loaded_skills;
     load.failures = failures;
@@ -8958,6 +9067,158 @@ mod skills_dir_cache_tests {
         fs::write(widget.join("config/.env"), "TOKEN=x\n").unwrap();
         let with_env = skills_dir_fingerprint(dir.path()).expect("fingerprint");
         assert_ne!(with_env, with_bin);
+    }
+
+    /// `<root>/scopes/<scope>/skills` holding the shipped `metabase-mcp`,
+    /// with `env` as its `config/.env`.
+    fn metabase_scope(root: &Path, scope: &str, env: &str) -> PathBuf {
+        let skills = root.join("scopes").join(scope).join("skills");
+        let skill = skills.join("metabase-mcp");
+        fs::create_dir_all(skill.join("config")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            include_str!("../../../../skillshub/metabase-mcp/SKILL.md"),
+        )
+        .unwrap();
+        fs::write(skill.join("config/.env"), env).unwrap();
+        skills
+    }
+
+    fn governed_runtime(
+        load: &SkillsDirLoad,
+        name: &str,
+    ) -> Option<Arc<crate::magician_v2::execution::capability::GovernedRuntimeImplementation>> {
+        load.packs
+            .iter()
+            .find(|pack| pack.name == name)
+            .and_then(|pack| match &pack.implementation {
+                ImplementationType::Primitive {
+                    runtime_package: Some(runtime),
+                    ..
+                } => Some(Arc::clone(runtime)),
+                _ => None,
+            })
+    }
+
+    /// The scope env value a `${NAME}` endpoint resolves to is a load input:
+    /// changing it re-parses, blanking it withdraws the skill (reported as a
+    /// withdrawal, naming the variable), and each scope loads its own value.
+    #[test]
+    fn a_scope_env_reference_is_a_load_input_resolved_per_scope() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let alice = metabase_scope(
+            root.path(),
+            "alice/work",
+            "METABASE_BASE_URL=https://alice.example\n",
+        );
+        let bob = metabase_scope(
+            root.path(),
+            "bob/work",
+            "METABASE_BASE_URL=https://bob.example\n",
+        );
+        let cache = SkillsDirLoadCache::default();
+        let endpoint = |load: &SkillsDirLoad| {
+            governed_runtime(load, "metabase-mcp").map(|runtime| {
+                crate::magician_v2::mcp_oauth_binding::mcp_oauth_binding(
+                    &runtime.package,
+                    tool_runtime_core::credential_profiles::CredentialScope::new("p", "w")
+                        .unwrap(),
+                    None,
+                    None,
+                    None,
+                )
+                .expect("binding")
+                .endpoint_url
+            })
+        };
+        assert_eq!(
+            endpoint(&cache.load(&alice)).as_deref(),
+            Some("https://alice.example/api/metabase-mcp")
+        );
+        assert_eq!(
+            endpoint(&cache.load(&bob)).as_deref(),
+            Some("https://bob.example/api/metabase-mcp")
+        );
+        assert_eq!(cache.parse_count(&alice), 1);
+        cache.load(&alice);
+        assert_eq!(cache.parse_count(&alice), 1, "unchanged env: cached");
+
+        let env = alice.join("metabase-mcp/config/.env");
+        fs::write(&env, "METABASE_BASE_URL=https://alice-new.example\n").unwrap();
+        assert_eq!(
+            endpoint(&cache.load(&alice)).as_deref(),
+            Some("https://alice-new.example/api/metabase-mcp")
+        );
+        assert_eq!(cache.parse_count(&alice), 2);
+
+        fs::write(&env, "METABASE_BASE_URL=\n").unwrap();
+        let blanked = cache.load(&alice);
+        assert_eq!(endpoint(&blanked), None);
+        assert!(!blanked.loaded_skills.contains(&"metabase-mcp".to_string()));
+        let failure = blanked
+            .failures
+            .iter()
+            .find(|failure| failure.skill == "metabase-mcp")
+            .expect("withdrawal reported");
+        assert!(failure.withdrawn);
+        assert!(failure.reason.contains("METABASE_BASE_URL"), "{}", failure.reason);
+        // The neighbour is untouched.
+        assert_eq!(
+            endpoint(&cache.load(&bob)).as_deref(),
+            Some("https://bob.example/api/metabase-mcp")
+        );
+    }
+
+    /// Connect (Settings -> Service accounts) parses the installed skill
+    /// through the shared resolver; the governed run executes the package
+    /// the scope's capability load built. Both must bind the same vault
+    /// record, or a run never finds the login Connect saved.
+    #[test]
+    fn connect_and_run_bind_the_same_resolved_credential() {
+        use crate::magician_v2::mcp_oauth_binding::{mcp_oauth_binding, mcp_oauth_callback_mode};
+        use crate::magician_v2::skills::scope_env::{parse_runtime_package, ScopeEnvSource};
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let skills = metabase_scope(
+            root.path(),
+            "alice/work",
+            "METABASE_BASE_URL=https://alice.example\n",
+        );
+        let skill = skills.join("metabase-mcp");
+        let scope = tool_runtime_core::credential_profiles::CredentialScope::new("alice", "work")
+            .unwrap();
+
+        let run = governed_runtime(&load_skills_dir_uncached(&skills), "metabase-mcp")
+            .expect("loaded governed MCP package");
+        let run_binding = mcp_oauth_binding(
+            &run.package,
+            scope.clone(),
+            None,
+            None,
+            run.oauth_callback_mode,
+        )
+        .expect("run binding");
+
+        let source = fs::read_to_string(skill.join("SKILL.md")).unwrap();
+        let connect = parse_runtime_package(&source, ScopeEnvSource::Skill(&skill))
+            .expect("resolves")
+            .expect("governed");
+        let connect_binding = mcp_oauth_binding(
+            &connect,
+            scope,
+            None,
+            None,
+            mcp_oauth_callback_mode(&source, &connect).expect("callback policy"),
+        )
+        .expect("connect binding");
+
+        assert_eq!(connect_binding.profile, run_binding.profile);
+        assert_eq!(connect_binding.endpoint_url, run_binding.endpoint_url);
+        assert_eq!(
+            connect_binding.endpoint_url,
+            "https://alice.example/api/metabase-mcp"
+        );
+        assert_eq!(connect_binding.callback_mode, run_binding.callback_mode);
     }
 
     #[test]
@@ -10599,6 +10860,9 @@ mod tests {
             "run_coding_task",
             "apply_code_proposal",
             "run_project_checks",
+            "validate_skill",
+            "test_skill",
+            "install_skill",
             "contribute_to_project",
             "screenshot_preview",
             "capture_reference",
@@ -11092,14 +11356,16 @@ Use the bounded record actions.
         else {
             panic!("Higgsfield must remain a direct primitive CLI");
         };
+        // The snapshot-safe adapter is the entrypoint; it runs the
+        // `higgsfield` companion in place, beside its package files.
         assert_eq!(
             command.as_deref(),
-            Some(["higgsfield".to_owned()].as_slice())
+            Some(["higgsfield-adapter".to_owned()].as_slice())
         );
         assert!(cwd.is_none());
         let runtime = runtime_package.as_ref().expect("governed runtime owner");
         let actions = runtime.cli_actions().expect("CLI action catalog");
-        assert_eq!(actions.execution.executable, "higgsfield");
+        assert_eq!(actions.execution.executable, "higgsfield-adapter");
         assert!(runtime
             .executable_directory
             .as_ref()

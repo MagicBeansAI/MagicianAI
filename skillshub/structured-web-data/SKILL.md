@@ -1,7 +1,7 @@
 ---
 name: structured-web-data
 description: Extract valid public JSON-LD records from a downloaded HTML page without a browser.
-version: 0.2.1
+version: 0.2.3
 metadata:
   magician:
     content_reader:
@@ -48,6 +48,7 @@ metadata:
     requires:
       bins:
       - structured-web-data
+      - python3
     runtime_canary:
       schema_version: tool-runtime.canary.v1
       cost_tier: free
@@ -85,6 +86,8 @@ metadata:
       requires:
         bins:
         - structured-web-data
+        - python3
+        entrypoint: structured-web-data
       runtime:
         protocol: cli
         command_prefix: []
@@ -114,8 +117,9 @@ metadata:
           description: Parse valid JSON-LD records from a local HTML file.
           parameters:
             input_file:
-              type: string
-              description: Local HTML file to inspect
+              type: workspace_path
+              access: read_file
+              description: Read-only path to a local HTML file to inspect
               required: true
               max_length: 4096
             max_chars:

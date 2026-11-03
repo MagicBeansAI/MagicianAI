@@ -9,7 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- 0.3.69: Page chat session detail with `has_more`, bound Today and analytics windows, and expose resurfacing timestamps.
+### 2026-11-02 — 0.3.72
+
+- Resuming a paused run (an answered question, or `continue`) that then delegates saves the Delegation checkpoint and keeps its authority: the answered pause's cleanup no longer deletes or overwrites it, and a continued run that delegates parks instead of failing.
+- `GET /health` reports `tools.ripgrep` (`status` `ok`/`missing`, `source`), whether the `grep` and `glob` tools can search.
+- Saving a skill's env on the Skills page takes effect at once. The write invalidated nothing, so a changed value (a Metabase address, say) was not used until setup ran again; it now invalidates the workspace's capability, skills-folder and pack caches. Connect, status, Service accounts and the catalog resolve a `${NAME}` endpoint from the workspace's skill env; Connect answers 422 naming an unset or invalid variable, and Service accounts still lists a stored account whose contract cannot be read.
+
+### 2026-10-31 — 0.3.71
+
+- A realtime `session.start` with `new_chat: true`, and a voice note with the form field `new_chat=true`, get a chat of their own instead of joining the thread's open chat; a named `chat_session_id` still wins.
+- `/ui-threads/{key}` accepts a thread id, its slug or a former slug. `POST /ui-threads` without an id derives a fresh unique id from the name, instead of renaming the thread that already has that id. `/chat/active`, `/chat/new` and `/chat/sessions` map a slug or former slug passed as `ui_thread_id` to the thread's id.
+
+### 2026-10-31 — 0.3.70
+
+- `POST /agents/{id}/trigger` rejects a `harness:{agent}:` goal that names none of the agent's focus areas, also when it has none left: retired CPO and CTO routines ran without a program from the Team routines sequence.
+- Portable task export (`GET /v3/tasks/{id}/export?format=zip`) writes its archive with zip 9.
+
+### 2026-10-30 — 0.3.69
+
+Page chat session detail with `has_more`, bound Today and analytics windows, and expose resurfacing timestamps.
 
 - Chat session detail (`GET /chat/sessions/{id}` and the active-session reply) returns `has_more`, so clients know when older messages can be paged with `before=`.
 - Chat activity skips nested debug payloads and updates cached whole-turn usage from appended rows.
@@ -17,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Resurfacing cards expose their surfacing timestamp separately from the source reference date.
 
-- 0.3.68: Serve immutable public MCP profiles and expose owner identity claims and owner-only chat commands.
+### 2026-10-27 — 0.3.68
+
+Serve immutable public MCP profiles and expose owner identity claims and owner-only chat commands.
 
 - `POST /auth/browser-signin/bot/project-access` reports a Google Workspace account's Cloud project roles and `.../grant` adds missing ones.
 

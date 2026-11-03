@@ -140,9 +140,15 @@ enum LiveTaskCardRules {
         )]
     }
 
-    /// The card's input from the chat's status model.
-    static func input(for task: TaskStatusModel, messageId: String) -> LiveTaskCardInput {
-        LiveTaskCardInput(
+    /// The card's input from the chat's status model, with the task record's
+    /// created and updated times when the card fetched them.
+    static func input(
+        for task: TaskStatusModel,
+        messageId: String,
+        recordCreatedAt: Date? = nil,
+        recordUpdatedAt: Date? = nil
+    ) -> LiveTaskCardInput {
+        var input = LiveTaskCardInput(
             task: task,
             messageId: messageId,
             storeStatus: task.storeStatus,
@@ -150,6 +156,9 @@ enum LiveTaskCardRules {
             completionKind: task.completionKind,
             runs: runs(for: task, messageId: messageId)
         )
+        input.recordCreatedAt = recordCreatedAt
+        input.recordUpdatedAt = recordUpdatedAt
+        return input
     }
 
     static func dotTone(_ status: LiveTaskStatus) -> StatusDot.Tone {
@@ -241,6 +250,11 @@ struct TaskStoreRecord: Equatable {
     let status: String
     let activeRootExecutionId: String?
     let chatSessionId: String?
+    /// `manifest.created_at` (RFC3339), when present.
+    var createdAt: Date? = nil
+    /// `state.last_progress_at` (the run last advanced), else `state.updated_at`,
+    /// which also moves on heartbeats and other bookkeeping writes.
+    var updatedAt: Date? = nil
 
     static func parse(_ object: [String: Any]) -> TaskStoreRecord? {
         guard let task = object["task"] as? [String: Any] else { return nil }
@@ -252,7 +266,13 @@ struct TaskStoreRecord: Equatable {
             activeRootExecutionId: text(task["active_root_execution_id"])
                 ?? text(state?["active_root_execution_id"]),
             chatSessionId: text(task["chat_session_id"]) ?? text(manifest?["chat_session_id"])
-                ?? text(state?["chat_session_id"]))
+                ?? text(state?["chat_session_id"]),
+            createdAt: date(manifest?["created_at"]) ?? date(task["created_at"]),
+            updatedAt: date(state?["last_progress_at"]) ?? date(state?["updated_at"]) ?? date(task["updated_at"]))
+    }
+
+    private static func date(_ value: Any?) -> Date? {
+        text(value).flatMap(TaskV3.parseISO)
     }
 
     private static func text(_ value: Any?) -> String? {

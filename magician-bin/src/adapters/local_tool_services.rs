@@ -113,6 +113,21 @@ impl LocalToolServices {
                 available_shell_binaries.join(", ")
             }
         );
+        // The `grep` and `glob` tools refuse without ripgrep, so say which
+        // one they will run, and say it loudly when there is none.
+        match runtime_core::process::resolve_ripgrep() {
+            (wanted, runtime_core::process::RipgrepSource::Missing) => tracing::error!(
+                wanted = %wanted.display(),
+                "ripgrep is missing: the grep and glob tools will refuse every call; \
+                 reinstall the package (rg.bin), run `make -C skillshub setup-deps setup-skill-bins`, \
+                 or set MAGICIAN_RG"
+            ),
+            (path, source) => info!(
+                path = %path.display(),
+                source = source.as_str(),
+                "grep and glob run ripgrep"
+            ),
+        }
 
         Ok(Self {
             registry,

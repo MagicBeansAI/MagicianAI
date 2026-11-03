@@ -75,6 +75,7 @@ use crate::magician_v2::vibedev::run_service::VibeDevCodingCatalog;
 use crate::magician_v2::vibedev::trusted_workspace::{
     self, TrustedRunRequest, TrustedRunWorkspace,
 };
+use crate::magician_v2::vibedev::work_location;
 
 const MAX_CODING_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 /// Largest branch diff a trusted turn's result carries (see
@@ -254,8 +255,8 @@ async fn agent_coding_profile(
     }
 }
 
-/// Render the executing agent's persona into a Pi `--append-system-prompt` file so the coding
-/// loop inherits the same identity/taste the agent runs under (P1 persona projection). Mirrors
+/// Render the executing agent's persona into an appended-system-prompt file (every engine gets it;
+/// see `CodingEngineRequest::append_system_prompt`) so the coding loop inherits the same identity/taste the agent runs under (P1 persona projection). Mirrors
 /// [`agent_coding_profile`]'s definition load for `__agent_id`, but uses `definition.persona`
 /// rendered through the shared [`render_prompt_identity_section`] (32k cap + `<agent_identity>`
 /// injection wrapper — so personas stay operator-YAML-sourced, not hardcoded). The file is written
@@ -263,10 +264,11 @@ async fn agent_coding_profile(
 /// extension and keyed by `run_key` (the per-repo shadow key) so concurrent runs against DIFFERENT
 /// repos in the same scope cannot clobber each other's identity file — same-repo runs are already
 /// serialized by the shadow-admission lock, so the file is written-then-read within that critical
-/// section and bounded to one file per repo. Returns the path to pass as `--append-system-prompt`,
-/// or `None` when there's no agent identity / no projectable persona / a load-or-write failure
-/// (→ Pi keeps its built-in coding base prompt). Autonomous controls are OFF: Pi is a coding
-/// executor, so we project the role's persona/taste, not goal-control framing.
+/// section and bounded to one file per repo. Returns the path to push onto
+/// `request.append_system_prompt`, or `None` when there's no agent identity / no projectable
+/// persona / a load-or-write failure (→ the engine keeps its built-in coding base prompt).
+/// Autonomous controls are OFF: the engine is a coding executor, so we project the role's
+/// persona/taste, not goal-control framing.
 async fn write_persona_append_prompt(
     resources: &Arc<AgentResources>,
     principal: &str,
@@ -283,7 +285,7 @@ async fn write_persona_append_prompt(
         .await
     {
         Ok(Some(record)) => record,
-        // No such agent — keep Pi's built-in base prompt (a legitimate no-persona case, silent).
+        // No such agent — keep the engine's built-in base prompt (a legitimate no-persona case, silent).
         Ok(None) => return None,
         // A hard store/IO/parse error differs from an absent agent: log it so an operator can see
         // why the persona was dropped, then still degrade gracefully to no projection.
@@ -292,7 +294,7 @@ async fn write_persona_append_prompt(
                 target: "coding_engine",
                 %error,
                 %agent_id,
-                "could not load agent definition for persona projection; skipping (Pi keeps its base prompt)"
+                "could not load agent definition for persona projection; skipping (the engine keeps its base prompt)"
             );
             return None;
         },
@@ -342,23 +344,58 @@ async fn write_persona_append_prompt(
     Some(path)
 }
 
-/// Frame an active procedure-skill playbook for Pi's appended system prompt. Mirrors the structural
-/// BEGIN/END fence of the agentic decision loop's `## ACTIVE PROCEDURE PLAYBOOK` block, but DROPS its
-/// `deactivate_skill` control instruction — that's a magician-loop tool Pi cannot call, so it would
-/// be noise in Pi's prompt. `body` is the operator-authored SKILL.md text (store/disk, not hardcoded).
-fn render_skill_playbook_section(name: &str, body: &str) -> String {
-    format!("\n## ACTIVE PROCEDURE PLAYBOOK\nThe `{name}` procedure playbook is active for this work — follow its guidance for the relevant steps.\n\n----- BEGIN PLAYBOOK: {name} -----\n{body}\n----- END PLAYBOOK: {name} -----\n")
+/// Frame an active procedure-skill playbook for the coding engine's appended system prompt. Mirrors
+/// the structural BEGIN/END fence of the agentic decision loop's `## ACTIVE PROCEDURE PLAYBOOK`
+/// block, but DROPS its `deactivate_skill` control instruction — that's a magician-loop tool no
+/// coding engine can call, so it would be noise in the engine's prompt. `body` is the
+/// operator-authored SKILL.md text (store/disk, not hardcoded). The engine cannot call
+/// `activate_skill` for the files the body links to either, so `linked` (path, text) pairs follow
+/// the playbook in their own fences.
+fn render_skill_playbook_section(name: &str, body: &str, linked: &[(String, String)]) -> String {
+    let mut section = format!("\n## ACTIVE PROCEDURE PLAYBOOK\nThe `{name}` procedure playbook is active for this work — follow its guidance for the relevant steps.\n\n----- BEGIN PLAYBOOK: {name} -----\n{body}\n----- END PLAYBOOK: {name} -----\n");
+    for (path, text) in linked {
+        section.push_str(&format!(
+            "\n----- BEGIN PLAYBOOK FILE: {name}/{path} -----\n{text}\n----- END PLAYBOOK FILE: {name}/{path} -----\n"
+        ));
+    }
+    section
 }
 
-/// Project the EXECUTING agent's ACTIVE procedure skill (its activated SKILL.md playbook) into Pi as
-/// a `--append-system-prompt` file, layered after the persona (P2). Reads the agent-scope
-/// `active_procedure_skill` memory tier via the read-only [`read_active_procedure_skill_from_tier`]
+/// Most text of linked playbook files projected into the engine's prompt; files past it are named
+/// instead.
+const SKILL_PLAYBOOK_FILES_BUDGET_BYTES: usize = 256 * 1024;
+
+/// The files an active playbook links to, read for the engine's prompt within
+/// [`SKILL_PLAYBOOK_FILES_BUDGET_BYTES`]. A file that does not fit is listed by path only.
+fn read_skill_playbook_files(
+    active: &crate::magician_v2::skills::ActiveProcedureSkill,
+) -> Vec<(String, String)> {
+    let mut used = 0usize;
+    let mut files = Vec::new();
+    for path in active.linked_files() {
+        let Ok(text) =
+            crate::magician_v2::skills::read_skill_file(&active.skill_dir, &active.body, &path)
+        else {
+            continue;
+        };
+        if used + text.len() > SKILL_PLAYBOOK_FILES_BUDGET_BYTES {
+            files.push((path, "(left out: the playbook files budget is used up)".to_string()));
+            continue;
+        }
+        used += text.len();
+        files.push((path, text));
+    }
+    files
+}
+
+/// Project the EXECUTING agent's ACTIVE procedure skill (its activated SKILL.md playbook) into the
+/// coding engine as an appended-system-prompt file, layered after the persona (P2). Reads the
+/// agent-scope `active_procedure_skill` memory tier via the read-only [`read_active_procedure_skill_from_tier`]
 /// (re-resolves the body from SKILL.md; no activation side effects — no ephemeral tools / path
 /// additions / tier writes), then writes the framed playbook to the SAME `pi-extensions` dir keyed by
 /// the per-repo `run_key` as the persona file (same concurrency safety). Returns `None` (no file,
-/// byte-identical argv) when the agent has no active procedure skill — the case for the current coding
-/// roster, so this is dormant until an engineer is granted + activates a procedure skill. Fail-soft on
-/// any resolve/IO error (Pi keeps its base prompt), matching the persona helper.
+/// byte-identical launch) when the agent has no active procedure skill. Fail-soft on any resolve/IO
+/// error (the engine keeps its base prompt), matching the persona helper.
 async fn write_skill_playbook_append_prompt(
     resources: &Arc<AgentResources>,
     principal: &str,
@@ -389,7 +426,8 @@ async fn write_skill_playbook_append_prompt(
         &skills_dir,
     )
     .await?;
-    let section = render_skill_playbook_section(&active.name, &active.body);
+    let linked = read_skill_playbook_files(&active);
+    let section = render_skill_playbook_section(&active.name, &active.body, &linked);
     if section.trim().is_empty() {
         return None;
     }
@@ -514,6 +552,18 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     let explicit_profile_arg =
         optional_string(&args, "coding_profile").or_else(|| optional_string(&args, "profile"));
     let profile_is_agent_default = explicit_profile_arg.is_none();
+    // The model picked the engine (a profile or a binary override): a setup
+    // failure of that choice is the model's to change (`classify_setup_failure`).
+    let model_chose_engine = !profile_is_agent_default
+        || [
+            "pi_binary",
+            "codex_binary",
+            "grok_binary",
+            "claude_binary",
+            "agy_binary",
+        ]
+        .iter()
+        .any(|key| args.get(*key).is_some_and(|value| !value.is_null()));
     let selected_profile_arg = match explicit_profile_arg {
         explicit @ Some(_) => explicit,
         None => agent_coding_profile(&resources, &principal, &workspace, &args).await,
@@ -590,13 +640,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         .artifact_workspace
         .capability_home_root(&principal, &workspace);
     if let Err(error) = std::fs::create_dir_all(&workspace_root) {
-        return Ok(json!({
+        return Ok(with_fault_class(json!({
             "status": "error",
             "reason": format!(
                 "Could not create scoped workspace root `{}`: {error}",
                 workspace_root.display()
             ),
-        }));
+            "engine": engine_label,
+            "stage": "workspace_root",
+        })));
     }
     let continuation =
         derive_coding_continuation_context(resources.as_ref(), &principal, &workspace, &args).await;
@@ -615,9 +667,68 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             .as_ref()
             .map(|context| context.current_is_plan)
             .unwrap_or(false);
+    // The task's project, from server records only: its `VibeDev project:`
+    // line, else its work-location binding.
+    let task_id_arg = scope_arg_str(&args, "__task_id").filter(|id| !id.is_empty());
+    let model_repo_path =
+        optional_string(&args, "repo_path").or_else(|| optional_string(&args, "project_repo_path"));
+    let (mut task_project, mut project_from_binding) = match coding_task_project(
+        resources.as_ref(),
+        &principal,
+        &workspace,
+        &scope_root,
+        continuation.as_ref(),
+        task_id_arg.as_deref(),
+    )
+    .await
+    {
+        Some((project, from_binding)) => (Some(project), from_binding),
+        None => (None, false),
+    };
+    // A task with no project that aims at a folder outside Magician's
+    // workspace works there only under a project's rules
+    // (`vibedev::work_location`): the live project that owns the folder, or
+    // the one the owner's answer to "where should Magician work?" creates.
+    // Asked once per task; the binding answers every later call and hop.
+    if task_project.is_none() {
+        match work_location_gate(
+            &scope_root,
+            &workspace_root,
+            task_id_arg.as_deref(),
+            model_repo_path.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(project)) => {
+                task_project = Some(project);
+                project_from_binding = true;
+            },
+            Ok(None) => {},
+            Err(WorkLocationGateStop::Ask { folder }) => {
+                return Err(ExecutionError::WorkLocationRequired { folder });
+            },
+            Err(WorkLocationGateStop::Refused(reason)) => {
+                return Ok(json!({
+                    "status": "error",
+                    "reason": reason,
+                    "engine": engine_label,
+                    "stage": "work_location",
+                }));
+            },
+            Err(WorkLocationGateStop::BindFailed(reason)) => {
+                return Ok(with_fault_class(json!({
+                    "status": "error",
+                    "reason": reason,
+                    "engine": engine_label,
+                    "stage": "work_location_binding",
+                })));
+            },
+        }
+    }
     // Trusted repo mode (docs/archive/plans/2026-10-07-vibedev-trusted-repo-mode.md §4.3):
     // decided from the server's own records — the task's fenced `VibeDev project:`
-    // line and the project store — never from the model's `repo_path` argument.
+    // line (or work-location binding) and the project store — never from the
+    // model's `repo_path` argument.
     // The chain then works in its own clone, which is what gets bound below; the
     // owner's repo is only ever the clone's source.
     let (trusted_run, trusted_fallback, original_run) = match resolve_trusted_run_workspace(
@@ -627,18 +738,19 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         &scope_root,
         &workspace_root,
         continuation.as_ref(),
+        task_id_arg.as_deref(),
         plan_only,
     )
     .await
     {
         Ok(run) => run,
         Err(reason) => {
-            return Ok(json!({
+            return Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": reason,
                 "engine": engine_label,
                 "stage": "trusted_workspace",
-            }));
+            })));
         },
     };
     let requested_repo_path = if let Some(run) = &original_run {
@@ -646,8 +758,27 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     } else {
         match trusted_run.as_ref() {
             Some(run) => Some(run.workspace_dir.display().to_string()),
-            None => optional_string(&args, "repo_path")
-                .or_else(|| optional_string(&args, "project_repo_path")),
+            // A bound task works in its project's folder: the model's
+            // `repo_path` only picks a folder inside it.
+            None => match task_project.as_ref().filter(|_| project_from_binding) {
+                Some(project) => match bound_project_repo_request(
+                    project,
+                    &scope_root,
+                    &workspace_root,
+                    model_repo_path.clone(),
+                ) {
+                    Ok(path) => Some(path),
+                    Err(reason) => {
+                        return Ok(json!({
+                            "status": "error",
+                            "reason": reason,
+                            "engine": engine_label,
+                            "stage": "work_location",
+                        }));
+                    },
+                },
+                None => model_repo_path.clone(),
+            },
         }
     };
     let repo_binding =
@@ -662,6 +793,21 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 }));
             },
         };
+    // The fence shell and file writes use: Magician's own source tree is
+    // worked on only under a project that owns it.
+    if let Some(reason) = live_repo_refusal(
+        &repo_binding.real_path,
+        crate::magician_v2::execution::coding_engine::live_repo_source_fence(),
+        task_project.as_ref(),
+        &workspace_root,
+    ) {
+        return Ok(json!({
+            "status": "error",
+            "reason": format!("repo_path `{}`: {reason}", repo_binding.repo_path),
+            "engine": engine_label,
+            "stage": "resolve_repo_path",
+        }));
+    }
 
     let shadow_workspace_id = shadow_workspace_id(&args);
     // Durable per-run coding-event log: only when the run has a task+execution
@@ -723,10 +869,20 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 coding_ledger_target = Some((execution_dir, entry.invocation_id));
             },
             Err(error) => {
-                return Ok(json!({
+                use crate::magician_v2::execution::coding_engine::ledger::LedgerStoreError;
+                // The journal's own disk is Magician's; a refused admission
+                // (the per-execution invocation cap, a changed constraint)
+                // is the model's to act on.
+                let stage = match error {
+                    LedgerStoreError::Io(_) | LedgerStoreError::Parse(_) => "invocation_journal",
+                    LedgerStoreError::Selection(_) => "invocation_admission",
+                };
+                return Ok(with_fault_class(json!({
                     "status": "error",
                     "reason": format!("could not journal the coding invocation: {error}"),
-                }));
+                    "engine": engine_label,
+                    "stage": stage,
+                })));
             },
         }
     }
@@ -845,13 +1001,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             .parent()
             .unwrap_or_else(|| scope_root.as_path()),
     ) {
-        return Ok(json!({
+        return Ok(with_fault_class(json!({
             "status": "error",
             "reason": format!(
                 "Could not create coding shadow root parent for `{}`: {error}",
                 shadow_workspace_root.display()
             ),
-        }));
+            "engine": engine_label,
+            "stage": "shadow_root_parent",
+        })));
     }
     if trusted_run.is_some() || original_run.is_some() {
         // Nothing to sync: the clone carries the chain's own history.
@@ -871,14 +1029,16 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 "shadow_workspace_root": shadow_workspace_root.display().to_string(),
             }),
         );
-        return Ok(json!({
+        return Ok(with_fault_class(json!({
             "status": "error",
             "reason": format!(
                 "Could not sync Pi shadow workspace `{}` from repo `{}`: {error:#}",
                 shadow_workspace_root.display(),
                 repo_binding.real_path.display()
             ),
-        }));
+            "engine": engine_label,
+            "stage": "prepare_shadow_workspace",
+        })));
     }
     let shadow_working_dir = shadow_workspace_root.clone();
     if !shadow_working_dir.is_dir() {
@@ -892,7 +1052,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 "shadow_working_dir": shadow_working_dir.display().to_string(),
             }),
         );
-        return Ok(json!({
+        return Ok(with_fault_class(json!({
             "status": "error",
             "reason": format!(
                 "Pi shadow working directory `{}` does not exist for repo_path `{}`",
@@ -901,7 +1061,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             ),
             "engine": engine_label,
             "stage": "resolve_shadow_working_dir",
-        }));
+        })));
     }
 
     // `materialized_attachments` = NON-image files copied into the shadow for
@@ -1239,12 +1399,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                     "api_key_env": coding_profile.api_key_env,
                 }),
             );
-            return Ok(json!({
+            return Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": error,
                 "engine": engine_label,
                 "stage": "credential_preflight",
-            }));
+                "coding_profile": coding_profile.id,
+                "api_key_env": coding_profile.api_key_env,
+                "model_chose_profile": model_chose_engine,
+            })));
         },
     };
     let coding_settings =
@@ -1258,14 +1421,6 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     // inside its shadow or clone. The project adds its own toolchain caches
     // (`project_checks::resolve_build_env`); the turn holds them in use so a
     // concurrent prune never empties one under it.
-    let task_project = coding_task_project(
-        resources.as_ref(),
-        &principal,
-        &workspace,
-        &scope_root,
-        continuation.as_ref(),
-    )
-    .await;
     let project_caches = task_project
         .as_ref()
         .map(|project| project.build_caches.clone())
@@ -1343,12 +1498,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                     "error": error,
                 }),
             );
-            return Ok(json!({
+            return Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": error,
                 "engine": engine_label,
                 "stage": "build_dir",
-            }));
+            })));
         },
     }
     // A trusted clone loads the repo's own CLI config (plan P5, owner decision
@@ -1512,11 +1667,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             request.prompt.push_str(&format!("\n\nORIGINAL PROJECT FOLDER: {}. This is the owner's current checkout, including uncommitted work. Do not commit, stash, reset, change branches, clone, or copy the repository. Native writes are blocked by the OS. To create, modify or delete files, call `python3 '{}'` with JSON on stdin: {{\"rationale\":\"why\",\"files\":[{{\"path\":\"relative/path\",\"before\":\"full current text\",\"after\":\"full replacement text\"}}]}}. Use null before for a new file; null after to delete. The approval service shows the exact diff and waits for owner approval before applying it. Never circumvent this gate. Read the file again if its preimage is stale. Set the shell timeout to at least 360 seconds and wait for the helper result before proposing another edit. Report denied edits honestly. Run read-only checks here; do not request a staged proposal or merge.\n", run.repo.display(), helper.display()));
         }
     }
-    // P1 — project the executing agent's persona into Pi via `--append-system-prompt` so the
-    // coding loop inherits the same identity/taste the agent runs under. The file is written
-    // OUTSIDE the shadow tree (never enters the proposal diff), like the Citizen extension, and
-    // keyed by the per-repo shadow key so concurrent different-repo runs can't clobber it.
-    // Skipped silently when there's no agent identity / no projectable persona.
+    // P1 — project the executing agent's persona into the coding engine (every engine: see
+    // `CodingEngineRequest::append_system_prompt`) so the coding loop inherits the same
+    // identity/taste the agent runs under. The file is written OUTSIDE the shadow tree (never
+    // enters the proposal diff), like the Citizen extension, and keyed by the per-repo shadow key
+    // so concurrent different-repo runs can't clobber it. Skipped silently when there's no agent
+    // identity / no projectable persona.
     let persona_run_key = crate::magician_v2::execution::coding_engine::persistent_shadow_key(
         &repo_binding.real_path,
     );
@@ -1530,12 +1686,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     )
     .await
     {
-        request.pi.append_system_prompt.push(persona_path);
+        request.append_system_prompt.push(persona_path);
     }
-    // P2 — project the executing agent's ACTIVE procedure skill (its SKILL.md playbook) into Pi as a
-    // second append file, layered AFTER the persona. Reuses the same per-repo key + dir. Returns None
-    // (no file, byte-identical argv) when the agent has no active procedure skill — the case for the
-    // current coding roster, so this is dormant until an engineer is granted + activates one.
+    // P2 — project the executing agent's ACTIVE procedure skill (its SKILL.md playbook and the files
+    // it links to) into the coding engine as a second append file, layered AFTER the persona.
+    // Reuses the same per-repo key + dir. Returns None (no file, byte-identical launch) when the
+    // agent has no active procedure skill.
     if let Some(playbook_path) = write_skill_playbook_append_prompt(
         &resources,
         &principal,
@@ -1546,7 +1702,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     )
     .await
     {
-        request.pi.append_system_prompt.push(playbook_path);
+        request.append_system_prompt.push(playbook_path);
     }
 
     let stream_emitter = event_emitter.clone();
@@ -1900,13 +2056,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             session_dir = session_dir.join(name);
         }
         if let Err(error) = std::fs::create_dir_all(&session_dir) {
-            return Ok(json!({
+            return Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": format!(
                     "Could not create Pi session directory `{}`: {error}",
                     session_dir.display()
                 ),
-            }));
+                "engine": engine_label,
+                "stage": "pi_session_dir",
+            })));
         }
         request.pi.session_dir = Some(session_dir);
         // A chained turn (a parent task exists) cold-rehydrates Pi's prior
@@ -2138,23 +2296,25 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         match adapter_spec_for_engine(engine, &args, &magician_config.coding, harness_fence) {
             Ok(spec) => spec,
             Err(reason) => {
-                return Ok(json!({
+                return Ok(with_fault_class(json!({
                     "status": "error",
                     "reason": reason,
                     "engine": engine_label,
                     "stage": "adapter_factory",
-                }));
+                    "model_chose_profile": model_chose_engine,
+                })));
             },
         },
     ) {
         Ok(adapter) => adapter,
         Err(error) => {
-            return Ok(json!({
+            return Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": error.to_string(),
                 "engine": crate::magician_v2::execution::coding_engine::selection::engine_str(engine),
                 "stage": "adapter_factory",
-            }));
+                "model_chose_profile": model_chose_engine,
+            })));
         },
     };
     // An engine started with no fence also stops when super god mode ends.
@@ -2961,12 +3121,13 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                     "budget_stop": budget_stop,
                 }),
             );
-            Ok(json!({
+            Ok(with_fault_class(json!({
                 "status": "error",
                 "reason": match termination.as_ref() {
                     Some(reason) => format!("Pi coding task stopped: {}", reason.describe()),
                     None => format!("Pi coding task failed: {error:#}"),
                 },
+                "stage": "run_turn",
                 "engine": engine_label,
                 "termination": termination,
                 "budget_stop": budget_stop,
@@ -2975,7 +3136,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
                 "shadow_workspace_root": shadow_workspace_root.display().to_string(),
                 "shadow_working_dir": shadow_working_dir.display().to_string(),
                 "repo_path": repo_binding.repo_path,
-            }))
+            })))
         },
     }
 }
@@ -4005,15 +4166,14 @@ async fn sandbox_write_blocked(
     }))
 }
 
-/// The VibeDev project a coding turn belongs to, from the task's fenced
-/// `VibeDev project:` line and the project store — server records only.
-async fn coding_task_project(
+/// The task's `VibeDev project:` line, when the turn is on a VibeDev chain
+/// whose task carries one. `None`: no chain, no task record, or no line.
+async fn coding_task_project_line(
     resources: &AgentResources,
     principal: &str,
     workspace: &str,
-    scope_root: &Path,
     continuation: Option<&CodingContinuationContext>,
-) -> Option<crate::magician_v2::vibedev::projects::VibeDevProjectRecord> {
+) -> Option<String> {
     let context = continuation?;
     let service = resources.artifact_v2_service.as_ref()?;
     let scope = ScopeRef::system_internal_unauthenticated(principal, workspace);
@@ -4021,10 +4181,298 @@ async fn coding_task_project(
         .get_task(&scope, &context.current_task_id)
         .await
         .ok()?;
-    let project_id = parse_vibedev_project_id(&task.manifest.description)?;
-    read_vibedev_projects(scope_root)
-        .into_iter()
-        .find(|project| project.project_id == project_id && !project.archived)
+    parse_vibedev_project_id(&task.manifest.description)
+}
+
+/// The VibeDev project a coding turn belongs to — server records only — and
+/// whether it came from the task's work-location binding. The task's fenced
+/// `VibeDev project:` line and the project store decide when the line is
+/// there; otherwise the task's own binding (`vibedev::work_location`), keyed
+/// on `task_id`, which every delegated hop of the task shares.
+async fn coding_task_project(
+    resources: &AgentResources,
+    principal: &str,
+    workspace: &str,
+    scope_root: &Path,
+    continuation: Option<&CodingContinuationContext>,
+    task_id: Option<&str>,
+) -> Option<(crate::magician_v2::vibedev::projects::VibeDevProjectRecord, bool)> {
+    if let Some(project_id) =
+        coding_task_project_line(resources, principal, workspace, continuation).await
+    {
+        return read_vibedev_projects(scope_root)
+            .into_iter()
+            .find(|project| project.project_id == project_id && !project.archived)
+            .map(|project| (project, false));
+    }
+    work_location::project_bound_to_task(scope_root, task_id?).map(|project| (project, true))
+}
+
+/// The canonical folder a coding turn's `repo_path` names when it lies
+/// outside the scope (its capability home and the rest of Magician's scope
+/// storage); `None` for a folder inside it, no folder, or one that does not
+/// resolve (the repo binding reports that).
+fn outside_workspace_folder(
+    scope_root: &Path,
+    workspace_root: &Path,
+    requested: Option<&str>,
+) -> Option<PathBuf> {
+    let requested = requested.map(str::trim).filter(|path| !path.is_empty())?;
+    let binding = resolve_coding_repo_binding(workspace_root, Some(requested)).ok()?;
+    let scope = scope_root.canonicalize().ok()?;
+    (!binding.real_path.starts_with(&scope)).then_some(binding.real_path)
+}
+
+/// Why a project-less turn on an outside folder does not run yet.
+#[derive(Debug, PartialEq, Eq)]
+enum WorkLocationGateStop {
+    /// No project owns the folder: the owner is asked where to work on it.
+    Ask { folder: String },
+    /// The model's answer to fix: the folder is too broad to be a project
+    /// (the home folder or above), or the task belongs to another project.
+    Refused(String),
+    /// A project owns it, but the binding could not be written.
+    BindFailed(String),
+}
+
+/// The work-location gate for a task that has no project: `Ok(None)` when
+/// the turn's folder is inside the scope (or there is no task to bind),
+/// `Ok(Some(project))` once the task is bound to the live project that owns
+/// the outside folder, else why the turn stops.
+async fn work_location_gate(
+    scope_root: &Path,
+    workspace_root: &Path,
+    task_id: Option<&str>,
+    model_repo_path: Option<&str>,
+) -> Result<
+    Option<crate::magician_v2::vibedev::projects::VibeDevProjectRecord>,
+    WorkLocationGateStop,
+> {
+    let (Some(task_id), Some(outside)) = (
+        task_id,
+        outside_workspace_folder(scope_root, workspace_root, model_repo_path),
+    ) else {
+        return Ok(None);
+    };
+    let Some(project) = work_location::live_project_owning(scope_root, workspace_root, &outside)
+    else {
+        let Some(folder) = work_location::work_location_folder(&outside) else {
+            return Err(WorkLocationGateStop::Refused(format!(
+                "repo_path `{}` is your home folder or a folder above it, which is too broad to \
+                 work on as one project. Pass the project's own folder.",
+                outside.display()
+            )));
+        };
+        return Err(WorkLocationGateStop::Ask {
+            folder: folder.display().to_string(),
+        });
+    };
+    match work_location::bind_task_to_project(scope_root, workspace_root, &project, task_id).await
+    {
+        Ok(project) => Ok(Some(project)),
+        Err(work_location::BindError::BelongsElsewhere(message)) => {
+            Err(WorkLocationGateStop::Refused(message))
+        },
+        Err(work_location::BindError::Store(error)) => Err(WorkLocationGateStop::BindFailed(
+            format!("Could not bind this task to project “{}”: {error}", project.name),
+        )),
+    }
+}
+
+/// The `repo_path` a turn of a task bound to `project` works in: the model's
+/// own when it names a folder inside the project's folder, the project's
+/// folder when it names none or one inside the scope, and a refusal naming
+/// the task's project when it names another folder outside the scope.
+fn bound_project_repo_request(
+    project: &crate::magician_v2::vibedev::projects::VibeDevProjectRecord,
+    scope_root: &Path,
+    workspace_root: &Path,
+    model_repo_path: Option<String>,
+) -> Result<String, String> {
+    let named = model_repo_path
+        .as_deref()
+        .and_then(|path| resolve_coding_repo_binding(workspace_root, Some(path)).ok());
+    if let Some(binding) = named.as_ref() {
+        if work_location::project_owns(project, workspace_root, &binding.real_path) {
+            return Ok(model_repo_path.unwrap_or_default());
+        }
+        let inside_scope = scope_root
+            .canonicalize()
+            .is_ok_and(|scope| binding.real_path.starts_with(scope));
+        if !inside_scope {
+            return Err(work_location::belongs_elsewhere_refusal(
+                project,
+                workspace_root,
+                &binding.real_path,
+            ));
+        }
+    }
+    Ok(
+        trusted_workspace::project_repo_folder(project.repo_path.as_deref(), workspace_root)
+            .display()
+            .to_string(),
+    )
+}
+
+/// Why a turn may not bind `real_path`: it is inside Magician's own source
+/// tree (`fence`, the process-wide `live_repo_source_fence` the shell and
+/// file tools use) and the task's project does not own it. `None` when the
+/// turn may proceed.
+fn live_repo_refusal(
+    real_path: &Path,
+    fence: Option<(PathBuf, PathBuf)>,
+    project: Option<&crate::magician_v2::vibedev::projects::VibeDevProjectRecord>,
+    workspace_root: &Path,
+) -> Option<String> {
+    let (repo_source_root, sandbox_base) = fence?;
+    if project.is_some_and(|project| work_location::project_owns(project, workspace_root, real_path))
+    {
+        return None;
+    }
+    crate::magician_v2::execution::coding_engine::reject_repo_source_tree(
+        real_path,
+        &repo_source_root,
+        &sandbox_base,
+    )
+    .err()
+}
+
+/// Who can fix a coding turn that failed in its setup or while starting its
+/// engine.
+#[derive(Debug, PartialEq, Eq)]
+enum SetupFault {
+    /// The model (its arguments, the review it must wait on) or the owner's
+    /// budget: the result goes back to the model as usual.
+    Task,
+    /// The coding profile or engine binary the model chose cannot run here:
+    /// the model's to change, so it is told to pick another.
+    ProfileChoice,
+    /// Magician's own setup: its folders, the engine install, the adapter,
+    /// a missing credential. The loop ends the run and the owner sees `fix`.
+    Platform { fix: Option<String> },
+    /// The project's repository cannot host the run (a trusted clone or its
+    /// git state): the run ends and `fix` is what the owner does in the repo.
+    Project { fix: String },
+}
+
+const PI_SETUP_FIX: &str =
+    "Run `make setup-pi-coding-agent` to install the Pi coding agent version Magician needs.";
+
+const PROJECT_REPO_FIX: &str = "Open the project's folder: it must be the root of a git \
+                                repository and its base branch must exist (VibeDev project \
+                                settings show what is wrong). Fix that, then ask again.";
+
+const PICK_ANOTHER_PROFILE: &str =
+    " Pick another `coding_profile` (or leave it out to use the default) and try again.";
+
+/// The engine itself cannot start: the Pi version gate, its version probe or
+/// version output, or a binary that is not installed. Platform whoever chose
+/// the engine.
+fn engine_cannot_start(reason: &str) -> bool {
+    reason.contains("unsupported Pi coding agent version")
+        || reason.contains("Pi version probe")
+        || reason.contains("could not parse Pi version")
+        || (reason.contains("spawn ")
+            && (reason.contains("No such file or directory") || reason.contains("os error 2")))
+}
+
+/// The one table of which setup failures are platform faults. `stage` is the
+/// result's `stage`, `reason` its text, `payload` the whole result (the
+/// credential fix names its key and profile from it, and
+/// `model_chose_profile` says the model picked the engine).
+fn classify_setup_failure(stage: &str, reason: &str, payload: &Value) -> SetupFault {
+    let field = |key: &str| payload.get(key).and_then(Value::as_str);
+    let model_chose = payload.get("model_chose_profile").and_then(Value::as_bool) == Some(true);
+    let pi_fix = || {
+        (field("engine") == Some("pi") || reason.contains("Pi ")).then(|| PI_SETUP_FIX.to_string())
+    };
+    match stage {
+        "workspace_root"
+        | "invocation_journal"
+        | "shadow_root_parent"
+        | "prepare_shadow_workspace"
+        | "resolve_shadow_working_dir"
+        | "pi_session_dir"
+        | "build_dir"
+        | "work_location_binding" => SetupFault::Platform { fix: None },
+        // The OS sandbox and the location records are Magician's; a clone
+        // that fails is about the owner's repository.
+        "trusted_workspace"
+            if reason.contains("OS sandbox")
+                || reason.contains("was not pinned")
+                || reason.contains("recorded for this run")
+                || reason.contains("trusted workspace task failed") =>
+        {
+            SetupFault::Platform { fix: None }
+        },
+        "trusted_workspace" => SetupFault::Project {
+            fix: PROJECT_REPO_FIX.to_string(),
+        },
+        "credential_preflight" | "adapter_factory" | "run_turn" if engine_cannot_start(reason) => {
+            SetupFault::Platform { fix: pi_fix() }
+        },
+        "credential_preflight" | "adapter_factory" if model_chose => SetupFault::ProfileChoice,
+        "credential_preflight" => SetupFault::Platform {
+            fix: Some(match (field("api_key_env"), field("coding_profile")) {
+                (Some(key), Some(profile)) => format!(
+                    "Set `{key}` for coding profile `{profile}` in Magician's runtime \
+                     environment, or provision a secret named `{key}`."
+                ),
+                (Some(key), None) => format!(
+                    "Set `{key}` in Magician's runtime environment, or provision a secret \
+                     named `{key}`."
+                ),
+                _ => "Add the credential the coding profile names to Magician's runtime \
+                      environment."
+                    .to_string(),
+            }),
+        },
+        "adapter_factory" => SetupFault::Platform { fix: pi_fix() },
+        _ => SetupFault::Task,
+    }
+}
+
+/// `payload` (a failed turn's result) classified by
+/// [`classify_setup_failure`]: a platform fault gains `"fault": "platform"`
+/// and its `"fix"` (a project one also `"fault_scope": "project"`), and the
+/// agentic loop ends the run on it (`agentic::platform_fault`); the model's
+/// own profile choice gets a reason that says to pick another; anything else
+/// is unchanged.
+fn with_fault_class(mut payload: Value) -> Value {
+    let stage = payload
+        .get("stage")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let reason = payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let fault = classify_setup_failure(&stage, &reason, &payload);
+    if let Some(object) = payload.as_object_mut() {
+        match fault {
+            SetupFault::Task => {},
+            SetupFault::ProfileChoice => {
+                object.insert(
+                    "reason".to_string(),
+                    json!(format!("{}{PICK_ANOTHER_PROFILE}", reason.trim_end())),
+                );
+            },
+            SetupFault::Platform { fix } => {
+                object.insert("fault".to_string(), json!("platform"));
+                if let Some(fix) = fix {
+                    object.insert("fix".to_string(), json!(fix));
+                }
+            },
+            SetupFault::Project { fix } => {
+                object.insert("fault".to_string(), json!("platform"));
+                object.insert("fault_scope".to_string(), json!("project"));
+                object.insert("fix".to_string(), json!(fix));
+            },
+        }
+    }
+    payload
 }
 
 /// Is this turn part of a trusted chain, and if so, its workspace.
@@ -4039,6 +4487,7 @@ async fn coding_task_project(
 /// copy (its folder is not a repository root, or there is no git), as decided by
 /// `trusted_workspace::effective_trust_mode`. A plan (Discuss) run never
 /// starts a clone: it only reads, so the shadow copy serves.
+#[allow(clippy::too_many_arguments)]
 async fn resolve_trusted_run_workspace(
     resources: &AgentResources,
     principal: &str,
@@ -4046,6 +4495,7 @@ async fn resolve_trusted_run_workspace(
     scope_root: &Path,
     workspace_root: &Path,
     continuation: Option<&CodingContinuationContext>,
+    task_id: Option<&str>,
     plan_only: bool,
 ) -> Result<
     (
@@ -4055,37 +4505,46 @@ async fn resolve_trusted_run_workspace(
     ),
     String,
 > {
-    let Some(context) = continuation else {
-        return Ok((None, None, None));
-    };
-    let Some(service) = resources.artifact_v2_service.as_ref() else {
-        return Ok((None, None, None));
-    };
-    let scope =
-        ScopeRef::system_internal_unauthenticated(&principal.to_string(), &workspace.to_string());
-    let Ok(task) = service.get_task(&scope, &context.current_task_id).await else {
-        return Ok((None, None, None));
-    };
-    let Some(project_id) = parse_vibedev_project_id(&task.manifest.description) else {
-        return Ok((None, None, None));
-    };
-    let Some(mut project) = read_vibedev_projects(scope_root)
-        .into_iter()
-        .find(|project| project.project_id == project_id && !project.archived)
-    else {
-        return Ok((None, None, None));
+    // The project and the run its location is keyed on: a VibeDev chain's
+    // root, from the task's `VibeDev project:` line, else the task itself
+    // under its work-location binding (a binding is per task, depth 0).
+    let line_project_id =
+        coding_task_project_line(resources, principal, workspace, continuation).await;
+    let (mut project, root_task_id, chain_depth) = match (line_project_id, continuation) {
+        (Some(project_id), Some(context)) => {
+            let Some(project) = read_vibedev_projects(scope_root)
+                .into_iter()
+                .find(|project| project.project_id == project_id && !project.archived)
+            else {
+                return Ok((None, None, None));
+            };
+            (project, context.root_task_id.clone(), context.chain_depth)
+        },
+        _ => {
+            let Some(task_id) = continuation
+                .map(|context| context.current_task_id.as_str())
+                .or(task_id)
+                .filter(|id| !id.is_empty())
+            else {
+                return Ok((None, None, None));
+            };
+            let Some(project) = work_location::project_bound_to_task(scope_root, task_id) else {
+                return Ok((None, None, None));
+            };
+            (project, task_id.to_string(), 0)
+        },
     };
     let location = project
         .run_links
-        .get(&context.root_task_id)
+        .get(&root_task_id)
         .and_then(|link| link.work_location.clone());
     if let Some(location) = &location {
         project.trust = location.mode;
         project.repo_path = location.repo_path.clone();
     }
-    let existing = trusted_workspace::load_run_workspace(scope_root, &context.root_task_id);
+    let existing = trusted_workspace::load_run_workspace(scope_root, &root_task_id);
     use crate::magician_v2::vibedev::{original_workspace, projects::VibeDevProjectTrust};
-    let original = original_workspace::load(scope_root, &context.root_task_id)?;
+    let original = original_workspace::load(scope_root, &root_task_id)?;
     if original.is_some()
         || (existing.is_none()
             && location.is_some()
@@ -4095,7 +4554,7 @@ async fn resolve_trusted_run_workspace(
             trusted_workspace::project_repo_folder(project.repo_path.as_deref(), workspace_root);
         let run = original_workspace::ensure(
             scope_root,
-            &context.root_task_id,
+            &root_task_id,
             &project.project_id,
             &repo,
         )?;
@@ -4120,7 +4579,7 @@ async fn resolve_trusted_run_workspace(
         if location.is_some() {
             0
         } else {
-            context.chain_depth
+            chain_depth
         },
         plan_only,
     );
@@ -4138,7 +4597,6 @@ async fn resolve_trusted_run_workspace(
         trusted_workspace::project_repo_folder(project.repo_path.as_deref(), workspace_root);
     sweep_trusted_run_workspaces_occasionally(scope_root);
     let scope_root = scope_root.to_path_buf();
-    let root_task_id = context.root_task_id.clone();
     tokio::task::spawn_blocking(move || {
         trusted_workspace::ensure_run_workspace(&TrustedRunRequest {
             scope_root: &scope_root,
@@ -7676,5 +8134,352 @@ mod tests {
         assert!(prompt.contains("latest_code_change={\"proposal_id\":\"ccp-1\""));
         assert!(prompt.contains("\"terminal_success\":true"));
         assert!(prompt.contains("\"review_open\":false"));
+    }
+
+    /// A scope root with its capability home, and a folder outside it.
+    fn work_location_scope() -> (TempDir, PathBuf, PathBuf, PathBuf) {
+        let temp = TempDir::new().expect("tempdir");
+        let scope_root = temp.path().join("scope");
+        let home = scope_root.join("workdirs/home");
+        std::fs::create_dir_all(home.join("inside")).expect("home");
+        let outside = temp.path().join("repo");
+        std::fs::create_dir_all(outside.join(".git")).expect("git");
+        std::fs::create_dir_all(outside.join("skills")).expect("skills");
+        (temp, scope_root, home, outside)
+    }
+
+    #[tokio::test]
+    async fn an_outside_folder_no_project_owns_asks_where_to_work() {
+        let (_temp, scope_root, home, outside) = work_location_scope();
+        let skills = outside.join("skills").display().to_string();
+        let asked = work_location_gate(&scope_root, &home, Some("task-1"), Some(&skills)).await;
+        assert_eq!(
+            asked.err(),
+            Some(WorkLocationGateStop::Ask {
+                // The question is about the repository, not the subfolder.
+                folder: outside.canonicalize().unwrap().display().to_string(),
+            })
+        );
+        // Nothing was bound by asking.
+        assert!(work_location::project_bound_to_task(&scope_root, "task-1").is_none());
+        // Inside the scope, or with no task to bind, nothing is asked.
+        assert_eq!(
+            work_location_gate(&scope_root, &home, Some("task-1"), Some("inside"))
+                .await
+                .map(|project| project.is_some()),
+            Ok(false)
+        );
+        assert_eq!(
+            work_location_gate(&scope_root, &home, None, Some(&skills))
+                .await
+                .map(|project| project.is_some()),
+            Ok(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_outside_folder_a_project_owns_binds_the_task_and_is_not_asked_again() {
+        let (_temp, scope_root, home, outside) = work_location_scope();
+        let project = work_location::bind_task_to_folder(
+            &scope_root,
+            &home,
+            &outside,
+            crate::magician_v2::vibedev::projects::VibeDevProjectTrust::Trusted,
+            "task-owner-answered",
+        )
+        .await
+        .expect("owner's answer");
+        let skills = outside.join("skills").display().to_string();
+        let bound = work_location_gate(&scope_root, &home, Some("task-2"), Some(&skills))
+            .await
+            .expect("bound, not asked")
+            .expect("the owning project");
+        assert_eq!(bound.project_id, project.project_id);
+        // The binding is the task's own record: the next call (on any hop of
+        // the task) finds a project and never reaches the gate.
+        let found = work_location::project_bound_to_task(&scope_root, "task-2").expect("binding");
+        assert_eq!(found.project_id, project.project_id);
+        assert_eq!(
+            found.run_links["task-2"]
+                .work_location
+                .as_ref()
+                .map(|location| location.mode),
+            Some(crate::magician_v2::vibedev::projects::VibeDevProjectTrust::Trusted)
+        );
+        // A bound turn works in its project's folder: a folder inside the
+        // project is kept, none or one inside the scope means the project's
+        // folder, and another outside folder is refused naming the project.
+        assert_eq!(
+            bound_project_repo_request(&found, &scope_root, &home, Some(skills.clone())),
+            Ok(skills)
+        );
+        assert_eq!(
+            bound_project_repo_request(&found, &scope_root, &home, Some("inside".to_string())),
+            Ok(outside.canonicalize().unwrap().display().to_string())
+        );
+        assert_eq!(
+            bound_project_repo_request(&found, &scope_root, &home, None),
+            Ok(outside.canonicalize().unwrap().display().to_string())
+        );
+        let elsewhere = _temp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let refused = bound_project_repo_request(
+            &found,
+            &scope_root,
+            &home,
+            Some(elsewhere.display().to_string()),
+        )
+        .unwrap_err();
+        assert!(refused.contains(&format!("“{}”", found.name)), "{refused}");
+        // Nor can another folder's project take the task over.
+        let other = _temp.path().join("other-repo");
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        work_location::bind_task_to_folder(
+            &scope_root,
+            &home,
+            &other,
+            crate::magician_v2::vibedev::projects::VibeDevProjectTrust::Sandboxed,
+            "task-other",
+        )
+        .await
+        .expect("other project");
+        let other_path = other.display().to_string();
+        assert!(matches!(
+            work_location_gate(&scope_root, &home, Some("task-2"), Some(&other_path)).await,
+            Err(WorkLocationGateStop::Refused(message)) if message.contains(&found.name)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_home_folder_repo_path_is_refused_not_asked_about() {
+        let (_temp, scope_root, home, _outside) = work_location_scope();
+        let Some(owner_home) = dirs::home_dir().and_then(|home| home.canonicalize().ok()) else {
+            return;
+        };
+        let path = owner_home.display().to_string();
+        assert!(matches!(
+            work_location_gate(&scope_root, &home, Some("task-home"), Some(&path)).await,
+            Err(WorkLocationGateStop::Refused(message)) if message.contains("too broad")
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_live_repo_is_refused_without_a_project_that_owns_it() {
+        let (_temp, scope_root, home, outside) = work_location_scope();
+        let repo = outside.canonicalize().unwrap();
+        let fence = Some((repo.clone(), repo.join("magician_data_v3")));
+        let source = repo.join("skills");
+        assert!(live_repo_refusal(&source, fence.clone(), None, &home)
+            .is_some_and(|reason| reason.contains("live magician repository")));
+        // Not the live repo: nothing to refuse.
+        assert_eq!(
+            live_repo_refusal(&home.canonicalize().unwrap(), fence.clone(), None, &home),
+            None
+        );
+        let project = work_location::bind_task_to_folder(
+            &scope_root,
+            &home,
+            &repo,
+            crate::magician_v2::vibedev::projects::VibeDevProjectTrust::Sandboxed,
+            "task-3",
+        )
+        .await
+        .expect("bind");
+        assert_eq!(live_repo_refusal(&source, fence, Some(&project), &home), None);
+    }
+
+    #[test]
+    fn setup_failures_are_classified_platform_or_task() {
+        let platform = |stage: &str, reason: &str, payload: Value| {
+            matches!(
+                classify_setup_failure(stage, reason, &payload),
+                SetupFault::Platform { .. }
+            )
+        };
+        for stage in [
+            "workspace_root",
+            "invocation_journal",
+            "shadow_root_parent",
+            "prepare_shadow_workspace",
+            "resolve_shadow_working_dir",
+            "pi_session_dir",
+            "build_dir",
+            "adapter_factory",
+            "credential_preflight",
+        ] {
+            assert!(platform(stage, "x", json!({})), "{stage}");
+        }
+        for stage in [
+            "spend_envelope_preflight",
+            "task_budget_preflight",
+            "cost_budget_preflight",
+            "token_budget_preflight",
+            "token_usage_accounting",
+            "resolve_repo_path",
+            "materialize_attachments",
+            "trusted_session",
+            "coding_resume_precondition",
+            "coding_resume_authority_mismatch",
+            // The invocation cap or a changed constraint, not the journal's disk.
+            "invocation_admission",
+            "work_location",
+            "",
+        ] {
+            assert!(!platform(stage, "x", json!({})), "{stage}");
+        }
+        // A turn that ran and failed is the model's; an engine that cannot
+        // start is Magician's.
+        assert!(!platform("run_turn", "Pi coding task failed: tests failed", json!({})));
+        assert_eq!(
+            classify_setup_failure(
+                "run_turn",
+                "Pi coding task failed: unsupported Pi coding agent version 1.2.0; Magician \
+                 requires exactly 1.3.0",
+                &json!({"engine": "pi"}),
+            ),
+            SetupFault::Platform {
+                fix: Some(PI_SETUP_FIX.to_string())
+            }
+        );
+        assert!(platform(
+            "run_turn",
+            "Pi coding task failed: spawn Grok agent `grok` in /x: No such file or directory \
+             (os error 2)",
+            json!({"engine": "grok_acp"}),
+        ));
+        // A version the gate cannot even read is the same fault.
+        assert!(platform(
+            "run_turn",
+            "Pi coding task failed: could not parse Pi version from `pi`",
+            json!({"engine": "pi"}),
+        ));
+        // The model's own profile or binary choice is the model's to change,
+        // unless the engine itself cannot start.
+        let chosen = json!({"engine": "codex_app_server", "model_chose_profile": true});
+        assert_eq!(
+            classify_setup_failure("credential_preflight", "missing key", &chosen),
+            SetupFault::ProfileChoice
+        );
+        assert_eq!(
+            classify_setup_failure("adapter_factory", "engine not qualified", &chosen),
+            SetupFault::ProfileChoice
+        );
+        assert!(platform(
+            "adapter_factory",
+            "spawn Codex app-server `codex` in /x: No such file or directory (os error 2)",
+            chosen.clone(),
+        ));
+        // A clone of the owner's repository that fails is theirs to fix in
+        // the repo; the OS sandbox is Magician's.
+        assert_eq!(
+            classify_setup_failure(
+                "trusted_workspace",
+                "base branch `main` does not exist",
+                &json!({})
+            ),
+            SetupFault::Project {
+                fix: PROJECT_REPO_FIX.to_string()
+            }
+        );
+        assert!(platform(
+            "trusted_workspace",
+            "Original-folder runs require a working OS sandbox to hold edits for review",
+            json!({}),
+        ));
+        assert_eq!(
+            classify_setup_failure(
+                "credential_preflight",
+                "missing",
+                &json!({"api_key_env": "OPENAI_API_KEY", "coding_profile": "coding-premium"}),
+            ),
+            SetupFault::Platform {
+                fix: Some(
+                    "Set `OPENAI_API_KEY` for coding profile `coding-premium` in Magician's \
+                     runtime environment, or provision a secret named `OPENAI_API_KEY`."
+                        .to_string()
+                )
+            }
+        );
+    }
+
+    #[test]
+    fn a_platform_fault_result_carries_fault_and_fix_and_a_task_error_does_not() {
+        let faulted = with_fault_class(json!({
+            "status": "error",
+            "reason": "Could not create coding build dir",
+            "stage": "build_dir",
+        }));
+        assert_eq!(faulted["fault"], "platform");
+        assert_eq!(faulted["status"], "error");
+        assert_eq!(faulted["stage"], "build_dir");
+        assert!(faulted.get("fix").is_none());
+        let pi = with_fault_class(json!({
+            "status": "error",
+            "reason": "Pi coding task failed: Pi version probe `pi` failed",
+            "stage": "run_turn",
+            "engine": "pi",
+        }));
+        assert_eq!(pi["fix"], PI_SETUP_FIX);
+        let budget = with_fault_class(json!({
+            "status": "error",
+            "reason": "Coding task budget exhausted",
+            "stage": "task_budget_preflight",
+        }));
+        assert!(budget.get("fault").is_none());
+        let chosen = with_fault_class(json!({
+            "status": "error",
+            "reason": "Coding profile requires `X_KEY`.",
+            "stage": "credential_preflight",
+            "model_chose_profile": true,
+        }));
+        assert!(chosen.get("fault").is_none());
+        assert_eq!(
+            chosen["reason"],
+            format!("Coding profile requires `X_KEY`.{PICK_ANOTHER_PROFILE}")
+        );
+        let project = with_fault_class(json!({
+            "status": "error",
+            "reason": "git clone failed",
+            "stage": "trusted_workspace",
+        }));
+        assert_eq!(project["fault"], "platform");
+        assert_eq!(project["fault_scope"], "project");
+        assert_eq!(project["fix"], PROJECT_REPO_FIX);
+        // The loop reads the same field.
+        assert!(
+            crate::magician_v2::execution::agentic::platform_fault::platform_fault_summary(
+                &faulted.to_string()
+            )
+            .is_some()
+        );
+        assert!(
+            crate::magician_v2::execution::agentic::platform_fault::platform_fault_summary(
+                &budget.to_string()
+            )
+            .is_none()
+        );
+    }
+
+    /// Pi cannot open a playbook's linked files itself, so they follow the
+    /// playbook in its appended prompt.
+    #[test]
+    fn the_coding_engine_gets_the_files_its_playbook_links_to() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("references")).unwrap();
+        std::fs::write(dir.path().join("references/commands.md"), "polish: refine").unwrap();
+        let active = crate::magician_v2::skills::ActiveProcedureSkill {
+            name: "impeccable".to_string(),
+            body: "Pick from [workflows](references/commands.md).".to_string(),
+            skill_dir: dir.path().to_path_buf(),
+        };
+        let linked = read_skill_playbook_files(&active);
+        assert_eq!(
+            linked,
+            vec![("references/commands.md".to_string(), "polish: refine".to_string())]
+        );
+        let section = render_skill_playbook_section(&active.name, &active.body, &linked);
+        assert!(section.contains(
+            "----- BEGIN PLAYBOOK FILE: impeccable/references/commands.md -----\npolish: refine\n"
+        ));
     }
 }

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 enum ChatSessionResumeResult: Equatable {
@@ -9,7 +10,10 @@ enum ChatSessionResumeResult: Equatable {
 class ThreadViewModel: ObservableObject {
     static let pageSize = 15
 
-    @Published var threads: [UiThreadRecord] = []
+    @Published var threads: [UiThreadRecord] = [] {
+        // Thread chips show names and `/t/<slug>` links resolve from this list.
+        didSet { ThreadDirectory.shared.remember(threads) }
+    }
     @Published var sessions: [ChatSession] = []
     @Published var searchResults: [HistorySearchItem] = []
     @Published private(set) var workingSessionIds: Set<String> = []
@@ -21,6 +25,9 @@ class ThreadViewModel: ObservableObject {
     @Published var activeTab: String = "sessions"
     @Published var historyLane: ChatHistoryLane = .personal
     @Published var searchText: String = ""
+    /// The thread a tap picked; Sessions shows only its sessions, from both
+    /// lanes, until it is cleared or another thread is tapped.
+    @Published private(set) var sessionThreadFilter: UiThreadRecord? = nil
     @Published private(set) var total: Int = 0
     @Published private(set) var offset: Int = 0
     @Published private(set) var isSearchActive: Bool = false
@@ -47,6 +54,7 @@ class ThreadViewModel: ObservableObject {
     private var lastActivityPoll: (ids: Set<String>, working: Set<String>)?
     private var quietRefreshScheduled = false
     private var lastQuietRefreshAt: Date?
+    private var connectionObserver: AnyCancellable?
     static let activityPollInterval: TimeInterval = 3
 
     private var base: String { "\(MagicianAccess.baseURL.absoluteString)/api/magician/v2" }
@@ -58,6 +66,9 @@ class ThreadViewModel: ObservableObject {
 
     init(networkSession: URLSession = .shared) {
         self.networkSession = networkSession
+        // Another machine has other threads: a picked thread does not carry over.
+        connectionObserver = NotificationCenter.default.publisher(for: .magicianMobileConnectionDidChange)
+            .receive(on: RunLoop.main).sink { [weak self] _ in self?.sessionThreadFilter = nil }
     }
 
     deinit {
@@ -163,6 +174,44 @@ class ThreadViewModel: ObservableObject {
         resetPageAndFetch()
     }
 
+    /// A thread tap: Sessions, filtered to that thread, from page 1 with the
+    /// search cleared. Another thread replaces the filter.
+    func showSessions(of thread: UiThreadRecord) {
+        searchWorkItem?.cancel()
+        searchText = ""
+        appliedSearch = ""
+        isSearchActive = false
+        // A search hit may be a thread the list never loaded; the label needs its name.
+        ThreadDirectory.shared.remember([thread])
+        sessionThreadFilter = thread
+        activeTab = "sessions"
+        resetPageAndFetch()
+    }
+
+    func clearSessionThreadFilter() {
+        guard sessionThreadFilter != nil else { return }
+        sessionThreadFilter = nil
+        resetPageAndFetch()
+    }
+
+    /// New Session shows on the Personal lane, and on Sessions while a thread
+    /// filter hides the lanes; never while searching.
+    var showsNewItemButton: Bool {
+        guard !isSearchActive else { return false }
+        return historyLane == .personal || (activeTab == "sessions" && sessionThreadFilter != nil)
+    }
+
+    /// The panel's New Session: in the filtered thread and its lane while a
+    /// thread filter is on, else a Personal `#general` session.
+    func newPanelSession(completion: @escaping (String?) -> Void) {
+        let filter = sessionThreadFilter
+        newSession(
+            uiThreadId: filter?.id ?? "general",
+            historyLane: filter.flatMap { ChatHistoryLane(rawValue: $0.historyLane ?? "") } ?? .personal,
+            completion: completion
+        )
+    }
+
     func updateSearchText(_ value: String, debounce: Bool = true) {
         var bounded = ""
         for scalar in value.unicodeScalars.prefix(120) {
@@ -244,10 +293,12 @@ class ThreadViewModel: ObservableObject {
         }
     }
 
-    private func historyURL(path: String) -> URL? {
+    /// A thread filter replaces the lane: the thread's sessions from both lanes.
+    private func historyURL(path: String, threadId: String? = nil) -> URL? {
         guard var components = URLComponents(string: "\(base)/\(path)") else { return nil }
         let query = [
-            URLQueryItem(name: "history_lane", value: historyLane.rawValue),
+            threadId.map { URLQueryItem(name: "ui_thread_id", value: $0) }
+                ?? URLQueryItem(name: "history_lane", value: historyLane.rawValue),
             URLQueryItem(name: "limit", value: String(Self.pageSize)),
             URLQueryItem(name: "offset", value: String(offset)),
         ]
@@ -324,7 +375,7 @@ class ThreadViewModel: ObservableObject {
     }
 
     private func fetchSessions(generation: Int, quiet: Bool = false) {
-        guard let url = historyURL(path: "chat/sessions") else {
+        guard let url = historyURL(path: "chat/sessions", threadId: sessionThreadFilter?.id) else {
             finishFailure("Could not build the session-history request.", generation: generation, quiet: quiet)
             return
         }
@@ -490,6 +541,11 @@ class ThreadViewModel: ObservableObject {
             }
             if let session = candidates.first(where: { $0.status == "active" }) {
                 DispatchQueue.main.async {
+                    // A session tapped while this page was in flight wins.
+                    guard generation == self.threadOpenGeneration else {
+                        completion(nil)
+                        return
+                    }
                     self.applySelectedSession(session)
                     self.selectedThreadSnapshot = thread
                     completion(session.id)
@@ -510,6 +566,10 @@ class ThreadViewModel: ObservableObject {
             }
             if let fallback {
                 DispatchQueue.main.async {
+                    guard generation == self.threadOpenGeneration else {
+                        completion(nil)
+                        return
+                    }
                     self.applySelectedSession(fallback)
                     self.selectedThreadSnapshot = thread
                     completion(fallback.id)
@@ -765,7 +825,7 @@ class ThreadViewModel: ObservableObject {
         }) { [weak self] in
             self?.clearThreadMutation(id)
             if archived, self?.activeThreadId == id { self?.activeThreadId = "general" }
-            self?.fetchCurrentPage()
+            self?.refetchAfterThreadChange(id, removed: archived)
         }
     }
 
@@ -781,7 +841,18 @@ class ThreadViewModel: ObservableObject {
         }) { [weak self] in
             self?.clearThreadMutation(id)
             if self?.activeThreadId == id { self?.activeThreadId = "general" }
-            self?.fetchCurrentPage()
+            self?.refetchAfterThreadChange(id, removed: true)
+        }
+    }
+
+    /// An archived or deleted thread cannot stay the Sessions filter: drop it
+    /// and show every thread from page 1.
+    private func refetchAfterThreadChange(_ id: String, removed: Bool) {
+        if removed, sessionThreadFilter?.id == id {
+            sessionThreadFilter = nil
+            resetPageAndFetch()
+        } else {
+            fetchCurrentPage()
         }
     }
 
@@ -835,14 +906,26 @@ class ThreadViewModel: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         MagicianAccess.authorize(&request)
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        request.httpBody = try? JSONSerialization.data(
-            withJSONObject: ["id": NSNull(), "name": trimmed.isEmpty ? "New thread" : trimmed]
-        )
+        // The owner named it in the prompt; no id, so the server derives the
+        // id and the URL slug from the name.
+        guard !trimmed.isEmpty else {
+            completion(nil)
+            return
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": trimmed])
         networkSession.dataTask(with: request) { [weak self] data, response, _ in
             var threadId: String? = nil
-            if Self.isSuccessful(response), let data,
-               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                threadId = object["id"] as? String
+            if Self.isSuccessful(response), let thread = ThreadDirectory.threadObject(data) {
+                threadId = thread["id"] as? String
+                if let threadId {
+                    let slug = thread["slug"] as? String
+                    DispatchQueue.main.async {
+                        ThreadDirectory.shared.remember([UiThreadRecord(
+                            principal: "", workspace: "", id: threadId, name: trimmed, archived: false,
+                            sortOrder: 0, memorySummary: nil, memoryUpdatedAt: nil, slug: slug, createdAt: 0, updatedAt: 0
+                        )])
+                    }
+                }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -926,7 +1009,8 @@ class ThreadViewModel: ObservableObject {
                 if Self.isSuccessful(response), let session = envelope?.session {
                     self.applySelectedSession(session)
                     self.activeTab = "sessions"
-                    self.historyLane = historyLane
+                    // A thread filter hides the lanes; leave the hidden one as it was.
+                    if self.sessionThreadFilter == nil { self.historyLane = historyLane }
                     self.offset = 0
                     self.fetchCurrentPage()
                     completion(session.id)

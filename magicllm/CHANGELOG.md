@@ -8,11 +8,14 @@ aims to follow Semantic Versioning.
 
 ## [Unreleased]
 
-- 0.2.55: Keep whole-call tool constraints out of provider schemas, surface Ollama HTTP errors, add GPT-6.1 Terra and per-call cancellation of abandoned auxiliary waits.
+### 2026-11-02 — 0.2.56
+
+- `estimate_messages_input_tokens(&[LLMMessage])`: an uncapped input estimate for "does this request fit the window" checks. Real media (image blocks, image URLs, base64 `data:` URLs and inline base64 parts whose MIME type is `image/*`, `audio/*`, `video/*` or `application/pdf`, such as Anthropic image sources and Gemini `inlineData`; a `data:text/plain;base64,` URL counts as text) count at a flat 1,600 tokens (`STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK`, now public); everything else, including long whitespace-free text, at two bytes a token. Serialized bytes count a screenshot as millions of tokens. The stream spend estimate is unchanged.
+
+### 2026-10-30 — 0.2.55
 
 - Tool schemas reach models without top-level `anyOf`/`oneOf`/`allOf`/`not`: `tool_schema::project_whole_call_constraints()` moves those whole-call rules into the tool description for every provider adapter and both Realtime APIs. Anthropic, OpenAI Chat Completions and xAI rejected the whole request on them; Gemini dropped them silently.
 - Strip internal tool-grounding aliases from Gemini provider schemas.
-
 - Ollama: a non-2xx response is an error carrying the body's `error` text (for example "prompt is too long"), instead of a 400 with a `message` counting as an answer and one without it reading "missing assistant content".
 - Added opt-in per-call cancellation for abandoned auxiliary waits while preserving owner cancellation, sibling isolation and protected-attempt settlement.
 - `LlmPhysicalAttemptObservation::is_definitive_rejection()` marks an attempt the provider rejected with a typed HTTP 4xx other than 408/429. The outcome stays `OutcomeUncertain` for every existing consumer; resource owners may release the reservation at zero.

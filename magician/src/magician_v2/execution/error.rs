@@ -49,6 +49,17 @@ pub enum ExecutionError {
     #[error("refused: {0}")]
     Refused(String),
 
+    /// The call needs a folder outside Magician's workspace, and the task has
+    /// no project saying how to work there (`vibedev::work_location`). Like
+    /// [`ExecutionError::PathAccessDenied`] it is intercepted at the executor
+    /// error chokepoint: the owner is asked once where to work, the answer
+    /// binds the task to a project, and the same call runs again. Nothing ran
+    /// before it was raised. `folder` is canonical.
+    #[error(
+        "Magician needs the owner to choose where to work on `{folder}` before it runs this call"
+    )]
+    WorkLocationRequired { folder: String },
+
     /// The call was handled and its answer is the agent's to act on: a tool
     /// that ran and reported its own failure (a non-zero exit with its
     /// stderr — `git diff` outside a repository), or arguments that do not

@@ -277,6 +277,32 @@ fn agentic_outcome_is_cancellation(
     )
 }
 
+/// The task status a settled task-backed cycle writes for its execution's
+/// state. `Ok(None)` leaves the status the reducer already wrote; `Err` is a
+/// state a settled cycle should not be in.
+///
+/// A parent parked on delegated children is still at work: the reducer wrote
+/// `running` for it, as every other mapping of that state does. Writing
+/// `paused` here showed a working run as paused on every surface until the
+/// parent resumed.
+fn settled_cycle_task_status(
+    state: crate::magician_v2::storage::WaitingState,
+) -> Result<
+    Option<crate::magician_v2::storage::task_models::TaskStatus>,
+    crate::magician_v2::storage::WaitingState,
+> {
+    use crate::magician_v2::storage::{task_models::TaskStatus, WaitingState};
+    match state {
+        WaitingState::Completed => Ok(Some(TaskStatus::Completed)),
+        WaitingState::Failed => Ok(Some(TaskStatus::Failed)),
+        WaitingState::Cancelled => Ok(Some(TaskStatus::Cancelled)),
+        WaitingState::WaitingUser | WaitingState::Paused => Ok(Some(TaskStatus::Paused)),
+        WaitingState::WaitingChildren => Ok(None),
+        WaitingState::Sleeping => Ok(Some(TaskStatus::Deferred)),
+        other => Err(other),
+    }
+}
+
 fn delegated_goal_label(delegated_context: &str) -> String {
     let trimmed = delegated_context.trim();
     if trimmed.is_empty() {
@@ -4988,36 +5014,17 @@ impl GoalCycleJob {
                         .get_execution_status(&self.cycle_execution_id)
                         .await
                     {
-                        Ok(crate::magician_v2::storage::WaitingState::Completed) => Some((
-                            crate::magician_v2::storage::task_models::TaskStatus::Completed,
-                            None,
-                        )),
-                        Ok(crate::magician_v2::storage::WaitingState::Failed) => Some((
-                            crate::magician_v2::storage::task_models::TaskStatus::Failed,
-                            None,
-                        )),
-                        Ok(crate::magician_v2::storage::WaitingState::Cancelled) => Some((
-                            crate::magician_v2::storage::task_models::TaskStatus::Cancelled,
-                            None,
-                        )),
-                        Ok(crate::magician_v2::storage::WaitingState::WaitingUser)
-                        | Ok(crate::magician_v2::storage::WaitingState::WaitingChildren)
-                        | Ok(crate::magician_v2::storage::WaitingState::Paused) => Some((
-                            crate::magician_v2::storage::task_models::TaskStatus::Paused,
-                            None,
-                        )),
-                        Ok(crate::magician_v2::storage::WaitingState::Sleeping) => Some((
-                            crate::magician_v2::storage::task_models::TaskStatus::Deferred,
-                            None,
-                        )),
-                        Ok(other) => {
-                            tracing::warn!(
-                                task_id = %self.task_id,
-                                execution_id = %self.cycle_execution_id,
-                                waiting_state = ?other,
-                                "trigger_goal_awaitable: unexpected post-pipeline execution state for task-backed cycle"
-                            );
-                            None
+                        Ok(state) => match settled_cycle_task_status(state) {
+                            Ok(status) => status.map(|status| (status, None)),
+                            Err(other) => {
+                                tracing::warn!(
+                                    task_id = %self.task_id,
+                                    execution_id = %self.cycle_execution_id,
+                                    waiting_state = ?other,
+                                    "trigger_goal_awaitable: unexpected post-pipeline execution state for task-backed cycle"
+                                );
+                                None
+                            },
                         },
                         Err(error) => {
                             // The pipeline completed, but the execution's persisted
@@ -5875,8 +5882,12 @@ pub(crate) fn delegated_waiting_for_user_should_suspend(
         // deliverable, failed. `Guidance` ("how would you like me to
         // proceed?") and `FilePath` are the owner's answers too; the first
         // widening left them out and the next run's child asked exactly
-        // that. Tool authorization and sandbox overrides keep the
-        // force-fail: they are the coordinator's decisions, not the owner's.
+        // that. A `Confirmation` is also the pause body of every approval
+        // gate (`WaitingForConfirmation`): only the owner can approve one,
+        // so it parks the child the same way. Tool authorization and sandbox
+        // overrides keep the force-fail: the coordinator chose the child's
+        // tools and sandbox when it delegated, so widening them is its
+        // decision, not the owner's.
         | UserInputType::Text { .. }
             | UserInputType::Password { .. }
             // A one-time code is the same owner answer as a password: the
@@ -5894,10 +5905,32 @@ pub(crate) fn delegated_waiting_for_user_should_suspend(
     )
 }
 
+/// The stateless terminal endings (`TerminalKind::settlement_label`) a
+/// delegated child may suspend on: an owner question (`waiting_for_user`,
+/// further narrowed by `delegated_waiting_for_user_should_suspend` on its
+/// pause body) or an approval gate (`waiting_for_confirmation`, whose pause
+/// body is always a `Confirmation`). The receipt seal check, the receipt
+/// classifier and both acceptance and publication of a delegated receipt
+/// read this one list.
+pub(crate) fn delegated_child_may_suspend_on_terminal(terminal_kind: &str) -> bool {
+    use crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind;
+    terminal_kind == TerminalKind::WaitingForUser.settlement_label()
+        || terminal_kind == TerminalKind::WaitingForConfirmation.settlement_label()
+}
+
 /// Classify delegated-child outcomes whose continuation is already durably
 /// owned by another lifecycle. These outcomes must remain nonterminal: forcing
 /// the child to failure would discard the exact pause/checkpoint that the HITL
 /// or child-terminal wake path needs in order to continue it.
+///
+/// An approval gate (`WaitingForConfirmation`) is one of them. The pause and
+/// its approval request are already durable when the outcome reaches here, and
+/// only the owner can answer it: the coordinator has no way to approve a gate
+/// inside its child. Force-failing it cancelled the child within a second of
+/// pausing, suppressed the approval card, and the parent re-delegated the same
+/// gated work in a loop (a cto child's `update_agent`, 2026-11-02). The answer
+/// resumes the child by execution id; a denial settles it as failed and the
+/// parent collects it.
 fn delegated_child_continuation_should_suspend(
     outcome: &crate::magician_v2::execution::AgenticOutcome,
 ) -> bool {
@@ -5905,6 +5938,7 @@ fn delegated_child_continuation_should_suspend(
         crate::magician_v2::execution::AgenticOutcome::WaitingForUser { input_type, .. } => {
             delegated_waiting_for_user_should_suspend(input_type)
         },
+        crate::magician_v2::execution::AgenticOutcome::WaitingForConfirmation { .. } => true,
         crate::magician_v2::execution::AgenticOutcome::WaitingForChildren { .. } => true,
         _ => false,
     }
@@ -5935,11 +5969,6 @@ pub(crate) fn classify_delegated_child_outcome(
         AgenticOutcome::WaitingForUser { question, .. } => {
             DelegatedChildOutcomeDisposition::ForceFailure(format!(
                 "Delegated child requested user input, which is not allowed in V2 delegation: {question}"
-            ))
-        },
-        AgenticOutcome::WaitingForConfirmation { reason, .. } => {
-            DelegatedChildOutcomeDisposition::ForceFailure(format!(
-                "Delegated child requested confirmation, which is not allowed in V2 delegation: {reason}"
             ))
         },
         AgenticOutcome::PausedByUser { .. } => DelegatedChildOutcomeDisposition::ForceFailure(
@@ -5976,6 +6005,9 @@ pub(crate) fn classify_delegated_child_outcome(
             DelegatedChildOutcomeDisposition::ForceFailure(format!(
                 "Delegated child cannot proceed: {reason}"
             ))
+        },
+        AgenticOutcome::WaitingForConfirmation { .. } => {
+            unreachable!("WaitingForConfirmation is classified as a suspended continuation")
         },
         AgenticOutcome::WaitingForChildren { .. } => {
             unreachable!("WaitingForChildren is classified as a suspended continuation")
@@ -6057,6 +6089,12 @@ async fn force_child_failure_checked_inner(
     // transition re-drives sees no open review and completes the parent.
     orch.reject_orphaned_proposals_for_execution(child_execution_id)
         .await;
+    // Consumed by the transition when it runs; cleared on drop when it does not.
+    let _forced_cause =
+        crate::magician_v2::orchestrator::v2_orchestrator::set_forced_cancel_cause(
+            child_execution_id,
+            reason,
+        );
     let cancelled = match admission {
         Some(admission) => {
             orch.cancel_execution_tree_with_delegated_recovery_admission(
@@ -6085,6 +6123,68 @@ async fn force_child_failure_checked_inner(
 /// Persist the callable-agent lifecycle cancellation intent before entering
 /// the sole governed leaf-cancellation seam. The runtime never falls back to
 /// generic app tree control, because that path is intentionally denied.
+/// A staged DiffApproval: the one delegated pause tree cancellation spares
+/// (`cancel_execution_tree_loaded_locked`).
+fn canonical_staged_diff_approval(
+    input_type: &crate::magician_v2::execution::agentic::UserInputType,
+) -> bool {
+    use crate::magician_v2::execution::agentic::UserInputType;
+    matches!(
+        input_type,
+        UserInputType::DiffApproval {
+            proposal_id: Some(_),
+            ..
+        } | UserInputType::DiffApproval {
+            transaction_id: Some(_),
+            ..
+        }
+    )
+}
+
+/// Withdraw a delegated child that parked on an owner's pause after a tree
+/// cancel already passed it: the cascade commits `Cancelled` on the parent
+/// and root before it visits the child, and defers a child whose pause is
+/// still staged. Nothing may answer work its owner cancelled, so the child is
+/// cancelled explicitly (an explicit cancel is never spared), through the
+/// callable-agent owner when it is one, which withdraws its pause. Returns
+/// whether the tree was cancelled.
+async fn cancel_parked_child_of_cancelled_tree(
+    runtime: &AgentRuntime,
+    orch: &MagicianV2Orchestrator,
+    principal: &str,
+    workspace: &str,
+    task_id: &str,
+    child_execution_id: &str,
+    app_agent_tool_child: bool,
+) -> bool {
+    if !orch.delegated_child_tree_cancelled(child_execution_id).await {
+        return false;
+    }
+    if app_agent_tool_child {
+        cancel_app_agent_tool_child_owned(
+            runtime,
+            orch,
+            principal,
+            workspace,
+            task_id,
+            child_execution_id,
+            crate::magician_v2::artifact_v2::app_agent_tool::AppAgentChildCancellationReason::ParentCancelled,
+        )
+        .await;
+    } else if let Err(error) = orch.cancel_execution_tree(child_execution_id).await {
+        tracing::warn!(
+            child_execution_id,
+            %error,
+            "[DELEGATION] parked child of a cancelled tree could not be cancelled"
+        );
+    }
+    info!(
+        child_execution_id,
+        "[DELEGATION] cancelled a child that parked on an owner's pause under a cancelled tree"
+    );
+    true
+}
+
 async fn cancel_app_agent_tool_child_owned(
     runtime: &AgentRuntime,
     orch: &MagicianV2Orchestrator,
@@ -8407,13 +8507,51 @@ async fn spawn_delegated_children_from_runtime_inner(
                     Ok(continuation) => match classify_delegated_child_outcome(&continuation) {
                         DelegatedChildOutcomeDisposition::Suspend => match continuation {
                             crate::magician_v2::execution::AgenticOutcome::WaitingForUser {
+                                input_type,
                                 ..
                             } => {
-                                info!(
-                                    child_execution_id = %child_execution_id,
-                                    "[DELEGATION] child suspended awaiting diff approval; \
-                                     parent stays WaitingChildren until apply/reject"
-                                );
+                                // A canonical diff approval outlives a tree
+                                // cancel by design; any other owner question
+                                // under a cancelled tree is withdrawn.
+                                if canonical_staged_diff_approval(&input_type)
+                                    || !cancel_parked_child_of_cancelled_tree(
+                                        runtime.as_ref(),
+                                        orch_for_execution.as_ref(),
+                                        &principal,
+                                        &workspace,
+                                        &parent_task_id,
+                                        &child_execution_id,
+                                        app_agent_tool_child_binding.is_some(),
+                                    )
+                                    .await
+                                {
+                                    info!(
+                                        child_execution_id = %child_execution_id,
+                                        "[DELEGATION] child suspended awaiting diff approval; \
+                                         parent stays WaitingChildren until apply/reject"
+                                    );
+                                }
+                            },
+                            crate::magician_v2::execution::AgenticOutcome::WaitingForConfirmation {
+                                ..
+                            } => {
+                                if !cancel_parked_child_of_cancelled_tree(
+                                    runtime.as_ref(),
+                                    orch_for_execution.as_ref(),
+                                    &principal,
+                                    &workspace,
+                                    &parent_task_id,
+                                    &child_execution_id,
+                                    app_agent_tool_child_binding.is_some(),
+                                )
+                                .await
+                                {
+                                    info!(
+                                        child_execution_id = %child_execution_id,
+                                        "[DELEGATION] child suspended on an approval gate; parent \
+                                         stays WaitingChildren until the owner approves or denies"
+                                    );
+                                }
                             },
                             crate::magician_v2::execution::AgenticOutcome::WaitingForChildren {
                                 ..
@@ -8908,7 +9046,7 @@ async fn recover_delegated_child_from_runtime(
             overrides.stateless_retry_due_at = None;
             orch.bind_interrupted_runtime_recovery_overrides(&binding.execution_id, &mut overrides)
                 .await
-                .map_err(DispatchError::Runtime)?;
+                .map_err(|refusal| DispatchError::Runtime(refusal.to_string()))?;
         },
         DelegatedChildRecoveryAdmission::ExactSleeping {
             stateless_source_segment,
@@ -9273,6 +9411,30 @@ mod tests {
 
     const TEST_PRINCIPAL: &str = "principal-a";
     const TEST_WORKSPACE: &str = "workspace-a";
+
+    /// A cycle whose root parked on delegated children leaves the task
+    /// `running`; only a wait on the owner, or a pause, reads as paused.
+    #[test]
+    fn a_cycle_waiting_on_its_children_leaves_the_task_running() {
+        use crate::magician_v2::storage::{task_models::TaskStatus, WaitingState};
+        assert_eq!(settled_cycle_task_status(WaitingState::WaitingChildren), Ok(None));
+        assert_eq!(
+            settled_cycle_task_status(WaitingState::WaitingUser),
+            Ok(Some(TaskStatus::Paused))
+        );
+        assert_eq!(
+            settled_cycle_task_status(WaitingState::Paused),
+            Ok(Some(TaskStatus::Paused))
+        );
+        assert_eq!(
+            settled_cycle_task_status(WaitingState::Completed),
+            Ok(Some(TaskStatus::Completed))
+        );
+        assert_eq!(
+            settled_cycle_task_status(WaitingState::Executing),
+            Err(WaitingState::Executing)
+        );
+    }
 
     /// A workspace created after boot has its agents on disk but none in the
     /// registry; the first scoped read loads them. A deleted one stays empty.
@@ -12473,6 +12635,111 @@ tools: []
             !delegated_child_continuation_should_suspend(&terminal),
             "terminal child outcomes must continue through the settlement path"
         );
+    }
+
+    /// An approval gate inside delegated work is the owner's to answer: the
+    /// coordinator cannot approve it. The child parks (live and stateless
+    /// paths alike) instead of being force-failed with its card suppressed.
+    #[test]
+    fn delegated_child_approval_gate_suspends_instead_of_force_failing() {
+        use crate::magician_v2::execution::agentic::{AgenticPauseState, EnvironmentState};
+        use crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind;
+
+        let gate = crate::magician_v2::execution::AgenticOutcome::WaitingForConfirmation {
+            action_summary: "Update agent creative-mind".to_string(),
+            reason: "approval rule requires the owner's sign-off".to_string(),
+            action_type: "tool_call".to_string(),
+            action_json: "{\"tool\":\"update_agent\",\"agent_id\":\"creative-mind\"}"
+                .to_string(),
+            secret_approval_challenge_id: None,
+            secret_approval_request: None,
+            pause_state: AgenticPauseState::new(
+                2,
+                "Tune creative-mind",
+                "creative-mind is updated",
+                EnvironmentState::Uninitialized,
+                "Prepared the update",
+                10,
+                3,
+            ),
+            iterations_used: 2,
+        };
+        assert!(delegated_child_continuation_should_suspend(&gate));
+        assert_eq!(
+            classify_delegated_child_outcome(&gate),
+            DelegatedChildOutcomeDisposition::Suspend,
+            "an approval gate must park the child, not force-fail it"
+        );
+
+        // The stateless receipt policy covers the same two pause endings and
+        // nothing else: every other non-success still takes canonical failure.
+        assert!(delegated_child_may_suspend_on_terminal(
+            TerminalKind::WaitingForConfirmation.settlement_label()
+        ));
+        assert!(delegated_child_may_suspend_on_terminal(
+            TerminalKind::WaitingForUser.settlement_label()
+        ));
+        for terminal in [
+            TerminalKind::Success,
+            TerminalKind::Failed,
+            TerminalKind::PausedByUser,
+            TerminalKind::MaxIterationsReached,
+            TerminalKind::BudgetExhausted,
+            TerminalKind::CannotProceed,
+        ] {
+            assert!(
+                !delegated_child_may_suspend_on_terminal(terminal.settlement_label()),
+                "{terminal:?} is not an owner-answerable delegated pause"
+            );
+        }
+    }
+
+    /// The live arm never leaves an owner's pause parked under a cancelled
+    /// tree: when the parent or root is already `Cancelled` it cancels the
+    /// child itself (through the callable-agent owner for one), an explicit
+    /// cancel the cascade guard never spares. A canonical diff approval is
+    /// the one pause the cascade spares, so the question arm skips it.
+    #[test]
+    fn live_owner_pause_suspension_cancels_a_child_of_a_cancelled_tree() {
+        let source = include_str!("runtime.rs");
+        let helper = source
+            .split("async fn cancel_parked_child_of_cancelled_tree(")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn cancel_app_agent_tool_child_owned(").next())
+            .expect("cancelled-tree child withdrawal");
+        let trace = helper
+            .find("delegated_child_tree_cancelled(child_execution_id)")
+            .expect("cancelled-tree trace");
+        let app_owner = helper
+            .find("AppAgentChildCancellationReason::ParentCancelled")
+            .expect("callable-agent cancellation owner");
+        let cancel = helper
+            .find("cancel_execution_tree(child_execution_id)")
+            .expect("explicit child cancel");
+        assert!(trace < app_owner && app_owner < cancel);
+
+        for log in [
+            "[DELEGATION] child suspended awaiting diff approval",
+            "[DELEGATION] child suspended on an approval gate",
+        ] {
+            let head = source.split(log).next().expect("live suspend arm");
+            let arm_start = head
+                .rfind("crate::magician_v2::execution::AgenticOutcome::")
+                .expect("suspend arm pattern");
+            assert!(
+                head[arm_start..].contains("cancel_parked_child_of_cancelled_tree("),
+                "{log} arm must withdraw a child of a cancelled tree"
+            );
+            assert!(head[arm_start..].contains("app_agent_tool_child_binding.is_some()"));
+        }
+        let question_arm = source
+            .split("[DELEGATION] child suspended awaiting diff approval")
+            .next()
+            .expect("question arm");
+        let question_arm = &question_arm[question_arm
+            .rfind("crate::magician_v2::execution::AgenticOutcome::")
+            .expect("question arm pattern")..];
+        assert!(question_arm.contains("canonical_staged_diff_approval(&input_type)"));
     }
 
     #[test]

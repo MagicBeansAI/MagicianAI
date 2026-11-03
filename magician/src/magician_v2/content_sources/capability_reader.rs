@@ -12,7 +12,8 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tool_runtime_core::{
-    action_overrides::WorkspacePathAccess, manifest_parser::parse_skill_runtime_package,
+    action_overrides::{TypedActionParameter, WorkspacePathAccess},
+    manifest_parser::{parse_skill_runtime_package, SkillRuntimePackage},
 };
 
 use super::{
@@ -1137,6 +1138,7 @@ fn validate_owned_skill_files(
                  the same SKILL.md"
             )
         })?;
+    validate_reader_input_file_parameter(&runtime_package, manifest, &skill_path)?;
 
     let pack = project_runtime_package_to_pack(
         &skill_manifest.name,
@@ -1148,6 +1150,37 @@ fn validate_owned_skill_files(
     )
     .map_err(|error| anyhow!("invalid governed runtime contract for `{owner}`: {error}"))?;
     validate_governed_reader_owner(&pack, owner, manifest, &skill_path)
+}
+
+/// The reader hands its downloaded body to the action as one exact read-only
+/// file (`with_brokered_workspace_path`), which the governed runtime binds only
+/// to a typed `workspace_path` parameter with `access: read_file`. Any other
+/// declaration would fail every read at call time ("broker-owned path requires
+/// a workspace_path parameter"), so it is refused when the reader loads.
+fn validate_reader_input_file_parameter(
+    runtime_package: &SkillRuntimePackage,
+    manifest: &CapabilityReaderManifest,
+    skill_path: &Path,
+) -> Result<()> {
+    let action = manifest.capability.action.as_str();
+    let argument = manifest.input.input_file_argument.as_str();
+    let parameter = runtime_package
+        .actions
+        .as_ref()
+        .and_then(|set| set.actions.get(action))
+        .and_then(|typed| typed.parameters.get(argument));
+    match parameter {
+        Some(TypedActionParameter::WorkspacePath {
+            access: WorkspacePathAccess::ReadFile,
+            ..
+        }) => Ok(()),
+        _ => bail!(
+            "governed skill `{}` must declare reader input `{argument}` of action `{action}` \
+             as `type: workspace_path` with `access: read_file`: the reader brokers its \
+             downloaded body as a read-only workspace file",
+            skill_path.display()
+        ),
+    }
 }
 
 fn validate_governed_reader_owner(
@@ -1719,6 +1752,42 @@ output: {text_pointer: /content}
                 "structured_schema.read".into(),
             ])
         );
+    }
+
+    /// The reader brokers its body as a read-only workspace file, which the
+    /// governed runtime binds only to a `workspace_path` parameter. Since
+    /// 2026-08-10 structured-web-data (and pdftotext) declared `input_file` as
+    /// a plain string, so every read failed at call time with "broker-owned
+    /// path requires a workspace_path parameter". The mismatch is now refused
+    /// when the reader loads, and the shipped skills declare it correctly.
+    #[test]
+    fn reader_input_file_must_be_a_read_only_workspace_path() {
+        let source = include_str!("../../../../skillshub/structured-web-data/SKILL.md");
+        let workspace_path = "            input_file:\n              type: workspace_path\n              access: read_file\n";
+        assert!(
+            source.contains(workspace_path),
+            "structured-web-data must declare input_file as a read-only workspace_path"
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let skill = temp.path().join("structured-web-data");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(skill.join("SKILL.md"), source).unwrap();
+        let manifest = validated_capability_reader_manifest(&skill.join("SKILL.md")).unwrap();
+        assert_eq!(manifest.input.input_file_argument, "input_file");
+
+        std::fs::write(
+            skill.join("SKILL.md"),
+            source.replacen(
+                workspace_path,
+                "            input_file:\n              type: string\n",
+                1,
+            ),
+        )
+        .unwrap();
+        let error = validated_capability_reader_manifest(&skill.join("SKILL.md"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("type: workspace_path"), "{error}");
     }
 
     #[test]

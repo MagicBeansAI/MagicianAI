@@ -103,7 +103,9 @@ struct ChatView: View {
     }
 
     private var recentWelcomeSessions: [ChatSession] {
-        Array(threadViewModel.sessions.filter {
+        // History's Sessions page is one thread's while filtered, not the recents.
+        guard threadViewModel.sessionThreadFilter == nil else { return [] }
+        return Array(threadViewModel.sessions.filter {
             $0.id != viewModel.currentSessionIdValue && $0.internalVoice == nil
         }.sorted { $0.updatedAt > $1.updatedAt }.prefix(3))
     }
@@ -411,7 +413,18 @@ struct ChatView: View {
                                 if let error = viewModel.originalAnswerError {
                                     Text(error).font(.themed(12)).foregroundColor(themeManager.secondaryTextColor)
                                 }
-                                if viewModel.messages.isEmpty {
+                                if viewModel.messages.isEmpty, viewModel.openingSessionId != nil {
+                                    ProgressView()
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.top, 40)
+                                        .accessibilityLabel("Opening conversation")
+                                } else if viewModel.messages.isEmpty, viewModel.sessionOpenFailed,
+                                          let sessionId = viewModel.currentSessionIdValue {
+                                    Button("Try again") { viewModel.loadSession(sessionId) }
+                                        .font(.themed(14))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.top, 24)
+                                } else if viewModel.messages.isEmpty {
                                     ChatWelcomeView(
                                         theme: themeManager,
                                         readOnly: isArchivedSession,
@@ -704,10 +717,34 @@ struct ChatView: View {
                 consumeExternalVoiceLaunch()
             }
             .onAppear { consumeExternalVoiceLaunch() }
+            // A thread or chat link (`/t/<thread>[/chat][?session=…]`,
+            // `/chat?session=…`, `magican://thread/…`): the named conversation,
+            // else the thread's latest one, as a tap in the thread panel does.
             .onReceive(AppActions.shared.$threadRequestID.dropFirst()) { _ in
-                if let id = AppActions.shared.threadTargetID {
-                    threadViewModel.selectThread(id)
-                    AppActions.shared.consumeThreadTarget()
+                let actions = AppActions.shared
+                let threadId = actions.threadTargetID
+                let sessionId = actions.threadTargetSessionID
+                actions.consumeThreadTarget()
+                if let sessionId {
+                    cancelAutoSend()
+                    threadViewModel.selectSession(sessionId)
+                    viewModel.loadSession(sessionId)
+                } else if let threadKey = threadId {
+                    // A link's key may be the thread's slug (it follows the
+                    // name) or an old one; open by the canonical id.
+                    ThreadDirectory.shared.resolve(threadKey) { threadId in
+                        threadViewModel.selectThread(threadId)
+                        let thread = threadViewModel.threadMetadata(for: threadId) ?? UiThreadRecord(
+                            principal: "", workspace: "", id: threadId,
+                            name: ThreadDirectory.shared.entries[threadId]?.name ?? threadId, archived: false,
+                            sortOrder: 0, memorySummary: nil, memoryUpdatedAt: nil, createdAt: 0, updatedAt: 0
+                        )
+                        threadViewModel.openThread(thread) { opened in
+                            guard let opened else { return }
+                            cancelAutoSend()
+                            viewModel.loadSession(opened)
+                        }
+                    }
                 }
             }
             // Mic/speech permission off → offer to jump to Settings.
@@ -1448,6 +1485,9 @@ struct MessageBubble: View {
                     }
                 }
             }
+            // Links anywhere in the bubble (task cards, escalations, inline
+            // Markdown) open through the chat link router, not the system.
+            .environment(\.openURL, chatLinkAction)
             .padding(message.originalAnswer != nil ? 8 : 0)
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(
                 message.originalAnswer != nil ? theme.accentColor.opacity(0.35) : .clear,
@@ -1496,23 +1536,18 @@ struct MessageBubble: View {
     }
 
     private func plainTextMessageBubble(_ text: String) -> some View {
-        Markdown(text)
-            .environment(\.openURL, OpenURLAction { url in
-                if let path = ChatSessionAccounting.outputPath(url.absoluteString), let sessionId {
-                    let connection = Result { try WorkAPIClient.connected() }
-                    Task {
-                        do { try await ChatSessionAccounting.openOnHost(path, session: sessionId, client: connection.get()) }
-                        catch { structuredActionErrorMessage = error.localizedDescription }
-                    }
-                    return .handled
-                }
-                if NoteLinkRouter.open(url.absoluteString) { return .handled }
-                return .systemAction
-            })
+        Markdown(ChatPathLinkifier.markdown(text))
+            .environment(\.openURL, chatLinkAction)
             .markdownTextStyle {
                 FontFamily(.custom(theme.fontName))
                 FontSize(14)
                 ForegroundColor(message.isUser ? theme.onAccentColor : theme.textColor)
+            }
+            // After the body style, which colours every run: a link keeps its
+            // own accent and underline instead of reading as body text.
+            .markdownTextStyle(\.link) {
+                ForegroundColor(message.isUser ? theme.onAccentColor : theme.accentColor)
+                UnderlineStyle(.single)
             }
             // Assistant bubbles are compact and share their leading edge (and
             // inner inset) with the task cards; user bubbles keep more air.
@@ -1530,9 +1565,7 @@ struct MessageBubble: View {
                     .font(.themed(15, weight: .semibold))
             }
             if let summary = trimmed(response.summary.map(answerBody)) {
-                Text(summary)
-                    .font(.themed(13))
-                    .foregroundColor(theme.secondaryTextColor)
+                structuredMarkdownBlock(summary, size: 13, color: theme.secondaryTextColor)
             }
             if response.blocks.isEmpty {
                 let fallback = trimmed(answerBody(response.plainText)) ?? trimmed(answerDisplay.body)
@@ -1577,11 +1610,7 @@ struct MessageBubble: View {
             }
         case "text":
             if let text = trimmed(block.text.map(answerBody)) {
-                Text(text)
-                    .font(.themed(14))
-                    .foregroundColor(message.isUser ? theme.onAccentColor : theme.textColor)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
+                structuredMarkdownBlock(text)
             }
         case "callout":
             if let text = trimmed(block.text.map(answerBody)) {
@@ -1595,10 +1624,7 @@ struct MessageBubble: View {
                                 .font(.themed(12, weight: .semibold))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text(text)
-                            .font(.themed(13))
-                            .lineLimit(nil)
-                            .fixedSize(horizontal: false, vertical: true)
+                        structuredMarkdownBlock(text, size: 13)
                     }
                 }
                 .padding(8)
@@ -1829,13 +1855,40 @@ struct MessageBubble: View {
         }
     }
 
-    private func structuredMarkdownBlock(_ text: String) -> some View {
-        Markdown(text)
+    /// Structured `markdown`, `text`, `callout` and summary copy: Markdown so
+    /// links parse, are visible and open through the chat link router.
+    private func structuredMarkdownBlock(_ text: String, size: CGFloat = 14, color: Color? = nil) -> some View {
+        Markdown(ChatPathLinkifier.markdown(text))
+            .environment(\.openURL, chatLinkAction)
             .markdownTextStyle {
                 FontFamily(.custom(theme.fontName))
-                FontSize(14)
-                ForegroundColor(message.isUser ? theme.onAccentColor : theme.textColor)
+                FontSize(size)
+                ForegroundColor(color ?? (message.isUser ? theme.onAccentColor : theme.textColor))
             }
+            .markdownTextStyle(\.link) {
+                ForegroundColor(message.isUser ? theme.onAccentColor : theme.accentColor)
+                UnderlineStyle(.single)
+            }
+    }
+
+    /// Every link tap in this bubble goes through the one chat link router.
+    private var chatLinkRouter: ChatLinkRouter {
+        ChatLinkRouter(
+            sessionId: sessionId,
+            present: { openedArtifact = $0 },
+            fail: { structuredActionErrorMessage = $0 },
+            openTask: openTaskDetail.map { open -> (String) -> Void in
+                { taskId in open(TaskDetailRoute(taskId: taskId, titleHint: taskId)) }
+            }
+        )
+    }
+
+    private var chatLinkAction: OpenURLAction {
+        let router = chatLinkRouter
+        return OpenURLAction { url in
+            router.open(url)
+            return .handled
+        }
     }
 
     private func structuredResponseToneColor(_ tone: String?) -> Color {
@@ -1934,113 +1987,10 @@ struct MessageBubble: View {
         openTaskDetail?(TaskDetailRoute(taskId: taskId, titleHint: title))
     }
 
+    /// Structured `open_url` actions, source rows and artifact hrefs open
+    /// through the same router as Markdown links.
     private func openStructuredURL(_ raw: String) async {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            structuredActionErrorMessage = "Cannot open an empty destination."
-            return
-        }
-        if NoteLinkRouter.open(trimmed) { return }
-        if let path = ChatSessionAccounting.outputPath(trimmed), let sessionId {
-            do {
-                let connection = try WorkAPIClient.connected()
-                try await ChatSessionAccounting.openOnHost(path, session: sessionId, client: connection)
-            }
-            catch { structuredActionErrorMessage = error.localizedDescription }
-            return
-        }
-        let destination = classifyActivityLink(trimmed)
-        await openResolvedDestination(destination, raw: trimmed)
-    }
-
-    private func openResolvedDestination(_ destination: ActivityLinkDestination, raw: String) async {
-        switch destination {
-        case .external(let urlString):
-            guard let url = safeStructuredExternalURL(urlString) else {
-                structuredActionErrorMessage = "Could not open link: \(urlString)"
-                return
-            }
-            await UIApplication.shared.open(url)
-        case .task(let taskId):
-            guard let taskId else {
-                structuredActionErrorMessage = "Task identifier is missing."
-                return
-            }
-            openStructuredTask(taskId, title: taskId)
-        case .taskOutput(let taskId, let relativePath):
-            openedArtifact = .taskOutput(taskId: taskId, relativePath: relativePath, mime: nil)
-        case .artifact(let path):
-            if let url = URL(string: path) {
-                openedArtifact = .direct(url: url.absoluteString, mime: nil, name: URL(string: path)?.lastPathComponent)
-            } else {
-                structuredActionErrorMessage = "Cannot resolve artifact path."
-            }
-        case .webRoute(let path):
-            if let url = tunnelURL(path) {
-                openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: taskOrRouteTitle(from: path))
-            } else {
-                structuredActionErrorMessage = "Cannot resolve web route: \(path)"
-            }
-        case .file(let filePath):
-            guard let sid = sessionId, !sid.isEmpty else {
-                structuredActionErrorMessage = "Cannot open files from artifact references in this chat."
-                return
-            }
-            openedArtifact = .sessionOutput(sessionId: sid, relativePath: filePath, mime: nil)
-        case .thread(let threadId):
-            let path = "/t/\(threadId)"
-            if let url = tunnelURL(path) {
-                openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: "Thread")
-            } else {
-                structuredActionErrorMessage = "Cannot open thread: \(threadId)"
-            }
-        case .attention(let attentionId):
-            let path = "/attention\(attentionId.map { "?selected=\($0)" } ?? "")"
-            if let url = tunnelURL(path) { openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: "Attention") }
-            else { structuredActionErrorMessage = "Cannot open attention target." }
-        case .today(let tab):
-            let path = "/today\(tab.map { "?tab=\($0)" } ?? "")"
-            if let url = tunnelURL(path) { openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: "Today") }
-            else { structuredActionErrorMessage = "Cannot open Today surface." }
-        case .settings:
-            if let url = tunnelURL("/settings") { openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: "Settings") }
-            else { structuredActionErrorMessage = "Cannot open settings." }
-        case .observe:
-            if let url = tunnelURL("/observe") { openedArtifact = .direct(url: url.absoluteString, mime: "text/html", name: "Observe") }
-            else { structuredActionErrorMessage = "Cannot open observe surface." }
-        case .execution(let executionId):
-            if executionId.isEmpty {
-                structuredActionErrorMessage = "Task execution identifier is missing."
-            } else if let path = tunnelURL("/debug?execution_id=\(executionId)") {
-                openedArtifact = .direct(url: path.absoluteString, mime: "text/plain", name: "Execution")
-            } else {
-                structuredActionErrorMessage = "Cannot open execution \(executionId)."
-            }
-        case .unknown:
-            structuredActionErrorMessage = "Cannot resolve destination."
-        }
-    }
-
-    private func safeStructuredExternalURL(_ raw: String) -> URL? {
-        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else { return nil }
-        return url
-    }
-
-    private func tunnelURL(_ path: String) -> URL? {
-        if let parsed = URL(string: path), parsed.scheme != nil {
-            return parsed
-        }
-        let prefixed = path.hasPrefix("/") ? path : "/\(path)"
-        return URL(string: "\(MagicianAccess.baseURL.absoluteString)\(prefixed)")
-    }
-
-    private func taskOrRouteTitle(from path: String) -> String {
-        if let idx = path.lastIndex(of: "/"), idx < path.endIndex {
-            let suffix = String(path[path.index(after: idx)...])
-            return trimmed(suffix) ?? "Open"
-        }
-        return trimmed(path) ?? "Open"
+        chatLinkRouter.open(raw)
     }
 
     /// The open target the server recorded for a shortened `artifact_id`
@@ -2172,81 +2122,7 @@ struct MessageBubble: View {
                 return
             }
         }
-        let destination = classifyActivityLink(trimmedValue)
-        switch destination {
-        case .taskOutput(let taskId, let relativePath):
-            openedArtifact = .taskOutput(taskId: taskId, relativePath: relativePath, mime: nil)
-        case .task(let taskId):
-            if let taskId {
-                openStructuredTask(taskId, title: "Task")
-            } else {
-                structuredActionErrorMessage = "Task id is missing from artifact action."
-            }
-        case .artifact(let path):
-            if let url = URL(string: path) {
-                openedArtifact = .direct(url: url.absoluteString, mime: nil, name: URL(string: path)?.lastPathComponent)
-            } else {
-                structuredActionErrorMessage = "Artifact path is invalid: \(path)"
-            }
-        case .external(let path):
-            if let url = safeStructuredExternalURL(path) {
-                openedArtifact = .direct(url: url.absoluteString, mime: nil, name: URL(string: path)?.lastPathComponent)
-            } else {
-                structuredActionErrorMessage = "Artifact destination is invalid."
-            }
-        case .webRoute(let path):
-            if let route = tunnelURL(path) {
-                openedArtifact = .direct(url: route.absoluteString, mime: nil, name: taskOrRouteTitle(from: path))
-            } else {
-                structuredActionErrorMessage = "Could not open artifact route."
-            }
-        case .file(let path):
-            if let sid = sessionId, !sid.isEmpty {
-                openedArtifact = .sessionOutput(sessionId: sid, relativePath: path, mime: nil)
-            } else {
-                structuredActionErrorMessage = "Cannot open artifact file for this chat."
-            }
-        case .thread(let threadId):
-            if let route = tunnelURL("/t/\(threadId)") {
-                openedArtifact = .direct(url: route.absoluteString, mime: "text/html", name: "Thread")
-            } else {
-                structuredActionErrorMessage = "Could not open thread artifact."
-            }
-        case .attention(let attentionId):
-            let path = "/attention\(attentionId.map { "?selected=\($0)" } ?? "")"
-            if let route = tunnelURL(path) {
-                openedArtifact = .direct(url: route.absoluteString, mime: "text/html", name: "Attention")
-            } else {
-                structuredActionErrorMessage = "Could not open attention."
-            }
-        case .today(let tab):
-            let path = "/today\(tab.map { "?tab=\($0)" } ?? "")"
-            if let route = tunnelURL(path) {
-                openedArtifact = .direct(url: route.absoluteString, mime: "text/html", name: "Today")
-            } else {
-                structuredActionErrorMessage = "Could not open today."
-            }
-        case .settings:
-            if let route = tunnelURL("/settings") {
-                openedArtifact = .direct(url: route.absoluteString, mime: "text/html", name: "Settings")
-            } else {
-                structuredActionErrorMessage = "Could not open settings."
-            }
-        case .observe:
-            if let route = tunnelURL("/observe") {
-                openedArtifact = .direct(url: route.absoluteString, mime: "text/html", name: "Observe")
-            } else {
-                structuredActionErrorMessage = "Could not open observe."
-            }
-        case .execution(let executionId):
-            if let route = tunnelURL("/api/magician/v3/tasks/unknown/outputs/\(executionId)") {
-                openedArtifact = .direct(url: route.absoluteString, mime: nil, name: "Execution output")
-            } else {
-                structuredActionErrorMessage = "Could not open execution output."
-            }
-        case .unknown:
-            structuredActionErrorMessage = "Could not open artifact."
-        }
+        chatLinkRouter.open(trimmedValue)
     }
 
     /// A per-type "open" card for a file/url content block (mirrors the web

@@ -25,6 +25,7 @@
 		openHitlPrompt
 	} from '$lib/attention';
 	import { showError } from '$lib/shared/stores/notifications';
+	import { threadLabels } from '$lib/threads/threadLinks';
 	import { pendingHitlCount, pendingHitlEntries } from '$lib/stores/pendingHitlStore';
 
 	/// null = the unscoped /dev workbench (no thread label).
@@ -55,7 +56,7 @@
 			{:else}
 				<span class="plan-pane__badge">off</span>
 			{/if}
-			{#if threadId}<span class="plan-pane__thread">#{threadId}</span>{/if}
+			{#if threadId}<span class="plan-pane__thread">#{$threadLabels(threadId)}</span>{/if}
 		</header>
 
 		{#if $pendingHitlCount > 0}

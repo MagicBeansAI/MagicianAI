@@ -261,6 +261,48 @@ where
     filtered
 }
 
+/// Longest appended system prompt passed as one argv string. Linux refuses a
+/// single argument over 128 KiB (`MAX_ARG_STRLEN`); past this bound Claude
+/// reads the text from a file instead.
+const CLAUDE_INLINE_APPEND_MAX_BYTES: usize = 96 * 1024;
+
+/// The executing agent's persona and playbook
+/// ([`CodingEngineRequest::append_system_prompt`]) on Claude Code's own system
+/// prompt: `--append-system-prompt` keeps its default prompt and adds the text
+/// after it. Sent on every launch, a `--resume` included: the system prompt is
+/// not part of the session's history, so a resumed session gets it once, not
+/// twice (Claude replays the prompt it recorded on the session's first
+/// request where it records one). Text too long for one argv string goes
+/// through `--append-system-prompt-file`, joined into one file beside its
+/// sources when there are several (the flag takes one file).
+fn append_system_prompt_args(request: &CodingEngineRequest) -> Vec<OsString> {
+    let Some(text) = request.append_system_prompt_text(CodingEngineKind::ClaudeCode) else {
+        return Vec::new();
+    };
+    if text.len() <= CLAUDE_INLINE_APPEND_MAX_BYTES {
+        return vec!["--append-system-prompt".into(), text.into()];
+    }
+    let path = match request.append_system_prompt.as_slice() {
+        [only] => only.clone(),
+        [first, ..] => {
+            let joined = first.with_extension("claude.md");
+            if let Err(error) = std::fs::write(&joined, text.as_bytes()) {
+                tracing::warn!(
+                    target: "coding_engine",
+                    engine = "claude_code",
+                    path = %joined.display(),
+                    %error,
+                    "could not write the joined system-prompt file; passing the text inline"
+                );
+                return vec!["--append-system-prompt".into(), text.into()];
+            }
+            joined
+        },
+        [] => return Vec::new(),
+    };
+    vec!["--append-system-prompt-file".into(), path.into_os_string()]
+}
+
 fn spawn_claude(
     adapter: &ClaudeCodeAdapter,
     request: &CodingEngineRequest,
@@ -279,6 +321,7 @@ fn spawn_claude(
         request.claude.effort.as_deref(),
         "--effort",
     )?);
+    args.extend(append_system_prompt_args(request));
     debug_assert!(!args.iter().any(|arg| arg == "--bare"));
     // Super god mode: the owner's own Claude Code, with their settings, MCP
     // servers and every tool.
@@ -1742,6 +1785,60 @@ mod tests {
             Some("sk-secret")
         );
         assert!(!with_key.contains_key("MAGICIAN_FOO"));
+    }
+
+    #[test]
+    fn claude_gets_the_persona_and_playbook_on_its_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request_for(dir.path());
+        assert!(append_system_prompt_args(&request).is_empty());
+        let persona = dir.path().join("persona.md");
+        let playbook = dir.path().join("playbook.md");
+        std::fs::write(&persona, "\n## IDENTITY\nYou are Ada.\n").unwrap();
+        std::fs::write(&playbook, "\n## ACTIVE PROCEDURE PLAYBOOK\nShip small.\n").unwrap();
+        request.append_system_prompt = vec![persona, playbook];
+        let args = append_system_prompt_args(&request);
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--append-system-prompt"),
+                OsString::from("## IDENTITY\nYou are Ada.\n\n## ACTIVE PROCEDURE PLAYBOOK\nShip small."),
+            ]
+        );
+        // A resumed session still gets it: the system prompt is per launch.
+        request.claude.resume_session_id = Some(NATIVE.into());
+        assert_eq!(append_system_prompt_args(&request), args);
+    }
+
+    #[test]
+    fn a_long_claude_system_prompt_goes_through_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut request = request_for(dir.path());
+        let persona = dir.path().join("persona.md");
+        let playbook = dir.path().join("playbook.md");
+        std::fs::write(&persona, "You are Ada.").unwrap();
+        std::fs::write(&playbook, "x".repeat(CLAUDE_INLINE_APPEND_MAX_BYTES + 1)).unwrap();
+        request.append_system_prompt = vec![persona.clone(), playbook.clone()];
+        let args = append_system_prompt_args(&request);
+        let joined = dir.path().join("persona.claude.md");
+        assert_eq!(
+            args,
+            vec![
+                OsString::from("--append-system-prompt-file"),
+                joined.clone().into_os_string(),
+            ]
+        );
+        let text = std::fs::read_to_string(&joined).unwrap();
+        assert!(text.starts_with("You are Ada.\n\nxxx"), "{}", &text[..20]);
+        // One long file is handed over as it is.
+        request.append_system_prompt = vec![playbook.clone()];
+        assert_eq!(
+            append_system_prompt_args(&request),
+            vec![
+                OsString::from("--append-system-prompt-file"),
+                playbook.into_os_string(),
+            ]
+        );
     }
 
     #[test]

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Current development version: `0.1.9`._
 
+- On Windows `process::resolve_program` finds a bare name's `.exe`, `.cmd` or other `PATHEXT` file, as `cmd.exe` does. It joined the name as given, so `git`, `rg`, `node` and every other bare name resolved to a path with no extension and was never found. macOS and Linux are unchanged. CI's Windows desktop check compiles it; its Windows-only tests have not run yet.
+- `process::resolve_ripgrep` picks the ripgrep the `grep` and `glob` tools run: `MAGICIAN_RG`, the packaged `rg.bin` beside the binary or in its folder, the `rg` skill's pinned copy under skillshub, then the host's `rg`, with its source.
 ### Added — `process::git_program` (0.1.9)
 
 - One git for Magician's own git work: `MAGICIAN_GIT`, else a working host git, else the `dugite` skill's bundled git.

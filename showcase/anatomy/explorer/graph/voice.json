@@ -103,11 +103,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "voice_control_ws_handler",
-   "line": 193,
+   "line": 195,
    "carries": "VoiceControlSession",
    "title": "Control socket accepted",
    "say": "The control route checks origin, principal and workspace ownership, loads the wake-name preference, builds a voice orchestrator, then starts one actor that owns this call.",
-   "evidence": "magician-bin/src/main.rs:13665; magician-api/src/voice_control_handler.rs:228; magician-api/src/voice_control_handler.rs:316; magician-api/src/voice_control_handler.rs:355",
+   "evidence": "magician-bin/src/main.rs:13665; magician-api/src/voice_control_handler.rs:228; magician-api/src/voice_control_handler.rs:316; magician-api/src/voice_control_handler.rs:355; branch at magician-api/src/voice_control_handler.rs:193",
    "next": "voice.session"
   },
   {
@@ -119,11 +119,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "on_session_start",
-   "line": 2613,
+   "line": 2615,
    "carries": "session.start",
    "title": "Session start requested",
    "say": "The start frame names the chat on screen, voice mode and optional realtime profile. The call binds to that owned conversation instead of guessing between chat tabs.",
-   "evidence": "magician-api/src/voice_control_handler.rs:2631; magician-api/src/voice_control_handler.rs:2638; magician-api/src/voice_control_handler.rs:2646",
+   "evidence": "magician-api/src/voice_control_handler.rs:2631; magician-api/src/voice_control_handler.rs:2638; magician-api/src/voice_control_handler.rs:2646; branch at magician-api/src/voice_control_handler.rs:2613",
    "next": "voice.engine"
   },
   {
@@ -242,11 +242,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": null,
    "fn": "on_session_start",
-   "line": 2613,
+   "line": 2615,
    "carries": "RealtimeSessionDescriptor",
    "title": "GPT Live mouth",
    "say": "GPT Live uses its own speaking prompt and no tool list. Magician records its policy snapshot without waiting for chat memory, then handles delegated work.",
-   "evidence": "magicllm/src/realtime/factory.rs:85; magicllm/src/realtime/openai_live.rs:1; magician-api/src/voice_control_handler.rs:2775; branch at magicllm/src/realtime/openai_live.rs:152; branch at magician-api/src/voice_control_handler.rs:1",
+   "evidence": "magicllm/src/realtime/factory.rs:85; magicllm/src/realtime/openai_live.rs:1; magician-api/src/voice_control_handler.rs:2775; branch at magicllm/src/realtime/openai_live.rs:152; branch at magician-api/src/voice_control_handler.rs:1; branch at magician-api/src/voice_control_handler.rs:2613",
    "next": "voice.grounding"
   },
   {
@@ -274,11 +274,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": null,
    "fn": "profile_supports_mandatory_turn_grounding",
-   "line": 341,
+   "line": 340,
    "carries": "RealtimeVoiceProfile",
    "title": "Grounding gate",
    "say": "Only OpenAI realtime can hold a reply until memory is retrieved; other profiles must opt out explicitly, or Magician swaps in a grounded fallback profile.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1042; magician-media/src/media_rails/voice_orchestrator.rs:1081; branch at magician-media/src/media_rails/voice_orchestrator.rs:342; branch at magician-media/src/media_rails/voice_orchestrator.rs:340",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1042; magician-media/src/media_rails/voice_orchestrator.rs:1081; branch at magician-media/src/media_rails/voice_orchestrator.rs:342; branch at magician-media/src/media_rails/voice_orchestrator.rs:340; branch at magician-media/src/media_rails/voice_orchestrator.rs:341",
    "next": "voice.mint"
   },
   {
@@ -290,11 +290,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": "VoiceOrchestrator",
    "fn": "start",
-   "line": 921,
+   "line": 988,
    "carries": "RealtimeSessionDescriptor",
    "title": "Session minted",
    "say": "The orchestrator mints the upstream session, applies the preferred voice and turn detection, and for backend-proxied engines opens the audio channel straight away.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1097; magician-media/src/media_rails/voice_orchestrator.rs:1206; magician-api/src/voice_control_handler.rs:2752; branch at magician-media/src/media_rails/voice_orchestrator.rs:906; branch at magician-media/src/media_rails/voice_orchestrator.rs:904",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1097; magician-media/src/media_rails/voice_orchestrator.rs:1206; magician-api/src/voice_control_handler.rs:2752; branch at magician-media/src/media_rails/voice_orchestrator.rs:906; branch at magician-media/src/media_rails/voice_orchestrator.rs:904; branch at magician-media/src/media_rails/voice_orchestrator.rs:921",
    "next": "voice.asr"
   },
   {
@@ -382,11 +382,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "on_transcript",
-   "line": 3164,
+   "line": 3170,
    "carries": "transcript.user",
    "title": "Browser reports transcripts",
    "say": "Direct WebRTC clients send user and assistant transcript frames themselves; on backend-proxied calls those caller-authored frames are ignored so they cannot be forged.",
-   "evidence": "magician-api/src/voice_control_handler.rs:2565; magician-api/src/voice_control_handler.rs:3157; branch at magician-api/src/voice_control_handler.rs:3138; branch at magician-api/src/voice_control_handler.rs:3152",
+   "evidence": "magician-api/src/voice_control_handler.rs:2565; magician-api/src/voice_control_handler.rs:3157; branch at magician-api/src/voice_control_handler.rs:3138; branch at magician-api/src/voice_control_handler.rs:3152; branch at magician-api/src/voice_control_handler.rs:3164",
    "next": "voice.admit"
   },
   {
@@ -398,11 +398,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "handle",
-   "line": 5666,
+   "line": 5629,
    "carries": "PCM16 binary frame",
    "title": "Audio frames routed",
    "say": "Each binary microphone frame is dropped while the assistant talks in half-duplex mode; otherwise it is copied to local transcription and sent to the provider.",
-   "evidence": "magician-api/src/voice_control_handler.rs:3720; magician-api/src/voice_control_handler.rs:6175; magician-api/src/voice_control_handler.rs:6176; branch at magician-api/src/voice_control_handler.rs:6154; branch at magician-api/src/voice_control_handler.rs:6140; branch at magician-api/src/voice_control_handler.rs:5769; branch at magician-api/src/voice_control_handler.rs:5669",
+   "evidence": "magician-api/src/voice_control_handler.rs:3720; magician-api/src/voice_control_handler.rs:6175; magician-api/src/voice_control_handler.rs:6176; branch at magician-api/src/voice_control_handler.rs:6154; branch at magician-api/src/voice_control_handler.rs:6140; branch at magician-api/src/voice_control_handler.rs:5769; branch at magician-api/src/voice_control_handler.rs:5669; branch at magician-api/src/voice_control_handler.rs:5666",
    "next": "voice.uplink"
   },
   {
@@ -446,11 +446,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "handle_finalized_user_transcript",
-   "line": 2905,
+   "line": 2911,
    "carries": "transcript.user",
    "title": "Utterance admitted",
    "say": "A final user transcript must pass the self-echo check and the wake-name gate before it is echoed to the client and allowed to start a turn.",
-   "evidence": "magician-api/src/voice_control_handler.rs:2886; magician-api/src/voice_control_handler.rs:2283; magician-api/src/voice_control_handler.rs:2298; branch at magician-api/src/voice_control_handler.rs:2879; branch at magician-api/src/voice_control_handler.rs:2893",
+   "evidence": "magician-api/src/voice_control_handler.rs:2886; magician-api/src/voice_control_handler.rs:2283; magician-api/src/voice_control_handler.rs:2298; branch at magician-api/src/voice_control_handler.rs:2879; branch at magician-api/src/voice_control_handler.rs:2893; branch at magician-api/src/voice_control_handler.rs:2905",
    "next": "voice.echo"
   },
   {
@@ -501,11 +501,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "begin_realtime_user_turn",
-   "line": 1511,
+   "line": 1513,
    "carries": "RealtimeTurnContext",
    "title": "Memory context retrieved",
    "say": "The turn is opened in the chat ledger and, for OpenAI, the reply is held until memory and procedure context for this utterance has been retrieved.",
-   "evidence": "magician-api/src/voice_control_handler.rs:1592; magician-media/src/media_rails/voice_orchestrator.rs:3577; magician-media/src/media_rails/voice_orchestrator.rs:338",
+   "evidence": "magician-api/src/voice_control_handler.rs:1592; magician-media/src/media_rails/voice_orchestrator.rs:3577; magician-media/src/media_rails/voice_orchestrator.rs:338; branch at magician-api/src/voice_control_handler.rs:1511",
    "next": "voice.tool"
   },
   {
@@ -545,11 +545,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": "VoiceOrchestrator",
    "fn": "dispatch_tool",
-   "line": 2851,
+   "line": 2898,
    "carries": "VoiceToolDispatchResponse",
    "title": "Direct tool dispatched",
    "say": "The orchestrator checks the call against the advertised policy snapshot, runs it through chat's external tool dispatcher, and returns a speakable summary to the model.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:3201; magician-api/src/voice_control_handler.rs:5493; branch at magician-media/src/media_rails/voice_orchestrator.rs:2742; branch at magician-media/src/media_rails/voice_orchestrator.rs:2808",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:3201; magician-api/src/voice_control_handler.rs:5493; branch at magician-media/src/media_rails/voice_orchestrator.rs:2742; branch at magician-media/src/media_rails/voice_orchestrator.rs:2808; branch at magician-media/src/media_rails/voice_orchestrator.rs:2851",
    "next": "voice.playback"
   },
   {
@@ -561,11 +561,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": "VoiceOrchestrator",
    "fn": "dispatch_tool",
-   "line": 2851,
+   "line": 2898,
    "carries": "delegate_to_chat",
    "title": "Handed off to chat",
    "say": "Delegate to chat acks at once and runs a background chat engine turn, the same path a typed chat message takes, while the voice call continues.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:2987; magician-media/src/media_rails/voice_orchestrator.rs:3029; magician-media/src/media_rails/voice_orchestrator.rs:3828; branch at magician-media/src/media_rails/voice_orchestrator.rs:2822; branch at magician-media/src/media_rails/voice_orchestrator.rs:2742; branch at magician-media/src/media_rails/voice_orchestrator.rs:2808",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:2987; magician-media/src/media_rails/voice_orchestrator.rs:3029; magician-media/src/media_rails/voice_orchestrator.rs:3828; branch at magician-media/src/media_rails/voice_orchestrator.rs:2822; branch at magician-media/src/media_rails/voice_orchestrator.rs:2742; branch at magician-media/src/media_rails/voice_orchestrator.rs:2808; branch at magician-media/src/media_rails/voice_orchestrator.rs:2851",
    "next": "voice.tool.chunks"
   },
   {
@@ -577,11 +577,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "handle",
-   "line": 5666,
+   "line": 5629,
    "carries": "delegate_to_chat.chunk",
    "title": "Chat chunks spoken",
    "say": "As the chat turn streams, each speakable chunk is injected into the live provider session as a system message, so the voice reads progress aloud.",
-   "evidence": "magician-api/src/voice_control_handler.rs:5764; magician-api/src/voice_control_handler.rs:5815; branch at magician-api/src/voice_control_handler.rs:5763; branch at magician-api/src/voice_control_handler.rs:5669",
+   "evidence": "magician-api/src/voice_control_handler.rs:5764; magician-api/src/voice_control_handler.rs:5815; branch at magician-api/src/voice_control_handler.rs:5763; branch at magician-api/src/voice_control_handler.rs:5669; branch at magician-api/src/voice_control_handler.rs:5666",
    "next": "voice.playback"
   },
   {
@@ -593,11 +593,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": "VoiceOrchestrator",
    "fn": "process_cascaded_voice_turn",
-   "line": 1448,
+   "line": 1495,
    "carries": "CascadedVoiceTurnOutcome",
    "title": "Full chat turn runs",
    "say": "In hands-free mode the utterance runs as a complete chat turn with tools and delegation, on the execution runtime rather than the voice worker.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1398; magician-api/src/voice_control_handler.rs:2945; branch at magician-media/src/media_rails/voice_orchestrator.rs:1358; branch at magician-media/src/media_rails/voice_orchestrator.rs:1405",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:1398; magician-api/src/voice_control_handler.rs:2945; branch at magician-media/src/media_rails/voice_orchestrator.rs:1358; branch at magician-media/src/media_rails/voice_orchestrator.rs:1405; branch at magician-media/src/media_rails/voice_orchestrator.rs:1448",
    "next": "voice.cascade.speak"
   },
   {
@@ -625,11 +625,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "handle",
-   "line": 4779,
+   "line": 4767,
    "carries": "ProviderAudioFrame",
    "title": "Speech plays back",
    "say": "Each spoken reply chunk is measured for echo suppression, then written back as a binary frame that the device plays through its speaker.",
-   "evidence": "magician-api/src/voice_control_handler.rs:4907; magician-api/src/voice_control_handler.rs:4923; magician-api/src/voice_control_handler.rs:4928; branch at magician-api/src/voice_control_handler.rs:4909; branch at magician-api/src/voice_control_handler.rs:4882; branch at magician-api/src/voice_control_handler.rs:4794",
+   "evidence": "magician-api/src/voice_control_handler.rs:4907; magician-api/src/voice_control_handler.rs:4923; magician-api/src/voice_control_handler.rs:4928; branch at magician-api/src/voice_control_handler.rs:4909; branch at magician-api/src/voice_control_handler.rs:4882; branch at magician-api/src/voice_control_handler.rs:4794; branch at magician-api/src/voice_control_handler.rs:4779",
    "next": "voice.bargein"
   },
   {
@@ -664,11 +664,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "handle_text_message",
-   "line": 2360,
+   "line": 2362,
    "carries": "RealtimeAudioControl::InterruptResponse",
    "title": "Barge-in cancels",
    "say": "Push-to-talk during a reply sends an interrupt control, which the provider task turns into an OpenAI response cancel, or stops the cascaded speech.",
-   "evidence": "magician-api/src/voice_control_handler.rs:2391; magicllm/src/realtime/openai.rs:685; magicllm/src/realtime/openai.rs:688; branch at magician-api/src/voice_control_handler.rs:2384",
+   "evidence": "magician-api/src/voice_control_handler.rs:2391; magicllm/src/realtime/openai.rs:685; magicllm/src/realtime/openai.rs:688; branch at magician-api/src/voice_control_handler.rs:2384; branch at magician-api/src/voice_control_handler.rs:2360",
    "next": "voice.transcript"
   },
   {
@@ -680,11 +680,11 @@
    "file": "magician-media/src/media_rails/voice_orchestrator.rs",
    "type": "VoiceOrchestrator",
    "fn": "ingest_transcript_turn_at_epoch",
-   "line": 2285,
+   "line": 2332,
    "carries": "ChatMessageReceived",
    "title": "Transcript lands in chat",
    "say": "User and assistant transcripts go out as chat message events tagged with the voice channel, so they are saved and appear live in the chat thread.",
-   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:2281; magician-media/src/media_rails/voice_orchestrator.rs:2286; branch at magician-media/src/media_rails/voice_orchestrator.rs:2176; branch at magician-media/src/media_rails/voice_orchestrator.rs:2242",
+   "evidence": "magician-media/src/media_rails/voice_orchestrator.rs:2281; magician-media/src/media_rails/voice_orchestrator.rs:2286; branch at magician-media/src/media_rails/voice_orchestrator.rs:2176; branch at magician-media/src/media_rails/voice_orchestrator.rs:2242; branch at magician-media/src/media_rails/voice_orchestrator.rs:2285",
    "next": "voice.hangup"
   },
   {
@@ -696,11 +696,11 @@
    "file": "magician-api/src/voice_control_handler.rs",
    "type": "VoiceControlSession",
    "fn": "on_session_end",
-   "line": 2994,
+   "line": 3000,
    "carries": "session.end",
    "title": "Call hangs up",
    "say": "When the caller ends the session, the local transcript stream closes and the provider is asked to close and report its final usage before cleanup.",
-   "evidence": "magician-api/src/voice_control_handler.rs:2380; magician-api/src/voice_control_handler.rs:2977; branch at magician-api/src/voice_control_handler.rs:2968; branch at magician-api/src/voice_control_handler.rs:2982",
+   "evidence": "magician-api/src/voice_control_handler.rs:2380; magician-api/src/voice_control_handler.rs:2977; branch at magician-api/src/voice_control_handler.rs:2968; branch at magician-api/src/voice_control_handler.rs:2982; branch at magician-api/src/voice_control_handler.rs:2994",
    "next": "voice.done"
   },
   {

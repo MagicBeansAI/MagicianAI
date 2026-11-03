@@ -60,11 +60,11 @@
    "file": "magician/src/magician_v2/chat/service.rs",
    "type": "ChatService",
    "fn": "dispatch_delegate_to_agent",
-   "line": 24341,
+   "line": 24740,
    "carries": "GoalSource::ChatInline",
    "title": "Chat delegates a goal",
    "say": "The chat service triggers the agent runtime with a chat-inline goal, which opens a task with an execution shell and spawns a goal cycle job.",
-   "evidence": "magician/src/magician_v2/chat/service.rs:24304; magician/src/magician_v2/agents/runtime.rs:2622; magician/src/magician_v2/agents/runtime.rs:3532; magician/src/magician_v2/agents/runtime.rs:4627; branch at magician/src/magician_v2/chat/service.rs:23933; branch at magician/src/magician_v2/chat/service.rs:24062; branch at magician/src/magician_v2/chat/service.rs:23628; branch at magician/src/magician_v2/chat/service.rs:23636; branch at magician/src/magician_v2/chat/service.rs:23648; branch at magician/src/magician_v2/chat/service.rs:23825; branch at magician/src/magician_v2/chat/service.rs:24243; branch at magician/src/magician_v2/chat/service.rs:24268; branch at magician/src/magician_v2/chat/service.rs:24305",
+   "evidence": "magician/src/magician_v2/chat/service.rs:24304; magician/src/magician_v2/agents/runtime.rs:2622; magician/src/magician_v2/agents/runtime.rs:3532; magician/src/magician_v2/agents/runtime.rs:4627; branch at magician/src/magician_v2/chat/service.rs:23933; branch at magician/src/magician_v2/chat/service.rs:24062; branch at magician/src/magician_v2/chat/service.rs:23628; branch at magician/src/magician_v2/chat/service.rs:23636; branch at magician/src/magician_v2/chat/service.rs:23648; branch at magician/src/magician_v2/chat/service.rs:23825; branch at magician/src/magician_v2/chat/service.rs:24243; branch at magician/src/magician_v2/chat/service.rs:24268; branch at magician/src/magician_v2/chat/service.rs:24305; branch at magician/src/magician_v2/chat/service.rs:24341",
    "next": "task.executor"
   },
   {
@@ -76,11 +76,11 @@
    "file": "magician/src/magician_v2/chat/service.rs",
    "type": "ChatService",
    "fn": "dispatch_capability_pack",
-   "line": 20589,
+   "line": 20692,
    "carries": "PreDecidedPackCall",
    "title": "Chat runs a pack as a task",
    "say": "Chat builds a pre-decided pack call, creates an internal task with an execution shell, and runs it inline so progress streams into the chat card.",
-   "evidence": "magician/src/magician_v2/chat/service.rs:20409; magician/src/magician_v2/chat/service.rs:20707; magician/src/magician_v2/chat/service.rs:20773; magician/src/magician_v2/artifact_v2/service.rs:30830; branch at magician/src/magician_v2/chat/service.rs:20287; branch at magician/src/magician_v2/chat/service.rs:20390; branch at magician/src/magician_v2/chat/service.rs:19956; branch at magician/src/magician_v2/chat/service.rs:19964; branch at magician/src/magician_v2/chat/service.rs:19972; branch at magician/src/magician_v2/chat/service.rs:20149; branch at magician/src/magician_v2/chat/service.rs:20492; branch at magician/src/magician_v2/chat/service.rs:20517; branch at magician/src/magician_v2/chat/service.rs:20554",
+   "evidence": "magician/src/magician_v2/chat/service.rs:20409; magician/src/magician_v2/chat/service.rs:20707; magician/src/magician_v2/chat/service.rs:20773; magician/src/magician_v2/artifact_v2/service.rs:30830; branch at magician/src/magician_v2/chat/service.rs:20287; branch at magician/src/magician_v2/chat/service.rs:20390; branch at magician/src/magician_v2/chat/service.rs:19956; branch at magician/src/magician_v2/chat/service.rs:19964; branch at magician/src/magician_v2/chat/service.rs:19972; branch at magician/src/magician_v2/chat/service.rs:20149; branch at magician/src/magician_v2/chat/service.rs:20492; branch at magician/src/magician_v2/chat/service.rs:20517; branch at magician/src/magician_v2/chat/service.rs:20554; branch at magician/src/magician_v2/chat/service.rs:20589",
    "next": "task.executor"
   },
   {
@@ -92,11 +92,11 @@
    "file": "magician-api/src/web_api.rs",
    "type": null,
    "fn": "run_scheduler_tick",
-   "line": 4494,
+   "line": 4547,
    "carries": "ScheduledTrigger",
    "title": "Scheduler tick",
    "say": "Every few seconds a supervisor tick collects due cron triggers per scope and dispatches each within a budget; sleeping agents come back through the wake queue.",
-   "evidence": "magician-api/src/web_api.rs:4347; magician-api/src/web_api.rs:4365; magician/src/magician_v2/agents/scheduler.rs:303; magician-api/src/web_api.rs:5446; magician-api/src/web_api.rs:14876; branch at magician-api/src/web_api.rs:4300; branch at magician-api/src/web_api.rs:4413; branch at magician-api/src/web_api.rs:4456; branch at magician-api/src/web_api.rs:4511; branch at magician-api/src/web_api.rs:4478",
+   "evidence": "magician-api/src/web_api.rs:4347; magician-api/src/web_api.rs:4365; magician/src/magician_v2/agents/scheduler.rs:303; magician-api/src/web_api.rs:5446; magician-api/src/web_api.rs:14876; branch at magician-api/src/web_api.rs:4300; branch at magician-api/src/web_api.rs:4413; branch at magician-api/src/web_api.rs:4456; branch at magician-api/src/web_api.rs:4511; branch at magician-api/src/web_api.rs:4478; branch at magician-api/src/web_api.rs:4494",
    "next": "task.executor"
   },
   {
@@ -108,11 +108,11 @@
    "file": "magician/src/magician_v2/artifact_v2/service.rs",
    "type": "ArtifactV2Service",
    "fn": "start_execution_with_launch_options_internal",
-   "line": 23270,
+   "line": 23448,
    "carries": "V3ExecutionBinding",
    "title": "Execution launched",
    "say": "The service saves a new execution record and hands the run to a separate execution runtime, so the HTTP worker never runs it.",
-   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:22562; magician/src/magician_v2/artifact_v2/service.rs:28537; magician/src/magician_v2/artifact_v2/service.rs:28588; branch at magician/src/magician_v2/artifact_v2/service.rs:22496; branch at magician/src/magician_v2/artifact_v2/service.rs:22514; branch at magician/src/magician_v2/artifact_v2/service.rs:22626; branch at magician/src/magician_v2/artifact_v2/service.rs:22902; branch at magician/src/magician_v2/artifact_v2/service.rs:22907; branch at magician/src/magician_v2/artifact_v2/service.rs:23228; branch at magician/src/magician_v2/artifact_v2/service.rs:23229; branch at magician/src/magician_v2/artifact_v2/service.rs:23271",
+   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:22562; magician/src/magician_v2/artifact_v2/service.rs:28537; magician/src/magician_v2/artifact_v2/service.rs:28588; branch at magician/src/magician_v2/artifact_v2/service.rs:22496; branch at magician/src/magician_v2/artifact_v2/service.rs:22514; branch at magician/src/magician_v2/artifact_v2/service.rs:22626; branch at magician/src/magician_v2/artifact_v2/service.rs:22902; branch at magician/src/magician_v2/artifact_v2/service.rs:22907; branch at magician/src/magician_v2/artifact_v2/service.rs:23228; branch at magician/src/magician_v2/artifact_v2/service.rs:23229; branch at magician/src/magician_v2/artifact_v2/service.rs:23271; branch at magician/src/magician_v2/artifact_v2/service.rs:23270",
    "next": "task.executor"
   },
   {
@@ -124,11 +124,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": "StatelessArm",
    "fn": "execute_agentically",
-   "line": 34278,
+   "line": 34844,
    "carries": "AgenticContext",
    "title": "Agentic executor starts",
    "say": "Every path reaches the agentic executor. It scopes the owner and tools, loads the checkpoint and applies the run’s explicit budgets.",
-   "evidence": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs:28411; magician/src/magician_v2/execution/agentic/executor.rs:33239; magician/src/magician_v2/execution/agentic/executor.rs:36258; branch at magician/src/magician_v2/execution/agentic/executor.rs:32686; branch at magician/src/magician_v2/execution/agentic/executor.rs:32752; branch at magician/src/magician_v2/execution/agentic/executor.rs:32780; branch at magician/src/magician_v2/execution/agentic/executor.rs:32800; branch at magician/src/magician_v2/execution/agentic/executor.rs:32802; branch at magician/src/magician_v2/execution/agentic/executor.rs:32969; branch at magician/src/magician_v2/execution/agentic/executor.rs:33559; branch at magician/src/magician_v2/execution/agentic/executor.rs:33561; branch at magician/src/magician_v2/execution/agentic/executor.rs:34215; branch at magician/src/magician_v2/execution/agentic/executor.rs:34256",
+   "evidence": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs:28411; magician/src/magician_v2/execution/agentic/executor.rs:33239; magician/src/magician_v2/execution/agentic/executor.rs:36258; branch at magician/src/magician_v2/execution/agentic/executor.rs:32686; branch at magician/src/magician_v2/execution/agentic/executor.rs:32752; branch at magician/src/magician_v2/execution/agentic/executor.rs:32780; branch at magician/src/magician_v2/execution/agentic/executor.rs:32800; branch at magician/src/magician_v2/execution/agentic/executor.rs:32802; branch at magician/src/magician_v2/execution/agentic/executor.rs:32969; branch at magician/src/magician_v2/execution/agentic/executor.rs:33559; branch at magician/src/magician_v2/execution/agentic/executor.rs:33561; branch at magician/src/magician_v2/execution/agentic/executor.rs:34215; branch at magician/src/magician_v2/execution/agentic/executor.rs:34256; branch at magician/src/magician_v2/execution/agentic/executor.rs:34278",
    "next": "task.driver"
   },
   {
@@ -140,11 +140,11 @@
    "file": "magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs",
    "type": "WorkerHost",
    "fn": "advance_once",
-   "line": 1275,
+   "line": 1300,
    "carries": "Phase",
    "title": "One phase per lease",
    "say": "The stateless driver claims a fenced lease, runs exactly one phase, journals and commits it, then releases the lease or keeps it for the next phase.",
-   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1358; magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1430; magician/src/magician_v2/execution/agentic/run_loop/outcome.rs:122; magician/src/magician_v2/execution/agentic/executor.rs:39327; branch at magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1266",
+   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1358; magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1430; magician/src/magician_v2/execution/agentic/run_loop/outcome.rs:122; magician/src/magician_v2/execution/agentic/executor.rs:39327; branch at magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1266; branch at magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs:1275",
    "next": "task.prepare"
   },
   {
@@ -243,11 +243,11 @@
    "file": "magician/src/magician_v2/execution/agentic/decision.rs",
    "type": "Decision",
    "fn": "decide_next_action",
-   "line": 489,
+   "line": 487,
    "carries": "Decision",
    "title": "Native model decision",
    "say": "A decision job runs beside the loop: preflight checks first, then a native prompt asks the model for the next tool call, a question or a finish.",
-   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/decide.rs:566; magician/src/magician_v2/execution/agentic/executor.rs:32544; branch at magician/src/magician_v2/execution/agentic/decision.rs:353; branch at magician/src/magician_v2/execution/agentic/decision.rs:352",
+   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/decide.rs:566; magician/src/magician_v2/execution/agentic/executor.rs:32544; branch at magician/src/magician_v2/execution/agentic/decision.rs:353; branch at magician/src/magician_v2/execution/agentic/decision.rs:352; branch at magician/src/magician_v2/execution/agentic/decision.rs:489",
    "next": "task.decide.llm"
   },
   {
@@ -281,11 +281,11 @@
    "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
    "type": "GatedMember",
    "fn": "gate",
-   "line": 503,
+   "line": 506,
    "carries": "GatedMember",
    "title": "Apply gate",
    "say": "Apply matches on the decision; for an action it checks allowlists, the owner's approval rules and the action's criticality before anything runs.",
-   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3041; magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3305; magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3348; magician/src/magician_v2/execution/agentic/executor.rs:49122; branch at magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:502",
+   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3041; magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3305; magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3348; magician/src/magician_v2/execution/agentic/executor.rs:49122; branch at magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:502; branch at magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:503",
    "next": "task.gate"
   },
   {
@@ -320,11 +320,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": null,
    "fn": "build_action_confirmation_outcome",
-   "line": 26920,
+   "line": 27035,
    "carries": "RuntimeTransportEvent::HitlRequested",
    "title": "Run pauses for approval",
    "say": "The executor saves a full pause state and emits a HitlRequested event, so the web app, desktop and phone all show the same confirmation card.",
-   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3434; magician/src/magician_v2/execution/agentic/executor.rs:26122; magician/src/magician_v2/execution/agentic/executor.rs:21690; magician/src/magician_v2/realtime_events.rs:2238; branch at magician/src/magician_v2/execution/agentic/executor.rs:26011; branch at magician/src/magician_v2/execution/agentic/executor.rs:26062; branch at magician/src/magician_v2/execution/agentic/executor.rs:26063; branch at magician/src/magician_v2/execution/agentic/executor.rs:26083; branch at magician/src/magician_v2/execution/agentic/executor.rs:26240; branch at magician/src/magician_v2/execution/agentic/executor.rs:26518; branch at magician/src/magician_v2/execution/agentic/executor.rs:26520",
+   "evidence": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs:3434; magician/src/magician_v2/execution/agentic/executor.rs:26122; magician/src/magician_v2/execution/agentic/executor.rs:21690; magician/src/magician_v2/realtime_events.rs:2238; branch at magician/src/magician_v2/execution/agentic/executor.rs:26011; branch at magician/src/magician_v2/execution/agentic/executor.rs:26062; branch at magician/src/magician_v2/execution/agentic/executor.rs:26063; branch at magician/src/magician_v2/execution/agentic/executor.rs:26083; branch at magician/src/magician_v2/execution/agentic/executor.rs:26240; branch at magician/src/magician_v2/execution/agentic/executor.rs:26518; branch at magician/src/magician_v2/execution/agentic/executor.rs:26520; branch at magician/src/magician_v2/execution/agentic/executor.rs:26920",
    "next": "task.hitl.answer"
   },
   {
@@ -336,11 +336,11 @@
    "file": "magician-api/src/web_api.rs",
    "type": "RespondHitlRequest",
    "fn": "respond_hitl_handler",
-   "line": 27747,
+   "line": 27958,
    "carries": "RespondHitlRequest",
    "title": "Owner answers, run resumes",
    "say": "The owner's answer posts to the single HITL respond route; an agentic approval resumes the paused execution with the confirmed action carried in.",
-   "evidence": "magician-bin/src/main.rs:13460; magician-api/src/web_api.rs:28185; magician-api/src/web_api.rs:28321; magician-api/src/web_api.rs:21870; branch at magician-api/src/web_api.rs:26388; branch at magician-api/src/web_api.rs:26456; branch at magician-api/src/web_api.rs:26470; branch at magician-api/src/web_api.rs:26684; branch at magician-api/src/web_api.rs:27222; branch at magician-api/src/web_api.rs:27713; branch at magician-api/src/web_api.rs:27691",
+   "evidence": "magician-bin/src/main.rs:13460; magician-api/src/web_api.rs:28185; magician-api/src/web_api.rs:28321; magician-api/src/web_api.rs:21870; branch at magician-api/src/web_api.rs:26388; branch at magician-api/src/web_api.rs:26456; branch at magician-api/src/web_api.rs:26470; branch at magician-api/src/web_api.rs:26684; branch at magician-api/src/web_api.rs:27222; branch at magician-api/src/web_api.rs:27713; branch at magician-api/src/web_api.rs:27691; branch at magician-api/src/web_api.rs:27747",
    "next": "task.dispatch"
   },
   {
@@ -523,11 +523,11 @@
    "file": "magician/src/magician_v2/artifact_v2/service.rs",
    "type": "ArtifactV2Service",
    "fn": "persist_execution_outcome",
-   "line": 34036,
+   "line": 34442,
    "carries": "AgenticOutcome",
    "title": "Outcome published",
    "say": "The service saves the final execution outcome, marks synthesis as pending, and spawns the synthesis pipeline that publishes the task's outputs.",
-   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:28596; magician/src/magician_v2/artifact_v2/service.rs:33778; magician/src/magician_v2/artifact_v2/service.rs:16956; branch at magician/src/magician_v2/artifact_v2/service.rs:33144; branch at magician/src/magician_v2/artifact_v2/service.rs:33162; branch at magician/src/magician_v2/artifact_v2/service.rs:33283; branch at magician/src/magician_v2/artifact_v2/service.rs:33281; branch at magician/src/magician_v2/artifact_v2/service.rs:33663; branch at magician/src/magician_v2/artifact_v2/service.rs:33668; branch at magician/src/magician_v2/artifact_v2/service.rs:33989; branch at magician/src/magician_v2/artifact_v2/service.rs:33990; branch at magician/src/magician_v2/artifact_v2/service.rs:34032",
+   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:28596; magician/src/magician_v2/artifact_v2/service.rs:33778; magician/src/magician_v2/artifact_v2/service.rs:16956; branch at magician/src/magician_v2/artifact_v2/service.rs:33144; branch at magician/src/magician_v2/artifact_v2/service.rs:33162; branch at magician/src/magician_v2/artifact_v2/service.rs:33283; branch at magician/src/magician_v2/artifact_v2/service.rs:33281; branch at magician/src/magician_v2/artifact_v2/service.rs:33663; branch at magician/src/magician_v2/artifact_v2/service.rs:33668; branch at magician/src/magician_v2/artifact_v2/service.rs:33989; branch at magician/src/magician_v2/artifact_v2/service.rs:33990; branch at magician/src/magician_v2/artifact_v2/service.rs:34032; branch at magician/src/magician_v2/artifact_v2/service.rs:34036",
    "next": "task.done"
   },
   {
@@ -813,11 +813,11 @@
    "file": "magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs",
    "type": "AgentBrowserSession",
    "fn": "ensure_connected",
-   "line": 1112,
+   "line": 1114,
    "carries": "ConnectionMode",
    "title": "Session connects",
    "say": "The session uses the selected paired extension browser or launches an allowed headed or headless context. Later calls reuse its assigned window.",
-   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1039; magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:46; branch at magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1028; branch at magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1036",
+   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1039; magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:46; branch at magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1028; branch at magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1036; branch at magician/src/magician_v2/execution/primitive_dispatch/browser/session.rs:1112",
    "next": "browser.cli"
   },
   {
@@ -861,11 +861,11 @@
    "file": "magicutor/src/server/cdp_proxy.rs",
    "type": "OwnedTabCheck",
    "fn": "check_tab_ownership",
-   "line": 1440,
+   "line": 1443,
    "carries": "OwnedTabCheck",
    "title": "Tab ownership",
    "say": "Attach and close commands are checked against the tabs this execution owns, so an agent can only drive its own window and the popups it opened.",
-   "evidence": "magicutor/src/server/cdp_proxy.rs:1047; magicutor/src/server/cdp_proxy.rs:1176; magicutor/src/server/cdp_proxy.rs:201; branch at magicutor/src/server/cdp_proxy.rs:849; branch at magicutor/src/server/cdp_proxy.rs:1367",
+   "evidence": "magicutor/src/server/cdp_proxy.rs:1047; magicutor/src/server/cdp_proxy.rs:1176; magicutor/src/server/cdp_proxy.rs:201; branch at magicutor/src/server/cdp_proxy.rs:849; branch at magicutor/src/server/cdp_proxy.rs:1367; branch at magicutor/src/server/cdp_proxy.rs:1440",
    "next": "browser.bridge"
   },
   {
@@ -877,11 +877,11 @@
    "file": "magicutor/src/server/bridge.rs",
    "type": null,
    "fn": "send_over_bridge",
-   "line": 2365,
+   "line": 2407,
    "carries": "ExtensionRequest",
    "title": "Bridge to Chrome",
    "say": "Allowed commands travel over the native bridge to the Chrome extension, which runs them through the debugger interface on the real tab.",
-   "evidence": "magicutor/src/server/cdp_proxy.rs:1335; magicutor/src/server/cdp_proxy.rs:7; branch at magicutor/src/server/bridge.rs:483; branch at magicutor/src/server/bridge.rs:2361",
+   "evidence": "magicutor/src/server/cdp_proxy.rs:1335; magicutor/src/server/cdp_proxy.rs:7; branch at magicutor/src/server/bridge.rs:483; branch at magicutor/src/server/bridge.rs:2361; branch at magicutor/src/server/bridge.rs:2365",
    "next": "browser.result"
   },
   {
@@ -893,11 +893,11 @@
    "file": "magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs",
    "type": null,
    "fn": "dispatch_browser_action_with_session",
-   "line": 1193,
+   "line": 1201,
    "carries": "ActionResult",
    "title": "Result returns",
    "say": "The command's output becomes the action's result; with API mining on, the network traces the proxy captured are drained and saved first.",
-   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1096; magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1098; magician/src/magician_v2/execution/primitive_dispatch/browser/trace_drain.rs:50; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1054; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1144; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1186",
+   "evidence": "magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1096; magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1098; magician/src/magician_v2/execution/primitive_dispatch/browser/trace_drain.rs:50; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1054; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1144; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1186; branch at magician/src/magician_v2/execution/primitive_dispatch/dispatch.rs:1193",
    "next": "browser.done"
   },
   {

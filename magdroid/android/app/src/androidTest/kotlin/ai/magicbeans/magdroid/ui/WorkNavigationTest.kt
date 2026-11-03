@@ -477,13 +477,13 @@ class WorkNavigationTest {
         compose.onNodeWithText("untrusted-fixture-marker").assertDoesNotExist()
         Assert.assertEquals(0, server.writes.get())
     }
-    @Test fun manualCompanySequenceDispatchesExistingGoalsInOrder() {
+    @Test fun manualCompanySequenceDispatchesTheLiveFocusAreas() {
         mount(WorkSection.Operations); waitFor("Start team sequence")
         scrollTo("Start team sequence"); compose.onNodeWithText("Start team sequence").performClick()
         compose.onNodeWithText("Dispatch reviewed sequence").performClick()
-        compose.waitUntil(8_000) { server.writes.get() == 5 }
-        Assert.assertEquals(listOf("cmo", "cro", "cpo", "cto", "ceo"), server.writePaths.map { it.substringBeforeLast('/').substringAfterLast('/') })
-        Assert.assertTrue(server.lastBody.contains("harness:ceo:morning-briefing"))
+        compose.waitUntil(8_000) { server.writes.get() == 1 }
+        Assert.assertEquals(listOf("fixture-crew"), server.writePaths.map { it.substringBeforeLast('/').substringAfterLast('/') })
+        Assert.assertTrue(server.lastBody.contains("harness:fixture-crew:launch"))
         Assert.assertTrue(server.lastBody.contains("manual.harness.company_loop"))
     }
     @Test fun everyNativeThemeKeepsCrewControlsInteractive() {

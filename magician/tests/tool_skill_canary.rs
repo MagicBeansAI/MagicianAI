@@ -90,10 +90,7 @@ const CANARY_WORKSPACE: &str = DEFAULT_SCOPE_WORKSPACE;
 use tool_runtime_core::{
     canary::{CanaryCostTier, CanaryRun, SkillRuntimeCanary},
     governed_batch_process::process_memory_limits_are_enforceable,
-    manifest::{
-        AuthKind, AuthRequirement, AuthStorage, ProfileSelection, RuntimeProtocol,
-        WorkingDirectoryMode,
-    },
+    manifest::{AuthKind, AuthRequirement, RuntimeProtocol},
     manifest_parser::{parse_skill_runtime_package, SkillRuntimePackage},
 };
 
@@ -328,53 +325,36 @@ fn scope_root() -> PathBuf {
         .join(CANARY_WORKSPACE)
 }
 
-/// This process's own directory, canonicalized exactly the way the implicit-CLI
-/// lane canonicalizes it, so the runner and the lane name the same directory.
-fn process_directory() -> PathBuf {
-    let current = std::env::current_dir().expect("the canary process has a working directory");
-    fs::canonicalize(&current).unwrap_or(current)
+/// The lane's own work folder, `<scope>/workdirs/tool-skill-canary`, handed to
+/// every call as its task work root.
+///
+/// A workspace-mode governed CLI with no task work root runs in its own empty
+/// per-call lease, never in the scope root (an ancestor of every task's
+/// evidence folder), so no fixture could be staged where such a child stands.
+/// With this root the child stands here, and a relative path, whether a
+/// `workspace_path` parameter or a plain string the CLI resolves against its
+/// working directory, names the same file below it.
+fn canary_work_root() -> PathBuf {
+    scope_root().join("workdirs").join("tool-skill-canary")
 }
 
-/// The directory this skill's governed child will actually be launched in.
+/// The directory to stage this skill's fixtures in: the lane's work root
+/// ([`canary_work_root`]), for every skill.
 ///
-/// The scope root is NOT that directory for every skill, and the disagreement is
-/// deliberate rather than incidental. `dispatch_governed_runtime_blocking`
+/// `governed_call_working_directory`
 /// (`magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs`)
-/// routes a contract whose auth is `cli_profile` with
-/// `profile_selection.mode: implicit` and `storage.kind: cli_owned` into
-/// `dispatch_implicit_cli_runtime`, whose `implicit_cli_working_directory` binds
-/// `std::env::current_dir()` — the CALLING process's directory. That is the whole
-/// point of the lane: a CLI that owns its own completed login (`agy`, `claude`,
-/// `codex`, `opencode`, and `ocr`, which borrows their identity) operates on the
-/// directory its caller is standing in. Every other lane binds the scope root.
+/// applies one rule on every dispatch route, whatever the auth shape: a
+/// `workspace` contract runs in the folder it asked for, else the task's work
+/// root (which this lane sets to [`canary_work_root`]), else its own lease. The
+/// implicit CLI-owned route (`agy`, `claude`, `codex`, `opencode`, `ocr`) once
+/// stood in the calling process's directory instead, which sent `ocr`'s
+/// relative `--input-file` past the task's files; it no longer does.
 ///
-/// A contract declaring `working_directory.mode: denied` gets no directory bound
-/// in either lane, so its child simply inherits this process's own.
-///
-/// The three auth fields read here are the same three the router reads, on the
-/// same contract: the router's `effective_contract` differs from the package
-/// contract only in `requires.bins`/`requires.entrypoint` and `policy_floor`, and
-/// touches no auth field. So this is reading the declaration, not re-deriving the
-/// decision — and unlike a hardcoded skill name it is already correct for the
-/// tenth CLI-owned skill on the day it lands.
-fn governed_working_directory(skill: &CanarySkill) -> PathBuf {
-    let contract = &skill.package.contract;
-    let mode = match &contract.runtime {
-        RuntimeProtocol::Cli {
-            working_directory, ..
-        } => working_directory.mode,
-        RuntimeProtocol::Mcp { .. } => WorkingDirectoryMode::Denied,
-    };
-    let implicit_cli_owned = contract.auth.kind == AuthKind::CliProfile
-        && matches!(contract.auth.profile_selection, ProfileSelection::Implicit)
-        && matches!(contract.auth.storage, AuthStorage::CliOwned);
-    match mode {
-        WorkingDirectoryMode::Workspace if !implicit_cli_owned => scope_root(),
-        // `output_root` is refused by both lanes today, so there is no base to
-        // name and the call fails loudly on its own. The runner must not invent
-        // one to keep it quiet.
-        _ => process_directory(),
-    }
+/// A `denied` contract runs in its own empty per-call lease, so nothing staged
+/// can reach it; its fixtures land in the work root, where they are harmless,
+/// and its canary must not depend on them.
+fn governed_working_directory(_skill: &CanarySkill) -> PathBuf {
+    canary_work_root()
 }
 
 /// Secret NAMES the host offers this skill, from the same declarative sources
@@ -466,64 +446,6 @@ fn unenforceable_memory_limit(skill: &CanarySkill) -> Option<u64> {
         RuntimeProtocol::Cli { limits, .. } => limits.memory_bytes,
         RuntimeProtocol::Mcp { limits, .. } => limits.memory_bytes,
     }
-}
-
-/// Packaged canary fixtures the installed scope does not yet carry.
-///
-/// A fixture that cannot be authored as a manifest string — `CanaryRun`'s
-/// `fixtures` is `BTreeMap<String, String>` and this runner writes it
-/// verbatim, so a PNG, a workbook or a deck has no representation there —
-/// ships inside the package at `canary-fixtures/`, and its canary spells it
-/// relative to the governed working directory as
-/// `skills/<name>/canary-fixtures/<file>`. `make -C skillshub install-scope`
-/// links the package's files into the scope, at which point the two spellings
-/// name the same bytes.
-///
-/// Before that install has run the file is simply absent and the call fails
-/// on a missing input. That is a report about the installation, not about the
-/// skill, so it is SKIPPED — the same honesty rule the credential check
-/// already follows, and the same reason it exists: a red that means "you have
-/// not installed this" teaches nothing and trains the reader to ignore the
-/// lane.
-///
-/// Keyed on the package layout convention, never on a skill name: any skill
-/// that ships a `canary-fixtures/` directory is covered the day it is added.
-///
-/// This precondition belongs only to a skill whose lane stands in the scope,
-/// because installation is what makes the declared path resolve there. A skill
-/// whose lane stands somewhere else never reads the scope at all, and gets the
-/// same fixture staged from the package by `stage_packaged_fixtures` — so
-/// demanding an install of it would be a skip with no cause behind it.
-fn uninstalled_fixtures(skill: &CanarySkill, workspace: &Path) -> Vec<String> {
-    let packaged = workspace
-        .join("skillshub")
-        .join(&skill.name)
-        .join("canary-fixtures");
-    let Ok(entries) = fs::read_dir(&packaged) else {
-        return Vec::new();
-    };
-    let installed = scope_root()
-        .join("skills")
-        .join(&skill.name)
-        .join("canary-fixtures");
-    let mut missing = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .map(|entry| entry.file_name())
-        // `is_file` follows the link, which is exactly the question: the
-        // installed entry is a symlink onto the package file, and what matters
-        // is whether the tool can read bytes through it.
-        .filter(|name| !installed.join(name).is_file())
-        .map(|name| {
-            format!(
-                "skills/{}/canary-fixtures/{}",
-                skill.name,
-                name.to_string_lossy()
-            )
-        })
-        .collect::<Vec<_>>();
-    missing.sort();
-    missing
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -649,20 +571,20 @@ fn write_fixtures(base: &Path, run: &CanaryRun, staged: &mut StagedFixtures) -> 
     Ok(())
 }
 
-/// Reproduce a package's shipped `canary-fixtures/` under a base that is not the
-/// scope root.
+/// Reproduce a package's shipped `canary-fixtures/` under the base the child
+/// will stand in.
 ///
 /// A packaged fixture — a PNG, a workbook, a deck — has no representation in the
 /// manifest's `fixtures:` map, so its canary names it as
 /// `skills/<name>/canary-fixtures/<file>`: the path `install-scope` creates under
-/// the scope. For a lane that does not stand in the scope that spelling names
-/// nothing, and no other single spelling could name both bases, because they are
-/// different directories. So the runner reproduces the declared relative path
-/// under the base the child will really use.
+/// the scope. No child stands in the scope root (a workspace-mode one stands in
+/// the lane's work root, a CLI-owned one in the calling process's directory), so
+/// that spelling names nothing there until the runner reproduces the declared
+/// relative path under the base the child will really use.
 ///
 /// The bytes are copied from the package rather than from the installed link.
-/// The package is always present, and sourcing from it keeps a lane that never
-/// reads the scope free of an install precondition it does not have.
+/// The package is always present, and sourcing from it keeps the lane free of
+/// an install precondition.
 fn stage_packaged_fixtures(
     skill: &CanarySkill,
     workspace: &Path,
@@ -1020,14 +942,29 @@ async fn tool_skill_canaries() {
         );
     }
 
-    let invoker =
-        ScopedDeterministicCapabilityInvoker::new(registry, exec_ctx).with_scope_paths(scope_paths);
-
-    let mut outcomes = Vec::new();
     // Fixtures are written into whichever directory each skill's dispatch lane
     // will actually launch in, so the lane removes exactly the files and the
     // directories it created — nothing it did not write is touched.
     let mut staged = StagedFixtures::default();
+    // Every call gets the lane's own work folder as its task work root, so a
+    // workspace-mode child stands where its fixtures are staged (without one
+    // it would run in an empty per-call lease). Created only inside an
+    // installed scope; an absent scope is never created here.
+    if scope_root.is_dir() {
+        let work_root = canary_work_root();
+        match create_directory_recording(&work_root, &mut staged.directories) {
+            Ok(()) => exec_ctx = exec_ctx.with_task_work_root(Some(work_root)),
+            Err(error) => println!(
+                "note: the canary work root {} is unavailable: {error}",
+                work_root.display()
+            ),
+        }
+    }
+
+    let invoker =
+        ScopedDeterministicCapabilityInvoker::new(registry, exec_ctx).with_scope_paths(scope_paths);
+
+    let mut outcomes = Vec::new();
     for skill in &skills {
         let Some(run) = skill.canary.run() else {
             let reason = skill
@@ -1095,30 +1032,10 @@ async fn tool_skill_canaries() {
             continue;
         }
 
-        // Where this skill's child will really stand. The scope root is the
-        // answer for most skills and the wrong answer for a CLI-owned one.
+        // Where this skill's child will really stand: the lane's work root.
+        // Packaged fixtures are staged there from the package.
         let base = governed_working_directory(skill);
-        let stands_in_scope = base == scope_root;
-
-        if stands_in_scope {
-            let uninstalled = uninstalled_fixtures(skill, &workspace);
-            if !uninstalled.is_empty() {
-                outcomes.push(CanaryOutcome {
-                    name: skill.name.clone(),
-                    verdict: Verdict::Skipped,
-                    cost_tier: Some(run.cost_tier.to_string()),
-                    action: Some(run.action.clone()),
-                    duration_ms: 0,
-                    detail: Some(format!(
-                        "packaged canary fixtures are not installed in the scope \
-                         ({}); run `make -C skillshub install-scope`",
-                        uninstalled.join(", ")
-                    )),
-                    failures: Vec::new(),
-                });
-                continue;
-            }
-        } else if let Err(error) = stage_packaged_fixtures(skill, &workspace, &base, &mut staged) {
+        if let Err(error) = stage_packaged_fixtures(skill, &workspace, &base, &mut staged) {
             outcomes.push(CanaryOutcome {
                 name: skill.name.clone(),
                 verdict: Verdict::Failed,
@@ -1216,9 +1133,8 @@ fn count(outcomes: &[CanaryOutcome], verdict: Verdict) -> usize {
 /// where everything skipped must be visibly distinct from a run where
 /// everything passed, or the lane becomes a green light for an untested
 /// surface. SKIPPED itself means the HOST is missing a precondition — a
-/// credential, a packaged fixture that `install-scope` has not linked yet, or a
-/// declared process memory ceiling this kernel cannot apply — never that the
-/// skill was found wanting.
+/// credential, or a declared process memory ceiling this kernel cannot apply —
+/// never that the skill was found wanting.
 fn report(outcomes: &[CanaryOutcome], requested: CanaryCostTier) {
     let passed = count(outcomes, Verdict::Passed);
     let failed = count(outcomes, Verdict::Failed);
@@ -1342,45 +1258,25 @@ fn html(
     )
 }
 
-/// Fixtures must be materialized under the directory each skill's dispatch lane
-/// will actually launch in, and the two lanes do not agree on that directory.
+/// Fixtures must be materialized under the directory each skill's child will
+/// actually launch in, which is now the lane's work root for every skill.
 ///
 /// This is the property whose absence produced the doubled `magician/magician/`
-/// path: every fixture was written at the scope root while `ocr` — `cli_profile`
-/// with `profile_selection: implicit` and `storage: cli_owned` — was launched in
-/// the calling process's directory by `dispatch_implicit_cli_runtime`. No
-/// relative spelling can name both bases, because they are different
-/// directories.
-///
-/// The census at the end is the part that regresses silently: collapse the lane
-/// distinction and every base becomes the scope root again while this file still
-/// compiles and every other assertion here still holds.
+/// path: every fixture was written at the scope root while `ocr` was launched in
+/// the calling process's directory. The runtime now runs every route in the
+/// task's work root, so a skill that resolves anywhere else — the scope root, or
+/// this process's own directory — means the lanes split again.
 #[test]
 fn fixture_bases_follow_each_skills_dispatch_lane() {
     let scope = scope_root();
-    let process = process_directory();
-    let mut off_scope = Vec::new();
+    let work = canary_work_root();
+    let process = std::env::current_dir().ok().and_then(|dir| fs::canonicalize(dir).ok());
     for skill in canary_skills() {
         let base = governed_working_directory(&skill);
-        assert!(
-            base == scope || base == process,
-            "{} resolves to {}, which is neither dispatch lane's working directory",
-            skill.name,
-            base.display()
-        );
-        if base != scope {
-            off_scope.push(skill.name.clone());
-        }
+        assert_eq!(base, work, "{} would not stand in the task's work root", skill.name);
+        assert_ne!(base, scope, "{} would stand in the scope root", skill.name);
+        assert_ne!(Some(&base), process.as_ref(), "{} would stand in this process's directory", skill.name);
     }
-    assert!(
-        !off_scope.is_empty(),
-        "no skill routes off the scope root, so either the lane distinction was \
-         collapsed or every CLI-owned skill was removed"
-    );
-    println!(
-        "skills launched outside the scope root: {}",
-        off_scope.join(", ")
-    );
 }
 
 /// A packaged fixture lands at exactly the path its canary spells, resolved

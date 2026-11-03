@@ -2488,6 +2488,9 @@ pub async fn submit_voice_note_handler(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
+    // A voice conversation summoned with no chat behind it (the desktop Orb)
+    // asks for a chat of its own rather than joining the thread's open one.
+    let new_chat = form_field(&form.fields, "new_chat").map(str::trim) == Some("true");
     let requested_thread = form_field(&form.fields, "thread_id")
         .or_else(|| form_field(&form.fields, "ui_thread_id"))
         .map(str::trim)
@@ -2590,22 +2593,46 @@ pub async fn submit_voice_note_handler(
             .thread_lane(&principal, &workspace, &ui_thread_id)
             .await
             == Some(magician::magician_v2::history::HistoryLane::Automated);
-        let resolved = if automated {
-            chat_api
-                .chat_service
-                .get_or_create_automated_session(
-                    &principal,
-                    &workspace,
-                    &ui_thread_id,
-                    &origin,
-                    None,
-                )
-                .await
-        } else {
-            chat_api
-                .chat_service
-                .get_or_create_session(&principal, &workspace, &ui_thread_id, &origin, None)
-                .await
+        let service = &chat_api.chat_service;
+        let resolved = match (automated, new_chat) {
+            (true, false) => {
+                service
+                    .get_or_create_automated_session(
+                        &principal,
+                        &workspace,
+                        &ui_thread_id,
+                        &origin,
+                        None,
+                    )
+                    .await
+            },
+            (false, false) => {
+                service
+                    .get_or_create_session(&principal, &workspace, &ui_thread_id, &origin, None)
+                    .await
+            },
+            (true, true) => {
+                service
+                    .new_automated_session_with_agent_override(
+                        &principal,
+                        &workspace,
+                        &ui_thread_id,
+                        &origin,
+                        None,
+                    )
+                    .await
+            },
+            (false, true) => {
+                service
+                    .new_session_with_agent_override(
+                        &principal,
+                        &workspace,
+                        &ui_thread_id,
+                        &origin,
+                        None,
+                    )
+                    .await
+            },
         };
         match resolved {
             Ok(session) if session.title.is_none() && terminal.is_some() => {

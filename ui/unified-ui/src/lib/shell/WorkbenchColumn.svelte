@@ -24,6 +24,7 @@
 	import PlanModePane from './PlanModePane.svelte';
 	import LiveToolInspector from './LiveToolInspector.svelte';
 	import { timedFetch } from '$lib/shared/fetch';
+	import { threadLabels } from '$lib/threads/threadLinks';
 	import {
 		normalizeInteractiveSessionSummary,
 		scopedInteractiveSessionParams,
@@ -374,7 +375,7 @@
 	<header class="workbench__head">
 		<div class="workbench__head-left">
 			<span class="workbench__title">Workbench</span>
-			<span class="workbench__thread">{threadId ? `#${threadId}` : 'all sessions'}</span>
+			<span class="workbench__thread">{threadId ? `#${$threadLabels(threadId)}` : 'all sessions'}</span>
 			{#if sessions.length > 0}
 				<span class="workbench__count">{sessions.length} live</span>
 			{/if}

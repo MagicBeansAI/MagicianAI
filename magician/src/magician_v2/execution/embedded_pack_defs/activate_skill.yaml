@@ -1,5 +1,5 @@
 name: activate_skill
-description: Load a procedure playbook into your prompt and keep it active across turns. Exactly one playbook can be active at a time per agent; calling `activate_skill` with a different name replaces the previous one. While active, the playbook body is re-injected into your system prompt every turn so its guidance stays in your context. Call `deactivate_skill` when the task that needed the playbook is done. Procedure playbooks only — personality presets (witty, brutal, …) belong to `switch_personality`.
+description: Load a procedure playbook into your prompt and keep it active across turns. Exactly one playbook can be active at a time per agent; calling `activate_skill` with a different name replaces the previous one. While active, the playbook body is re-injected into your system prompt every turn so its guidance stays in your context. Only the body is injected; to open a file the playbook links to (such as `references/guide.md`), call `activate_skill` again with that `file`. Call `deactivate_skill` when the task that needed the playbook is done. Procedure playbooks only — personality presets (witty, brutal, …) belong to `switch_personality`.
 version: "1.0.0"
 guide: |
   Tool name: `activate_skill`
@@ -13,13 +13,22 @@ guide: |
   - `name` (required) — procedure-skill slug (AgentSkills v1; lowercase +
     hyphens). Must be one of the playbooks in the agent's `tools:`
     allowlist.
+  - `file` (optional) — a file the playbook links to, such as
+    `references/guide.md`, to read and return: one the SKILL.md body links
+    to, or a markdown file it links to links to. Any other path is refused,
+    as are links through hidden, `config` or `auth` folders and files over
+    256 KiB. A refused file returns an error and changes nothing; passing a
+    different `name` with `file` activates that playbook.
 
   Output:
   - `{status: "ok", skill, outcome, message, ephemeral_tools,
-    path_additions, previous_active}` on success. `outcome` ∈ {`first`,
+    path_additions, previous_active, file}` on success. `file` is
+    `{path, content}` when `file` was passed, else `null`. `outcome` ∈ {`first`,
     `replaced`, `idempotent`}; `previous_active` is `null` for `first`.
   - `{status: "error", reason, available_procedures?,
-    allowed_procedure_skills?}` on lookup / allowlist failure.
+    allowed_procedure_skills?}` on lookup / allowlist failure, and
+    `{status: "error", reason, skill, linked_files}` when `file` is not one
+    the playbook links to.
 
   Side effects:
   - Writes `{name, activated_at}` to the agent-scope
@@ -31,6 +40,10 @@ parameters:
     required: true
     param_type: string
     description: Procedure-skill slug to activate. Must be in the agent's `tools:` allowlist.
+  - name: file
+    required: false
+    param_type: string
+    description: A file the playbook links to, such as `references/guide.md`. Its text is returned as `file.content`.
 implementation:
   type: compiled
   provider_name: activate_skill

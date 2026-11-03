@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
+	import { get } from 'svelte/store';
 	import Button from '$lib/magician/components/generative/Button.svelte';
 	import Input from '$lib/magician/components/generative/Input.svelte';
 	import TextArea from '$lib/magician/components/generative/TextArea.svelte';
@@ -7,12 +10,14 @@
 	import { threadStore } from '$lib/stores/threadStore';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import { getThreadPageContext } from '$lib/threads/threadPageContext';
+	import { canonicalThreadUrl } from '$lib/threads/threadKeys';
 
 	// Settings tab of the thread workspace: per-thread name + memory + archive
 	// and a Fresh Run. Thread identity/load comes from the shell
 	// (../+layout.svelte) via context.
 	const threadPage = getThreadPageContext();
 	$: threadName = $threadPage.threadName;
+	$: threadDisplayName = $threadPage.threadDisplayName;
 	$: threadDetail = $threadPage.threadDetail;
 
 	let threadTitleDraft = '';
@@ -48,14 +53,18 @@
 		threadMetaSaving = true;
 		try {
 			const updated = await threadStore.updateThread(threadName, {
-				name: threadTitleDraft.trim() || threadName,
+				name: threadTitleDraft.trim() || threadDetail?.name || threadName,
 				memory_text: threadMemoryDraft
 			});
 			if (isStale(token)) return;
 			if (!updated) {
 				throw new Error('Thread could not be saved.');
 			}
-			showSuccess(`Saved #${updated.id}.`);
+			showSuccess(`Saved #${updated.name}.`);
+			// The URL follows the name: a rename moves the slug (the id stays,
+			// and the old slug keeps resolving), so show the new link in place.
+			const canonical = canonicalThreadUrl(get(page).url, updated);
+			if (canonical) await goto(canonical, { replaceState: true, noScroll: true, keepFocus: true });
 		} catch (error) {
 			if (isStale(token)) return;
 			showError(error instanceof Error ? error.message : 'Failed to save thread details');
@@ -76,7 +85,7 @@
 			if (!updated) {
 				throw new Error('Thread could not be updated.');
 			}
-			showSuccess(updated.archived ? `Archived #${updated.id}.` : `Restored #${updated.id}.`);
+			showSuccess(updated.archived ? `Archived #${updated.name}.` : `Restored #${updated.name}.`);
 		} catch (error) {
 			if (isStale(token)) return;
 			showError(error instanceof Error ? error.message : 'Failed to update thread');
@@ -88,7 +97,7 @@
 	<div class="thread-section__header">
 		<div>
 			<h2>Thread Context</h2>
-			<p>Persisted metadata and memory scoped to #{threadName}.</p>
+			<p>Persisted metadata and memory scoped to #{threadDisplayName}.</p>
 		</div>
 		<div class="thread-settings__actions">
 			{#if threadName !== 'general'}

@@ -54,7 +54,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         "--".into(),
         path.clone().into(),
     ];
-    let output = match super::grep::ripgrep(&rg_args).output().await {
+    let mut command = match super::grep::ripgrep(&rg_args) {
+        Ok(command) => command,
+        Err(wanted) => return Ok(super::grep::ripgrep_missing("glob", &wanted)),
+    };
+    let output = match command.output().await {
         Ok(o) => o,
         Err(e) => {
             return Ok(json!({

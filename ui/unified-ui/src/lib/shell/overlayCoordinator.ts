@@ -30,6 +30,7 @@
 
 import { derived, writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
+import { isInExclusiveKeyboardScope } from '$lib/shared/keyboardTargets';
 
 export const OVERLAY_PRIORITIES = {
 	attentionInput: 1,
@@ -157,6 +158,9 @@ export function mountEscapeHandler(): () => void {
 	if (!browser) return () => {};
 	const handler = (event: KeyboardEvent): void => {
 		if (event.key !== 'Escape') return;
+		// A modal text prompt handles its own Escape (cancel); closing the
+		// overlay under it here would also swallow that keystroke.
+		if (isInExclusiveKeyboardScope(event.target)) return;
 		const focused = get(focusedOverlay);
 		if (!focused) return;
 		event.stopPropagation();

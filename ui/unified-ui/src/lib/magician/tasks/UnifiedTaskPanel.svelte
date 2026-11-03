@@ -305,6 +305,16 @@
 		deliverable?: boolean;
 		/** What a non-deliverable row is, in words (its role), for its meta line. */
 		detail?: string | null;
+		/**
+		 * The run's primary deliverable (`primary: true` on the outputs row). It
+		 * leads the Output list, tagged, ahead of the written report.
+		 */
+		primary?: boolean;
+		/**
+		 * The task's own summary output (role `primary_task_user`, or the
+		 * generated `out_task_user_…` name). It sorts after the delivered files.
+		 */
+		taskSummary?: boolean;
 	}
 
 	export interface TaskPanelArtifact {
@@ -672,7 +682,7 @@
 	} from '$lib/stores/attentionPromptStore';
 
 	import { askPromptFrom, type TaskAskState } from './taskAsk';
-	import { outputSummary, planSummary, runSummary } from './actSummaries';
+	import { outputDisplayName, outputSummary, planSummary, runSummary } from './actSummaries';
 	import {
 		authenticatedTaskOutputImage,
 		downloadAuthenticatedTaskOutput,
@@ -1582,6 +1592,40 @@
 	function toggleStepActivity(stepId: string): void {
 		openStepActivity = { ...openStepActivity, [stepId]: !openStepActivity[stepId] };
 	}
+	/**
+	 * A failed tool row's reason is clamped to two lines until the reader opens it.
+	 * Which rows are open, by entry id, reset per task; and which reasons
+	 * overflow the clamp — measured only while clamped, so `Show less` stays
+	 * once the clamp is lifted and the text no longer overflows.
+	 */
+	let openFailureReasons: Record<string, boolean> = {};
+	let failureReasonOverflows: Record<string, boolean> = {};
+	function toggleFailureReason(id: string): void {
+		openFailureReasons = { ...openFailureReasons, [id]: !openFailureReasons[id] };
+	}
+	/** `body` is passed only so a changed reason re-measures. */
+	function measureFailureReason(node: HTMLElement, reason: { id: string; body: string }) {
+		let current = reason.id;
+		const measure = () => {
+			if (openFailureReasons[current]) return;
+			const overflows = node.scrollHeight > node.clientHeight + 1;
+			if (Boolean(failureReasonOverflows[current]) !== overflows) {
+				failureReasonOverflows = { ...failureReasonOverflows, [current]: overflows };
+			}
+		};
+		measure();
+		const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+		observer?.observe(node);
+		return {
+			update(next: { id: string; body: string }) {
+				current = next.id;
+				measure();
+			},
+			destroy() {
+				observer?.disconnect();
+			}
+		};
+	}
 	$: shownSegments = timelineTail(timelineSegments, timelineShowAll);
 	$: shownEntries = timelineTail(visibleTimeline?.entries ?? [], timelineShowAll);
 	// Whether the current mode has more items than the tail — the only time the
@@ -1752,6 +1796,8 @@
 		techOpen = false;
 		timelineShowAll = false;
 		openStepActivity = {};
+		openFailureReasons = {};
+		failureReasonOverflows = {};
 		offPlanOpen = false;
 		readerChose = preferredAct !== null;
 		chosenAct = preferredAct;
@@ -2497,7 +2543,36 @@
 												<span class="timeline-row__latency-value">{elapsed}</span>
 											</span>
 										{/if}
-										{#if entry.body}
+										{#if entry.body && entry.status === 'failed' && entry.kind === 'tool'}
+											{@const reasonOpen = Boolean(openFailureReasons[entry.id])}
+											{@const reasonId = `${timelineListId}-reason-${entry.id}`}
+											<!--
+												Why a tool failed, as plain selectable text: an error is not
+												markdown. Two lines, with a disclosure only when the
+												reason is longer than that. Other failed rows (a model's
+												decision, a timeline error) keep the report rendering.
+											-->
+											<div class="timeline-row__body">
+												<p
+													id={reasonId}
+													class="timeline-row__reason"
+													data-clamped={reasonOpen ? undefined : 'true'}
+													use:measureFailureReason={{ id: entry.id, body: entry.body }}
+												>{entry.body}</p>
+												{#if failureReasonOverflows[entry.id]}
+													<Button
+														label={reasonOpen ? 'Show less' : 'Show more'}
+														ariaLabel={reasonOpen ? 'Show less of the error' : 'Show more of the error'}
+														variant="outline"
+														size="sm"
+														className="timeline-row__reason-toggle"
+														ariaExpanded={reasonOpen}
+														ariaControls={reasonId}
+														on:click={() => toggleFailureReason(entry.id)}
+													/>
+												{/if}
+											</div>
+										{:else if entry.body}
 											<div class="timeline-row__body">
 												<TaskReport content={entry.body} />
 											</div>
@@ -2667,6 +2742,16 @@
 						its own scope — so no tag is needed to tell the two apart.
 					-->
 					{@const reportIndex = output.summary ? reportSourceIndex(output) : -1}
+					<!--
+						**The primary deliverable leads.** When the run marked one, the
+						files it delivered come first — primary, then the rest — and the
+						written report (the task's summary) follows under its own row.
+						Without a marker the report stays first, as it always was.
+					-->
+					{@const deliverablesFirst = taskOutputFiles(output).some((file) => file.primary === true)}
+					{#if deliverablesFirst}
+						{@render taskDeliverableList()}
+					{/if}
 					{#if output.summary && reportIndex >= 0}
 						<!--
 							**The report's own file, as a row.** The report below is read
@@ -2714,7 +2799,7 @@
 							(live review). Its other chips stay.
 						-->
 						{@const previewable = canPreview(file) && !listedAboveReport(output, file)}
-						<li class="output-file" data-output-scope={scope}>
+						<li class="output-file" class:output-file--primary={file.primary === true} data-output-scope={scope}>
 								{#if file.kind === 'image' && file.url}
 									<!--
 										A thumbnail in the glyph's place, because for an image the
@@ -2746,9 +2831,12 @@
 									the reader something no other tool can resolve.
 								-->
 								<span class="output-file__main">
+									{#if file.primary === true}
+										<span class="output-file__primary-tag">Main deliverable</span>
+									{/if}
 									<span class="output-file__name"
 										><MiddleEllipsis
-											text={file.name}
+											text={outputDisplayName(file)}
 											tail={14}
 											copyText={file.absolutePath ?? undefined}
 										/></span
@@ -2881,14 +2969,20 @@
 							</li>
 					{/snippet}
 
-					{#if taskOutputFiles(output).some((file) => !listedAboveReport(output, file))}
-						<ul class="output-files output-files--task">
-							{#each output.files as file, index}
-								{#if isTaskDeliverable(file) && !listedAboveReport(output, file)}
-									{@render outputFileRow(file, index)}
-								{/if}
-							{/each}
-						</ul>
+					{#snippet taskDeliverableList()}
+						{#if taskOutputFiles(output).some((file) => !listedAboveReport(output, file))}
+							<ul class="output-files output-files--task">
+								{#each output.files as file, index}
+									{#if isTaskDeliverable(file) && !listedAboveReport(output, file)}
+										{@render outputFileRow(file, index)}
+									{/if}
+								{/each}
+							</ul>
+						{/if}
+					{/snippet}
+
+					{#if !deliverablesFirst}
+						{@render taskDeliverableList()}
 					{/if}
 
 					{@const intermediatesCount = runOutputFiles(output).length + (output.artifacts?.length ?? 0)}
@@ -3592,6 +3686,21 @@
 		min-width: 0;
 		color: var(--text-primary);
 		font-size: 0.8rem;
+	}
+
+	/* The run's primary deliverable: the list's first row, its name in weight
+	   and a short tag before it. Same row shape, so the chips still line up. */
+	.output-file--primary .output-file__name {
+		font-weight: 600;
+	}
+
+	.output-file__primary-tag {
+		flex: none;
+		color: var(--accent-primary, var(--text-secondary));
+		font-size: 0.65rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		white-space: nowrap;
 	}
 
 	/* A thumbnail in the glyph's slot, sized to the row rather than to the
@@ -4629,6 +4738,30 @@
 		margin-top: 0.125rem;
 		color: var(--text-secondary);
 		line-height: 1.5;
+	}
+
+	/* A failed tool row's reason: the body's colour and size, wrapped anywhere so a
+	   path or a URL in an error cannot push the row wide, and clamped to two
+	   lines until opened. */
+	.timeline-row__reason {
+		margin: 0;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		user-select: text;
+	}
+
+	.timeline-row__reason[data-clamped='true'] {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		overflow: hidden;
+	}
+
+	/* The disclosure is `Button`, so only its placement is said here — through
+	   `:global`, since `className` lands inside the component's scope. */
+	.timeline-row__body :global(.timeline-row__reason-toggle) {
+		margin-top: var(--space-xs);
 	}
 
 	/* The cost line: model, tokens, cache rate. **The smallest tier in the row**,

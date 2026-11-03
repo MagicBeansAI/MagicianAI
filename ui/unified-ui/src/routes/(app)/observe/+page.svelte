@@ -13,6 +13,7 @@
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { goto, replaceState } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import { page } from '$app/stores';
 	import RecordingDot from '$lib/shared/components/RecordingDot.svelte';
 	import Icon from '$lib/shared/icons/Icon.svelte';
@@ -744,7 +745,7 @@
 
 	// ── shared helpers ────────────────────────────────────────────────
 	function openThread(threadId: string | null): void {
-		if (threadId) goto(`/t/${encodeURIComponent(threadId)}`);
+		if (threadId) goto(threadHref(threadId));
 	}
 
 	function openDetails(threadId: string | null): void {

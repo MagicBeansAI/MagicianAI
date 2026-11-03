@@ -120,6 +120,17 @@ is the live turn (card live with steps from the start, Stop available) after a
 reload; a reply-less turn stopped by the owner shows "Stopped", a failed or
 interrupted one says so; a dropped stream whose turn still runs or answered
 shows the server transcript, not an error bubble. Test: `turnState.test.ts`.
+Stop on a turn the server no longer runs: the card's Stop cancels its run.
+When the run has nothing left to cancel (400 with `details.cancelled: false`)
+and the panel marked the card's turn as live only by the client's
+guess (`stopsTurnWhenRunEnded`: the newest unanswered turn, with no send in
+flight, no running task and no running turn on the server), the card records
+the turn stopped locally (`recordStopOfTurnWithNoServerRun`); it never calls
+`DELETE …/run`, which would also end a Tutor run and drop held turn secrets.
+That state is marked `client_settled`: any state the server sent for the
+turn (settled or running) stands, and the server's later `running` still
+replaces it. Test:
+`RequestActivityCard.component.test.ts`.
 
 **Live in-progress steps.** An LLM call is one row from send to settle, in the
 card and in `ChatTurnProgress`: typed `LLMRequestSent` opens `Thinking…` keyed
@@ -162,7 +173,7 @@ shared `taskStatus.ts` helpers:
 | `steps` | one per run group: `taskExecutionLabel` + `running` / `done` / `failed` / `waiting` |
 | `currentStep` | non-terminal only: the verb while `synthesis_pending`; with a `reason`, the last running step's label only when there are several runs; without, that label else the verb |
 | `startedAt` / `finishedAt` | min / max `created_at` over message and group updates (epoch ms; below 1e11 = seconds); `finishedAt` only when terminal |
-| `outputs` | per run group, `getMessageContentBlocks(group.message.content)`; empty runs dropped; `label` only with several runs |
+| `outputs` | per run group, `getMessageContentBlocks(group.message.content)` (for a task status update: `presentTaskOutputBlocks` — `primary: true` block first, the `out_task_user_…` summary last and labelled `Summary`, `out_task_continuation_…`/`out_task_agent_…` dropped); empty runs dropped; `label` only with several runs |
 | `taskId` | the real `content.task_id` (absent on id fallback) |
 | `executionId` | latest run group's `execution_id`, else the message's |
 
@@ -171,7 +182,7 @@ swap; `onOpenTask` also gets the card element, the morph source) plus optional
 `onCancel(taskId)`. Root: `<div role="group">` named `<title>, <verb>`. Header:
 status dot; title, **Inspect →**, **Cancel** (while running), chevron (when
 expandable); verb, elapsed time (1 s tick while non-terminal, cleared on
-destroy), **Needs you**;
+destroy), **Needs you**, times ([Card times](#card-times));
 current step (if not the verb); reason. Styled with `tintVars(taskId)`,
 `--radius-md`, `--shadow-float`.
 
@@ -554,6 +565,33 @@ and segment rule match iOS (`PlanProgressModel.swift` `PlanSteps`,
   snapshot's throttle: at most two panel reads at once; refreshes that
   snapshot). The drawer's own poll covers only its open task.
 
+## Card times
+
+Task cards (`LiveTaskCard`, classic `TaskStatusCard`) show `Created <time> ·
+Updated <age>`; the turn's Steps card (`RequestActivityCard`) shows
+`Started <time> · Updated <age>` as the first line of the open steps, not in
+its header, whose row is full with the usage chip, Show all, Stop and Inspect
+(collapsed, the message's own time says when it started). Helpers: `src/lib/shared/cardTimes.ts`
+(`cardTimesLabel`, `formatClockTime`, `timeSpan`) and `formatTimeAgo`
+(`shared/formatRelativeTime.ts`).
+
+- **Format.** The time is `14:28` today, else `Oct 31, 14:28` (viewer's locale;
+  chat message times use the same helper). The age is `now`, `5m ago`, `3h ago`,
+  `2d ago`, then a short date. The `title` holds the exact date-times. A part
+  with no usable time is left out; with neither, nothing shows.
+- **Task sources.** `taskCardTimes` (`chat/components/taskStatus.ts`): Created
+  is the task store record's `createdAt` (ChatPanel passes it as `taskTimes`),
+  else the card's earliest update `created_at`, never later than that update.
+  Updated is the later of the card's latest update and the record's
+  `lastProgressAt`. The record's `updatedAt` is not used: it moves on
+  heartbeats and local edits, and is "now" when the wire had none. Chat-started tasks are often not in the store; the
+  card's updates then give both times.
+- **Steps source.** First and latest raw turn event with a time
+  (`eventTimestampMs`); events without one are skipped.
+- **Clock.** The age reads the card's running ticker while work runs and the
+  shared `minuteTick` (`chat/next/liveClock.ts`, one 60 s interval while any
+  card is subscribed) after, so a settled card's age keeps moving.
+
 ## Usage on the live task card
 
 The status line shows `N calls · X tok · $Y` from `taskUsage`
@@ -593,13 +631,15 @@ tasks" — so it is never below any of its task cards.
 
 Contract: `docs/archive/plans/2026-10-03-slash-commands-and-run-budgets.md`. A leading
 `/` in a single-line draft opens a picker in the `@` picker's dock (ArrowUp/Down
-wrap, Enter/Tab or click). Commands run client-side, never sent as messages.
+wrap, Enter/Tab or click). Commands run client-side, never sent as messages: while
+the picker is open the send options (**Stop & send**, **Run in parallel**) are hidden
+and their chevron disabled, so a command draft cannot leave through them.
 
 | Command | Options | Runs |
 |---------|---------|------|
 | `/budget` | this chat's running/paused tasks, newest first (`task_status_update` cards ∪ thread `$taskStore` rows; store status wins) → `+$25`, `+$100`, `+1M tokens`, `+50 iterations`, `Unlimited` | `POST /api/magician/v2/tasks/{task_id}/budget` with `add_cost_usd` / `add_tokens` / `add_iterations` / `unlimited` |
 | `/budget default` | harness `$50 / $100 / $250 / Unlimited`, native `$5 / $15 / $50 / Unlimited`, current from `GET /budgets/defaults` | `PUT /api/magician/v2/budgets/defaults`, both caps (only the changed one if the GET failed) |
-| `/engine` | "Now: <engine · model> (this browser) · everywhere: <server engine>", one row per installed engine (current marked, its model as detail), "Make default everywhere…". Magician/coding agent → the dropdown's catalog (`GET /chat/models?engine=`; the composer's own engine reads its panel store, another is fetched without touching it), where a model with a thinking choice opens its levels; other engines → roster `models[]` (`CLI default` first); a default-only engine is set at once. "Everywhere" lists engines only | browser: `chatHarnessPreferenceStore.select`, then for a catalog pick the panel's `chatProfileStore.ensureLoaded` + `selectModel` (what the dropdown writes); everywhere: `PUT /plane/chat-engine` then `adoptServer` (the model stays the browser's) |
+| `/engine` | "Now: <engine · model> (this browser) · everywhere: <server engine>", one row per installed engine (current marked, its model as detail), "Make default everywhere…". Magician/coding agent → the dropdown's catalog (`GET /chat/models?engine=`; the composer's own engine reads its panel store, another is fetched without touching it), where a model with a thinking choice opens its levels; other engines → roster `models[]` (`CLI default` first); a default-only engine is set at once. "Everywhere" lists engines only | browser: `chatHarnessPreferenceStore.select`, then for a catalog pick the panel's `chatProfileStore.ensureLoaded` + `selectModel` (what the dropdown writes; the model is checked against that catalog before anything is written, so a failed pick changes nothing); everywhere: `PUT /plane/chat-engine` then `adoptServer` (the model stays the browser's) |
 | `/run-engine` | Settings → Agentic flows: "Now: …" or "Same as Chat (…)", then "Same as Chat" and the installed engines. Magician → the `agentic_decision` models from `GET /llm/routing` (current only while runs resolve to Magician); coding agent → "Default" then `GET /chat/models?engine=pi`; others → roster `models[]`. Catalog models with a thinking choice open their levels | `PUT /plane/engine` (`setRunHarnessEngine`; the coding agent with `model_selection`, JSON `null` for "Default"); Magician: `PUT /plane/engine` to `magician` only when runs resolve elsewhere, then `PUT /llm/routing/agentic_decision {selection}` |
 | `/voice-mode` | Live (`realtime`), Dictate (`recording`), Hands-free (`hands_free`), current from `voiceModeStore` | `saveMediaPreferences({ voice_mode })`, as the voice switch (applies `voiceModeStore` at once, rolls back on failure) |
 

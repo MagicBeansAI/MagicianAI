@@ -129,6 +129,12 @@ pub const NEVER_ON_THE_PLANE: &[&str] = &[
     "run_coding_task",
     "apply_code_proposal",
     "run_project_checks",
+    // The skill tools run Python from the checkout (the validator, the
+    // skill's tests, the skillshub venv) or install what is there, which a
+    // plane consumer could write first: shell by another name, approval or not.
+    "validate_skill",
+    "test_skill",
+    "install_skill",
     // CLI-delegate packs: a revival must not silently nest an ungoverned
     // CLI (with its native tools) inside a governed one.
     "claude",

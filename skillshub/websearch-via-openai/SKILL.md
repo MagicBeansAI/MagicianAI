@@ -1,6 +1,6 @@
 ---
 name: "websearch-via-openai"
-version: 0.2.3
+version: 0.2.4
 description: "Quick LLM-curated web search via OpenAI's built-in `web_search` tool (Responses API). Use when the caller explicitly wants an OpenAI-authored answer with sources but not a long investigation. Ordinary agent research should use `content_search` and synthesize from controller evidence."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.openai.com
     requires:
-      bins: ["openai-websearch"]
+      bins: ["openai-websearch", "python3"]
       env: ["OPENAI_API_KEY"]
     install_hint:
       docs: "requires env: OPENAI_API_KEY — set in vault before activating"
@@ -33,7 +33,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [openai-websearch]
+        bins: [openai-websearch, python3]
+        entrypoint: openai-websearch
       runtime:
         protocol: cli
         command_prefix: []

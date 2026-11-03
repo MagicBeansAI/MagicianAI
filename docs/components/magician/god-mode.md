@@ -30,10 +30,13 @@ same channel address; a bot token alone is not the owner. Guest
 is not proved the owner the text goes to the agent as an ordinary message,
 with no refusal.
 
-God mode is for chat, agent runs and background operations. VibeDev is not
-affected. Its coding engines use their own native tools, not Magician's, so
-there is nothing for god mode to unrestrict; they stay in Magician's box
-(see "VibeDev" below). Only super god mode lifts it.
+God mode is for chat, agent runs and background operations, coding runs
+included: a chat's god mode reaches every run it starts, the engineers and
+VibeDev coordinators among them. It changes Magician's own tools in those runs
+(`shell`, files, `http`, `delegation_shell`, `delegation_files`). The coding
+engines run their own native tools, which god mode cannot ask about one call at
+a time, so they stay in Magician's box (see "VibeDev" below). Only super god
+mode lifts that.
 
 Only trusted agents qualify: built-in and local trust levels
 (`god_mode::trust_allows`). Untrusted and reviewed agents keep the normal
@@ -43,7 +46,8 @@ sandbox whatever the setting.
 
 Without god mode, shell commands outside a coding run are OS-enforced
 (`shell_sandbox.os_enforce`, `execution/shell_box.rs`): writes only under the
-working-dir roots, temp and tool caches; secret stores unreadable; nested agent
+working-dir roots, temp and tool caches, and clang's module cache
+(`…/C/clang/ModuleCache`, so `swift` and `clang -fmodules` run); secret stores unreadable; nested agent
 CLIs not executable; network per `execution.network_policy` (`public`: the
 internet through Magician's egress proxy, loopback allowed directly, private
 LAN/metadata blocked).
@@ -57,6 +61,29 @@ The `http` tool applies the same network policy. Design:
   refusal inside the box happens mid-command, too late to ask, so god mode
   asks first. With the box off, only what the string checks refuse asks (any
   working directory; blocked-list commands require an exact invocation approval).
+  A coding run's god-mode `shell` (an engineer's or VibeDev coordinator's own
+  call, or its harness turn's on the plane) is the same: it runs in this OS
+  box, not the coding profile, and asks before it leaves it
+  (`native_executors::authorize_bash_action`, `shell_box::wrap_coding_call`).
+  In that box the live Magician repo source (outside its storage base, which
+  keeps its verdict) and the run's real repo stay unwritable even under a
+  writable root, as the coding profile keeps them (the seed's
+  `allowed_working_dirs` lists `.`, the repo root). An approved call that
+  leaves the box runs under the coding profile, so the live repo stays
+  read-only for it too. Without god mode a coding run's shell keeps the coding
+  profile.
+  In a coding run an explicit `working_dir` in the live Magician repo (the
+  repo-source fence) is lifted only by an approval that asks every time: allow
+  once only, never a session or always grant, never auto-approved
+  (`GodAction::Shell::always_ask`). That one approved call runs with no box
+  and no coding profile at all, so it can change the repo; the card says so.
+  The run's real repo, secret hiding and nested-agent denies are off for that
+  command too. A goal-workspace-fenced agent never leaves the box, so its
+  approved live-repo call still cannot write there. Only the explicit
+  `working_dir` is fenced by string: `cd <repo> && …` or `git -C <repo> …`
+  from another working directory gets no card, and in a coding run its write
+  into the repo fails (the box's deny, or the coding profile once out of the
+  box) instead of asking.
 - `http`: a destination the network policy refuses asks (this host, or any
   host), then the call runs unfiltered. A granted destination follows
   redirects only to the same host and port (or, under `public`, to a public
@@ -67,10 +94,15 @@ The `http` tool applies the same network policy. Design:
   stay on the approved origin. Harness MCP/grant channels and other protected local
   services remain fenced, as do private addresses for goal-workspace-fenced agents.
 - File actions: any path, including outside `file_sandbox.allowed_roots`, and
-  writes or deletes the file sandbox would refuse. The repo-source and
-  runtime-store fences still apply.
+  writes or deletes the file sandbox would refuse. The repo-source fence (in a
+  coding run no file write, move or delete lands in the live Magician repo,
+  `validate_file_action_repo_fence`) and the runtime-store fence are checked
+  after the override and are never lifted.
   `grep` and `glob` use the same read approval for roots outside the sandbox,
   with the same once/session/always choices; goal-workspace and index fences remain.
+  Both run the ripgrep `runtime_core::process::resolve_ripgrep` picks (the packaged
+  `rg.bin` first). With none they refuse with `error_kind: ripgrep_missing` and the
+  fix, rather than a spawn error the model works around with shell `grep`.
 - `write_file`, `edit_file` and `apply_patch`: show the staged diff with
   **Allow once / This session / Always / Deny**, scoped to the named files,
   folders or top directories. A matching session/always grant applies later
@@ -90,7 +122,8 @@ The `http` tool applies the same network policy. Design:
   run has god mode on, and is listed without a search
   (`plane/grant.rs::god_mode_lifts_floor`). Every call still goes through the
   plane dispatcher and the Decision Engine check. Terminal grants keep the
-  floor.
+  floor. A coding run's harness turn gets it too; its calls run in the coding
+  context, and its `shell` is boxed and asks as above.
 
 Other actions inside the normal sandbox run as before, under the composer's
 Do posture (Ask / Accept).
@@ -141,16 +174,22 @@ runs:
 
 Discuss turns keep the workspace copy unwritable.
 
-God mode does not apply to a VibeDev run at all: the Build
-coordinator (`coding_coordinator_run`), any VibeDev run including a Discuss
-coordinator and its engineers (`vibedev_run`, from the task's `vibedev` tag or
-thread, kept across a pause), and any agent that itself holds
-`run_coding_task`, `apply_code_proposal` or `run_project_checks`
-(`agentic::types::is_vibedev_coding_context`) get no god session, in the loop
-or on the plane (`plane_god_session`), and `god_mode::current_session` is None
-inside any coding context. Every plane call of such a run's harness turn runs
-in the coding context (`plane::grant::plane_call_is_coding`). Super god mode launches the engine with no
-fence at all (below). `coding.box_harness: false` falls back to the coding
+Coding runs get god mode like any run: the Build coordinator
+(`coding_coordinator_run`), any VibeDev run including a Discuss coordinator and
+its engineers (`vibedev_run`, from the task's `vibedev` tag or thread, kept
+across a pause), and any agent that itself holds `run_coding_task`,
+`apply_code_proposal` or `run_project_checks`
+(`agentic::types::is_vibedev_coding_context`) follow their chat's choice, else
+the default, in the loop and on the plane (`god_session_for`,
+`plane_god_session`), and `god_mode::current_session` keeps that session inside
+the coding context. Their engines stay in the box below whatever god mode says;
+every plane call of such a run's harness turn runs in the coding context
+(`plane::grant::plane_call_is_coding`). Their god-mode `shell` runs in the
+general OS box and asks before leaving it, as in any run. The file tools'
+repo-source and runtime-store fences never lift. Shell's live-repo fence (an
+explicit `working_dir` in the live Magician repo) lifts only by an approval
+that asks every time, allow once. Original-folder edits keep their own review.
+Super god mode launches the engine with no fence at all (below). `coding.box_harness: false` falls back to the coding
 profile alone (the real repo read-only), for rollback.
 
 macOS refuses a nested `sandbox_apply`. So whenever Magician fences an engine
@@ -314,6 +353,9 @@ It still asks (`god_mode::auto_approve_holds_back`; the card adds "Auto-approve
 still asks: …"; `context.auto_approve_held_back`) when:
 
 - a shell line matches `shell_sandbox.blocked_command_fragments`;
+- a coding run's shell works in the live Magician repo (an explicit
+  `working_dir` there), which also asks every time and offers only "Allow
+  once";
 - a command the line shows deletes or runs as root (`shell_scope::hazard`,
   checked at every depth the reader binds, under runners such as `xargs`,
   `timeout` and `nohup`, inside `find -exec`, `bash -c '…'`, `ssh host '…'`

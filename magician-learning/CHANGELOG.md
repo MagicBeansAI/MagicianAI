@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 ## [Unreleased]
 
+### 2026-11-02 — 0.1.9
+
+- The execution panel's failed tool rows say why: `summary` is the error without the runtime's dispatch prefixes and `metadata.error` carries it as journaled.
 - `BotManager::google_workspace_account` returns a Google Workspace bot's profile directory, expected email and project-id override.
 
 ### 2026-10-23 — 0.1.8

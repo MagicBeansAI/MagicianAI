@@ -1,6 +1,6 @@
 ---
 name: reddit-search
-version: 0.3.2
+version: 0.3.3
 description: 'Search Reddit for recent posts matching a query. Returns normalized
 
   items with title, body text, author, subreddit, and real engagement metrics
@@ -90,6 +90,7 @@ metadata:
     requires:
       bins:
       - reddit-search
+      - python3
       env:
       - REDDIT_CLIENT_ID
       - REDDIT_CLIENT_SECRET
@@ -126,6 +127,8 @@ metadata:
       requires:
         bins:
         - reddit-search
+        - python3
+        entrypoint: reddit-search
       runtime:
         protocol: cli
         command_prefix: []

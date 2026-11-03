@@ -54,6 +54,18 @@ final class ComposerCommandsTests: XCTestCase {
         XCTAssertNil(ComposerCommands.exactCommand("budget"))
     }
 
+    func testAPartialCommandOpensInsteadOfReachingTheModel() {
+        let empty = ComposerCommandState()
+        XCTAssertEqual(ComposerCommands.partialCommand("/eng", state: empty), .engine)
+        XCTAssertEqual(ComposerCommands.partialCommand("/budget defa", state: empty), .budgetDefault)
+        XCTAssertNil(ComposerCommands.partialCommand("/budget please help me", state: empty), "a message, not a command")
+        XCTAssertNil(ComposerCommands.partialCommand("/voice-mode is broken", state: empty))
+        XCTAssertNil(ComposerCommands.partialCommand("/usr/bin is missing", state: empty))
+        XCTAssertNil(ComposerCommands.partialCommand("engine", state: empty))
+        XCTAssertTrue(ComposerCommands.holdsSend("/eng", state: empty))
+        XCTAssertFalse(ComposerCommands.holdsSend("/usr/bin is missing", state: empty))
+    }
+
     func testOpenBackAndSyncWalkTheTree() {
         var state = ComposerCommandState()
         XCTAssertEqual(ComposerCommands.open(.budget, state: &state), "/budget ")

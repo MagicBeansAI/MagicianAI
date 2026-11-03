@@ -798,7 +798,7 @@ struct TasksView: View {
                     .labelStyle(.titleAndIcon)
                     .lineLimit(1)
             }
-            Text("#\(t.uiThreadId)").lineLimit(1)
+            Text(ThreadDirectory.shared.label(t.uiThreadId)).lineLimit(1)
             if let rel = relativeUpdated(t) { Text("· \(rel)") }
             Spacer(minLength: 0)
             if vm.lane == .internalTasks { lifecyclePill(t) }

@@ -186,7 +186,7 @@ notification intents use the existing host.
 | Quality | Server-paged inbox/runs, owning tasks, guided and advanced contract, provider-backed reference picking, create/eligible-attach, frozen preview, exact review, previous-attempt comparison, bounded recurring policies |
 | Run detail | Attempts, artifacts, reports, lessons, cost reconciliation, cancellation, owner questions, resume |
 | Capture and learning | Server-paged policies/proposals/captures; preview/version checks; binding/review, qualification, revocation/resume, trial and adopted-run monitoring evidence |
-| Team routines | Enable/disable, warnings/anomalies, ordered manual company-sequence dispatch through agent goals |
+| Team routines | Enable/disable, warnings/anomalies, ordered manual company-sequence dispatch through agent goals: one stage per focus area of each harness agent (`agentList`, agent-id order, goal id `focusAreaGoalId` = the server slug cut to 64 at a hyphen, focus areas that slug alike are one stage), snapshotted when the sequence starts; with none the stepper says loading, could not load, or none configured, and Start stays disabled |
 
 Guarantees:
 

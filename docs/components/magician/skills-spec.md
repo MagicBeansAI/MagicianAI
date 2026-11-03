@@ -199,14 +199,23 @@ irrelevant) with two roles:
   in an installed npm package (including through the skill's own `bin/` link),
   the package's native `node_modules/.bin_real/<name>` or platform binary is
   snapshotted instead, since a launcher copied alone loses the modules beside it.
+  With neither, a script inside an installed package is refused at resolution,
+  naming the skill: ship a self-contained adapter or a native binary instead.
 - **PATH companions**: every other name. The cleared child `PATH` holds only
   the directories resolving this list; companions run in place, are never
   snapshotted or bound, and an optional one is no precondition for the skill.
+  Anything a script shells out to, its `#!/usr/bin/env` interpreter included,
+  must be declared here or it is not on `PATH`. A declared `python3` is the
+  shared venv through a generated `bin/python3` exec shim
+  (`skillshub/scripts/shared_skill_bins.py`); undeclared, it is the host's
+  `/usr/bin/python3`.
 
 **`entrypoint` is required once `bins` holds more than one name**; otherwise
 `validate_requirements` (`manifest_validation.rs` in the external
 `tool-runtime-core` crate) returns `ManifestValidationErrorCode::AmbiguousExecutable` and `load_pack_defs_from_skills_dir` **drops the pack**
-(calls answer `unknown inner-loop pack`).
+(calls answer `unknown inner-loop pack`). That is a CLI contract's rule. A
+stdio MCP server's launch identity is `transport.executable`, and an MCP
+contract that declares `entrypoint` is refused and dropped the same way.
 
 ```yaml
     runtime_contract:
@@ -337,13 +346,50 @@ Offline, never builds; a link with no source left logs a warning naming
 (regular `SKILL.md`) are never touched; skipped when `MAGICIAN_SKILLSHUB_ROOT`
 is set (mounted host trees resolve through `path_rewrite`).
 
-A skill with `render.yaml` gets a setup-rendered per-scope manifest
-(`skillshub/scripts/skill_render.py`, from the scope's `config/.env`): the
-reconciler never links its placeholder `SKILL.md` or `render.yaml`, leaves a
-`SKILL.md` marked `.skill-render.json` as setup wrote it (other files still
-installed and topped up), and a runtime-created
-workspace gets it on the next `setup-env` or `link-scopes`
-([per-scope manifests](../../../skillshub/README.md#per-scope-manifests-rendered-not-linked)).
+A per-workspace manifest value is a `${NAME}` scope env reference in the
+shared `SKILL.md` (see [Scope env references](#scope-env-references)), so the
+reconciler links `SKILL.md` like every other file. A `SKILL.md` the retired
+per-scope renderer wrote (a regular file beside `.skill-render.json`) is
+relinked to the shared manifest when its bytes still match the marker's
+`manifest_sha256`, and the marker is removed; an edited copy is left as it is
+and reported, and an unmarked regular `SKILL.md` stays scope-owned.
+
+### Scope env references
+
+`skills::scope_env` is the one parse every consumer of a runtime contract's
+URL fields uses: the capability load (whose package the governed MCP run
+executes), Connect/status and Service accounts, and the Skills catalog.
+
+- Allowed only in `runtime.transport.endpoint` (Streamable HTTP),
+  `runtime.discovery.endpoint_aliases.*` and
+  `runtime.discovery.oauth.authorization_issuer`, as the whole origin:
+  `${NAME}` or `${NAME}/path`. A `${` anywhere else in the contract fails the
+  skill.
+- The value is read literally (no interpolation) from the listed scope folder's
+  `<scope>/skills/<skill>/config/.env`, never the server environment, the
+  symlink-resolved or container source, or a skillshub/extras root; the `.env`
+  must resolve inside that scope's skills root. It must be an https origin
+  (`https://host[:port]`, no path, query, credentials or fragment).
+- The resolved contract goes through the MagicRun validator, then
+  `mcp_oauth_binding`; Connect and the run therefore hash the same resource
+  URL and issuer into the vault record id.
+- Missing or invalid: the skill is withdrawn in that scope. The load reports a
+  `SkillLoadFailure` with `withdrawn: true` and a reason naming the variable
+  (`tool_search` relays it for a granted tool), Connect answers 422 with the
+  same reason, and Service accounts omits the row. A withdrawal is a catalog
+  change: validate-before-swap does not hold the old snapshot for it, so a
+  blanked or replaced value never keeps serving the previous endpoint.
+  A misplaced reference is a skill defect and is held like any load failure.
+- The skillshub (and extras) catalog row is the shared template: references are
+  shape-checked against the reserved stand-in `https://scope-env.invalid`.
+- Staleness: the skills-directory fingerprint, `hash_skill_catalog` (scope
+  pack cache and scoped capability revision) fold in `scope_env_stamp`, a
+  digest of how each referenced variable resolves. The procedure loader's
+  manifest cache does not need it: `SkillManifest` carries no runtime
+  contract. The Skills-page env write (`POST /skills/catalog/{name}/env`)
+  also invalidates the target scopes' capability caches immediately.
+- Apps lock skill source bytes and validate them unresolved, so an app cannot
+  lock a skill with scope env references (it fails closed).
 
 `AgentBrowserSession::resolve_cli_path_for_scope` reports a dangling link with
 the fix (`make setup-agent-browser`, which rebuilds the fork and relinks every
@@ -360,6 +406,18 @@ invisible to this one. **Default policy is deny** (missing or empty: no skills).
 `activate_skill` sets the session's single `active_procedure_skill` slot
 (replace-on-set, idempotent), re-injecting the body every turn as
 `## Active Playbook: <name>`; `deactivate_skill` clears it.
+
+Only the body is injected. `activate_skill {name, file}` returns one file the
+playbook links to (`skills/files.rs`): a relative file the body links to, or a
+markdown file one of those links to (up to 32). Any other path is refused, so
+the runtime-owned `config` link and `auth/` sessions are never read; a link
+through a hidden, `config` or `auth` component is dropped, the target must
+resolve into the skill's folder or the folder its `SKILL.md` links to, and
+files over 256 KiB are refused. A refused file returns an error and leaves the
+active playbook as it was. Chat and the agentic loop add a line naming the
+linked files under the playbook when the agent is offered `activate_skill` for
+it; the coding engine's appended prompt carries the files themselves (256 KiB
+in all).
 
 ## Governed child environment
 
@@ -378,7 +436,10 @@ Closed skills get no `MAGICIAN_ROOT_DIR`, `MAGICIAN_STORAGE_PATH` or store
 credentials; they work in a versioned `SubprocessStorageEnvelope` under
 `workdirs/skill-working/{call_id}/` (read-only inputs; outputs count only once
 published through an owning object repository; see
-[storage abstraction](storage-abstraction.md)). Operator batches needing the
+[storage abstraction](storage-abstraction.md)). Every auth route runs a
+`working_directory.mode: workspace` call in the task's workdir, else that
+per-call lease, and a `denied` call always in the lease, never Magician's cwd.
+Operator batches needing the
 live root import `skillshub/scripts/runtime_root_shim.py`; other direct env
 resolution fails `scripts/skillshub_runtime_root_linter.py` (docs-guard gate).
 

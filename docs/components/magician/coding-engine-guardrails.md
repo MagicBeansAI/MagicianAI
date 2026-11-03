@@ -43,7 +43,10 @@ without one, only when a single unique `apply_root` exists — an ambiguity guar
   `reject_orphaned_proposals_for_execution` **before** the terminal transition.
   A force-terminated child has no live approval channel, so its `Pending` diff
   would otherwise park the parent in `WaitingChildren` forever; a run that failed
-  should not leave an approvable change.
+  should not leave an approvable change. It then settles the child through the
+  ordinary tree cancellation, recording its reason as the status change's
+  `Cancelled by the runtime: <reason>` instead of `Workflow event: UserCancelled`
+  (`set_forced_cancel_cause`, consumed by the first cancel transition).
 - A child can finish with its proposal still `Pending`. Every review-closing
   path (the `diff_approval` answer in `respond_hitl_handler`, and
   `reject_orphaned_proposals_for_execution` when it rejected something) calls

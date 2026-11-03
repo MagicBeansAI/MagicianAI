@@ -1,0 +1,17 @@
+#!/bin/sh
+# Snapshot-safe entrypoint for the higgsfield skill.
+#
+# The governed runtime copies its entrypoint ALONE into a private temporary
+# directory and runs that copy, so the official launcher cannot be the
+# entrypoint: bin/higgsfield.js requires ./run.js, which spawns the native
+# ../vendor/hf.
+#
+# This file carries nothing relative to itself. It execs the declared PATH
+# companion `higgsfield` by name; the runtime puts this skill's reviewed bin/
+# directory on the child's PATH and the companion runs in place, beside its
+# real package files. argv is passed through unchanged.
+if ! command -v higgsfield >/dev/null 2>&1; then
+  echo "higgsfield: the pinned higgsfield CLI is not installed (run: make setup-higgsfield-cli)" >&2
+  exit 127
+fi
+exec higgsfield "$@"

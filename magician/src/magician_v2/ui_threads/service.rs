@@ -156,23 +156,20 @@ impl UiThreadService {
         self.store.get_thread(principal, workspace, thread_id).await
     }
 
+    /// Detail for the live thread `key` names — its id, current slug or a
+    /// former slug, in that order (see [`Self::resolve_thread_key`]).
     pub async fn get_thread(
         &self,
         principal: &str,
         workspace: &str,
-        thread_id: &str,
+        key: &str,
     ) -> Result<Option<UiThreadDetail>> {
         self.sync_scope(principal, workspace).await?;
-        let normalized_id = normalize_thread_id(thread_id)?;
-        let Some(record) = self
-            .store
-            .get_thread(principal, workspace, &normalized_id)
-            .await?
-        else {
+        let Some(record) = self.resolve_thread_key(principal, workspace, key).await? else {
             return Ok(None);
         };
         let memory_text = self
-            .load_thread_memory(principal, workspace, &normalized_id)
+            .load_thread_memory(principal, workspace, &record.id)
             .await?;
         Ok(Some(UiThreadDetail {
             record,
@@ -180,6 +177,55 @@ impl UiThreadService {
         }))
     }
 
+    /// The live thread a client-supplied key names. A key is the thread's id,
+    /// its current slug, or a slug it had before a rename (alias), tried in
+    /// that order. Callers then act on the record's canonical `id`; the id is
+    /// what sessions, tasks and memory reference, and it never changes.
+    pub async fn resolve_thread_key(
+        &self,
+        principal: &str,
+        workspace: &str,
+        key: &str,
+    ) -> Result<Option<UiThreadRecord>> {
+        let normalized = normalize_thread_id(key)?;
+        self.store
+            .resolve_thread_key(principal, workspace, &normalized)
+            .await
+    }
+
+    /// The canonical id for a thread reference that may have come from a URL
+    /// (a slug or an alias). A key that is not a valid thread key, names no
+    /// live thread, or cannot be looked up is returned unchanged, so a first
+    /// reference to a new thread id behaves as before.
+    pub async fn resolve_referenced_thread_id(
+        &self,
+        principal: &str,
+        workspace: &str,
+        key: &str,
+    ) -> String {
+        let trimmed = key.trim();
+        if trimmed.is_empty() || trimmed == "general" || normalize_thread_id(trimmed).is_err() {
+            return key.to_string();
+        }
+        match self.resolve_thread_key(principal, workspace, trimmed).await {
+            Ok(Some(record)) => record.id,
+            Ok(None) => key.to_string(),
+            Err(error) => {
+                warn!(
+                    principal,
+                    workspace,
+                    key = trimmed,
+                    error = %error,
+                    "[UI-THREAD] thread key lookup failed; using the key as the thread id"
+                );
+                key.to_string()
+            },
+        }
+    }
+
+    /// Create or rename `thread_id`. A reserved route word (`new`) is never
+    /// stored as an id: that request creates a fresh thread whose id comes
+    /// from the name instead, as [`Self::create_thread_from_name`] does.
     pub async fn create_thread(
         &self,
         principal: &str,
@@ -189,8 +235,39 @@ impl UiThreadService {
     ) -> Result<UiThreadRecord> {
         let normalized_id = normalize_thread_id(thread_id)?;
         let normalized_name = normalize_thread_name(name.unwrap_or(thread_id))?;
+        if is_reserved_thread_key(&normalized_id) {
+            return self
+                .store
+                .insert_thread_with_generated_id(
+                    principal,
+                    workspace,
+                    &normalized_name,
+                    HistoryLane::Personal,
+                )
+                .await;
+        }
         self.store
             .upsert_thread(principal, workspace, &normalized_id, &normalized_name)
+            .await
+    }
+
+    /// Create a new thread named `name`. The server picks the id — the
+    /// name's slug, suffixed `-2`, `-3`… until free — and the slug starts
+    /// equal to it. Never renames an existing thread.
+    pub async fn create_thread_from_name(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+    ) -> Result<UiThreadRecord> {
+        let normalized_name = normalize_thread_name(name)?;
+        self.store
+            .insert_thread_with_generated_id(
+                principal,
+                workspace,
+                &normalized_name,
+                HistoryLane::Personal,
+            )
             .await
     }
 
@@ -206,6 +283,12 @@ impl UiThreadService {
     ) -> Result<UiThreadRecord> {
         let normalized_id = normalize_thread_id(thread_id)?;
         let normalized_name = normalize_thread_name(name)?;
+        if is_reserved_thread_key(&normalized_id) {
+            return self
+                .store
+                .insert_thread_with_generated_id(principal, workspace, &normalized_name, lane)
+                .await;
+        }
         self.store
             .upsert_thread_with_lane(principal, workspace, &normalized_id, &normalized_name, lane)
             .await
@@ -222,7 +305,17 @@ impl UiThreadService {
         display_mode: Option<String>,
         plan_mode: Option<bool>,
     ) -> Result<Option<UiThreadDetail>> {
-        let normalized_id = normalize_thread_id(thread_id)?;
+        // `thread_id` may be a slug or alias from a URL; everything below acts
+        // on the canonical id. A rename moves the slug, never the id. A key
+        // that names no stored thread is taken as an id: a thread that exists
+        // only through its sessions still archives and restores them.
+        let normalized_id = match self
+            .resolve_thread_key(principal, workspace, thread_id)
+            .await?
+        {
+            Some(existing) => existing.id,
+            None => normalize_thread_id(thread_id)?,
+        };
 
         // Guard: #general cannot be archived or deleted.
         if normalized_id == "general" && archived == Some(true) {
@@ -296,7 +389,16 @@ impl UiThreadService {
         workspace: &str,
         thread_id: &str,
     ) -> Result<bool> {
-        let normalized_id = normalize_thread_id(thread_id)?;
+        // A slug or alias deletes the thread it names. A key that names no
+        // live thread is taken as an id, so retrying a delete whose row is
+        // already tombstoned still finishes its sessions.
+        let normalized_id = match self
+            .resolve_thread_key(principal, workspace, thread_id)
+            .await?
+        {
+            Some(record) => record.id,
+            None => normalize_thread_id(thread_id)?,
+        };
         if normalized_id == "general" {
             return Err(anyhow!("Cannot delete the #general thread"));
         }
@@ -789,7 +891,15 @@ fn normalize_referenced_thread_id(value: &str) -> Option<String> {
         .or_else(|| slugify_legacy_thread_id(value))
 }
 
-fn slugify_legacy_thread_id(value: &str) -> Option<String> {
+/// Route words a thread id or slug may never be: `/t/new` is the web's
+/// "name a new thread" page, so a thread keyed `new` would be unreachable.
+pub const RESERVED_THREAD_KEYS: &[&str] = &["new"];
+
+pub fn is_reserved_thread_key(key: &str) -> bool {
+    RESERVED_THREAD_KEYS.contains(&key.trim().to_ascii_lowercase().as_str())
+}
+
+pub(crate) fn slugify_legacy_thread_id(value: &str) -> Option<String> {
     let mut output = String::new();
     let mut last_was_dash = false;
     for ch in value.trim().to_lowercase().chars() {
@@ -1164,4 +1274,106 @@ mod tests {
             .unwrap());
         assert!(chat_store.get_session(&session.id).await.unwrap().is_none());
     }
+
+    #[tokio::test]
+    async fn new_threads_never_take_the_reserved_id_and_renames_resolve_by_slug() {
+        let tmp = TempDir::new().unwrap();
+        let v3_service = build_test_artifact_v2_service(tmp.path());
+        let chat_store = Arc::new(
+            FileChatStore::with_index(tmp.path().join("chat"))
+                .await
+                .unwrap(),
+        );
+        let memory_resolver = AgentMemoryResolver::new(tmp.path());
+        let store = UiThreadStore::open(tmp.path()).unwrap();
+        let service = UiThreadService::new(store, v3_service, chat_store, memory_resolver);
+
+        assert!(is_reserved_thread_key("new"));
+        assert!(is_reserved_thread_key(" NEW "));
+        assert!(!is_reserved_thread_key("news"));
+
+        // An explicit `new` id (the old web "New thread" path) and a create
+        // without an id both get a fresh id from the name.
+        let explicit = service
+            .create_thread("alpha", "prod", "new", Some("Research"))
+            .await
+            .unwrap();
+        assert_eq!(explicit.id, "research");
+        assert_eq!(explicit.slug, "research");
+        let unnamed = service
+            .create_thread_from_name("alpha", "prod", "Research")
+            .await
+            .unwrap();
+        assert_eq!(unnamed.id, "research-2");
+        // Creating by name never renames the thread that already holds it.
+        let first = service
+            .get_thread("alpha", "prod", "research")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.record.name, "Research");
+
+        // Rename through the slug; the id stays, the old slug still resolves.
+        let renamed = service
+            .update_thread(
+                "alpha",
+                "prod",
+                "research",
+                Some("Trip planning".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed.record.id, "research");
+        assert_eq!(renamed.record.slug, "trip-planning");
+        for key in ["research", "trip-planning"] {
+            let detail = service
+                .get_thread("alpha", "prod", key)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(detail.record.id, "research");
+        }
+        // A later rename by the current slug lands on the same thread.
+        let again = service
+            .update_thread(
+                "alpha",
+                "prod",
+                "trip-planning",
+                Some("Japan".to_string()),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.record.id, "research");
+        assert_eq!(again.record.slug, "japan");
+        assert_eq!(
+            service
+                .resolve_referenced_thread_id("alpha", "prod", "trip-planning")
+                .await,
+            "research"
+        );
+        // Unknown keys and non-key references pass through unchanged.
+        assert_eq!(
+            service
+                .resolve_referenced_thread_id("alpha", "prod", "brand-new")
+                .await,
+            "brand-new"
+        );
+        assert_eq!(
+            service
+                .resolve_referenced_thread_id("alpha", "prod", "ext:kapso:1:magic")
+                .await,
+            "ext:kapso:1:magic"
+        );
+    }
 }
+

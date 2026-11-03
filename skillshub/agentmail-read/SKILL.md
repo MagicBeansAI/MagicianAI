@@ -1,6 +1,6 @@
 ---
 name: agentmail-read
-version: 0.2.1
+version: 0.2.2
 description: 'Read Magican''s AgentMail inbox (magican@agentmail.to): list/get messages, threads, drafts,
   attachments. Free reads (the send cap is on agentmail-send).'
 metadata:
@@ -12,6 +12,7 @@ metadata:
       destination: api.agentmail.to
     requires:
       bins:
+      - agentmail-read-adapter
       - agentmail
     install_hint:
       docs: npm install -g agentmail-cli; set AGENT_MAIL_KEY (inbox-scoped) in skillshub/operator-config.yaml;
@@ -25,7 +26,13 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
+        # The runtime snapshots its entrypoint alone; the agentmail JS
+        # launcher spawns the native `.agentmail` beside itself, so the
+        # tracked `agentmail-read-adapter` is the entrypoint and execs the
+        # `agentmail` PATH companion in place.
+        entrypoint: agentmail-read-adapter
         bins:
+        - agentmail-read-adapter
         - agentmail
       runtime:
         protocol: cli

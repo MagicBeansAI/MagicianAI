@@ -1128,8 +1128,11 @@ private fun Bubble(
                     // flat text instead would collapse a table into a paragraph.
                     StructuredResponseView(if (answerDisplay.verification != null) withoutAnswerVerification(structured) else structured)
                 } else {
+                    val body = answerDisplay.body.ifEmpty { if (message.streaming) "…" else "" }
                     MarkdownText(
-                        markdown = answerDisplay.body.ifEmpty { if (message.streaming) "…" else "" },
+                        // Paths the reply mentions (inline code, prose, file://)
+                        // become links the chat link opener can route.
+                        markdown = remember(body) { ai.magicbeans.magdroid.chat.ChatLinks.linkifyMarkdown(body) },
                         color = when {
                             message.fromUser -> OnAccent
                             message.failed -> Coral

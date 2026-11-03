@@ -10,6 +10,11 @@ import type {
 	StructuredSourceRefV1
 } from './types';
 import { toPlainText } from './toPlainText';
+import {
+	isTaskSummaryFileName,
+	presentTaskOutputBlocks,
+	SUMMARY_OUTPUT_LABEL
+} from '$lib/magician/tasks/deliverableOrder';
 
 type FileContentBlockRecord = ContentBlockRecord & { type: 'file' };
 type TextContentBlockRecord = ContentBlockRecord & { type: 'text' };
@@ -65,7 +70,11 @@ function toArtifactRefsFromBlocks(
 	return blocks
 		.filter((block): block is FileContentBlockRecord => block.type === 'file')
 		.map((block) => ({
-			label: block.display_name?.trim() || block.relative_path?.trim() || 'attachment',
+			// The task summary's generated name (`out_task_user_…`) is an id, not a
+			// title: it reads `Summary` wherever it is listed.
+			label: isTaskSummaryFileName(block.relative_path || block.display_name)
+				? SUMMARY_OUTPUT_LABEL
+				: block.display_name?.trim() || block.relative_path?.trim() || 'attachment',
 			mime_type: block.mime_type?.trim() || undefined,
 			size: boundedArtifactSize(block.size),
 			artifact_id: logicalArtifactId(block, taskId)
@@ -246,7 +255,9 @@ export function adaptLegacyChatContentToStructuredResponse(
 					});
 				}
 
-				const outputFiles = content.output_files ?? [];
+				// Primary deliverable first, the summary last, agent-facing state
+				// dropped — the same order the task card renders.
+				const outputFiles = presentTaskOutputBlocks(content.output_files ?? []);
 				if (outputFiles.length > 0) {
 					blocks.push({
 						kind: 'artifacts',

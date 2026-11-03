@@ -43,6 +43,11 @@
 //! ([`HarnessBox::deny_write`]) stay unwritable even under a writable root,
 //! since they run unboxed later. A god-mode turn the owner approves runs
 //! under the coding profile alone (`coding_engine::os_sandbox_wrap`).
+//!
+//! A coding run's own `shell` calls (the coding agent's, its harness turn's)
+//! take the coding profile instead of this box, except under god mode: then
+//! they run in this box like god-mode shell in any run, with the live repo
+//! source and the run's real repo still unwritable ([`wrap_coding_call`]).
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -419,8 +424,37 @@ pub struct Boxed {
 /// not apply: `os_enforce` off, a coding run (its own profile), or no working
 /// launcher (logged once; the string checks still apply).
 pub fn wrap(program: &OsStr, args: &[OsString], sandbox: &ShellSandboxConfig) -> Option<Boxed> {
-    if !sandbox.os_enforce || crate::magician_v2::execution::coding_engine::coding_context_active()
-    {
+    if crate::magician_v2::execution::coding_engine::coding_context_active() {
+        return None;
+    }
+    launch(&boxed_plan(sandbox)?, program, args)
+}
+
+/// [`wrap`] for a coding run's shell call that god mode is on for
+/// (`native_executors::authorize_bash_action`): this box, like god-mode shell
+/// in any run, not the coding profile. What the coding profile kept read-only
+/// stays unwritable even under a writable root (`allowed_working_dirs` lists
+/// `.`, the live repo root, in the seed): the live Magician repo source
+/// outside its scope sandbox base, and the coding run's real repo
+/// ([`Plan::deny_repo_writes`]). The coding engines' own processes use
+/// [`wrap_harness`]. `None` when `os_enforce` is off or no launcher works here.
+pub fn wrap_coding_call(
+    program: &OsStr,
+    args: &[OsString],
+    sandbox: &ShellSandboxConfig,
+) -> Option<Boxed> {
+    let mut plan = boxed_plan(sandbox)?;
+    plan.deny_repo_writes(
+        crate::magician_v2::execution::coding_engine::live_repo_source_fence(),
+        crate::magician_v2::execution::coding_engine::coding_run_real_repo(),
+    );
+    launch(&plan, program, args)
+}
+
+/// The box's plan for `sandbox`, or `None` when `os_enforce` is off or no
+/// launcher works here (logged once; the string checks still apply).
+fn boxed_plan(sandbox: &ShellSandboxConfig) -> Option<Plan> {
+    if !sandbox.os_enforce {
         return None;
     }
     if !available() {
@@ -430,8 +464,7 @@ pub fn wrap(program: &OsStr, args: &[OsString], sandbox: &ShellSandboxConfig) ->
         });
         return None;
     }
-    let plan = Plan::current(sandbox);
-    launch(&plan, program, args)
+    Some(Plan::current(sandbox))
 }
 
 /// A governed child always receives the ordinary process box, including when
@@ -862,17 +895,24 @@ fn temp_dirs() -> Vec<PathBuf> {
 /// process whose `TMPDIR` is unset.
 #[cfg(target_os = "macos")]
 fn darwin_user_temp_dir() -> Option<PathBuf> {
+    darwin_user_dir(libc::_CS_DARWIN_USER_TEMP_DIR)
+}
+
+/// `confstr(_CS_DARWIN_USER_CACHE_DIR)`: the per-user cache dir
+/// (`/var/folders/…/C`), whatever `TMPDIR` says.
+#[cfg(target_os = "macos")]
+fn darwin_user_cache_dir() -> Option<PathBuf> {
+    darwin_user_dir(libc::_CS_DARWIN_USER_CACHE_DIR)
+}
+
+/// A per-user dir `confstr` names, when it is a directory.
+#[cfg(target_os = "macos")]
+fn darwin_user_dir(name: libc::c_int) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
     let mut buf = vec![0u8; 1024];
     // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most
     // that many, NUL-terminated, and returns the length it needed.
-    let needed = unsafe {
-        libc::confstr(
-            libc::_CS_DARWIN_USER_TEMP_DIR,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-        )
-    };
+    let needed = unsafe { libc::confstr(name, buf.as_mut_ptr().cast(), buf.len()) };
     if needed == 0 || needed > buf.len() {
         return None;
     }
@@ -883,6 +923,11 @@ fn darwin_user_temp_dir() -> Option<PathBuf> {
 
 #[cfg(not(target_os = "macos"))]
 fn darwin_user_temp_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn darwin_user_cache_dir() -> Option<PathBuf> {
     None
 }
 
@@ -925,6 +970,15 @@ fn build_cache_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// clang's (and so Swift's) module cache under the per-user cache dir
+/// (`/var/folders/…/C/clang/ModuleCache`, resolved to `/private/var` for
+/// SBPL): the one part of that dir a task shell may write, so `swift` and
+/// `clang -fmodules` work there. The rest of `…/C` holds other apps' caches
+/// and stays read-only. `None` off macOS.
+fn compiler_module_cache_dir() -> Option<PathBuf> {
+    darwin_user_cache_dir().map(|cache| resolved(&cache).join("clang/ModuleCache"))
+}
+
 /// What the box allows, resolved for this host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Plan {
@@ -946,8 +1000,18 @@ struct Plan {
     nested_agent_dirs: Vec<(&'static str, PathBuf)>,
     /// Writable files by SBPL regex (a harness's own state files).
     writable_regex: Vec<String>,
+    /// Directories the box may create, the entry itself and not its
+    /// contents: the parent of a writable root that may not exist yet
+    /// (`…/C/clang` above the compiler module cache). macOS only; bwrap binds
+    /// only writable roots that exist.
+    creatable_dirs: Vec<PathBuf>,
     /// Never writable, even under a writable root: emitted after every allow.
     write_denied: Vec<PathBuf>,
+    /// Carve-outs inside a `write_denied` path that keep their verdict: the
+    /// scope sandbox base inside the live repo, where a writable root reaches
+    /// it ([`Plan::deny_repo_writes`]). Re-allowed after the denials, with
+    /// the read-only layering and the denials inside them applied again.
+    write_reopened: Vec<PathBuf>,
     /// Folders agents may only read (`file_sandbox.read_only_roots`): no
     /// writes and no hard links out of them, so `ln programs/plan.md
     /// Workspaces/plan.md` cannot give a program a writable second name. As
@@ -1167,6 +1231,8 @@ impl Plan {
             .collect();
         writable.push(resolved(Path::new("/tmp")));
         writable.extend(temp_dirs());
+        let module_cache = compiler_module_cache_dir();
+        writable.extend(module_cache.clone());
         if let Some(home) = &home {
             writable.extend(HOME_CACHE_DIRS.iter().map(|dir| home.join(dir)));
         }
@@ -1219,7 +1285,12 @@ impl Plan {
             nested_agent_packages: NESTED_AGENT_PACKAGES.to_vec(),
             nested_agent_dirs,
             writable_regex: Vec::new(),
+            creatable_dirs: module_cache
+                .iter()
+                .filter_map(|dir| dir.parent().map(Path::to_path_buf))
+                .collect(),
             write_denied: Vec::new(),
+            write_reopened: Vec::new(),
             read_only: crate::magician_v2::execution::native_executors::agent_read_only_roots(),
             magician_ports: magician_listener_ports(),
             harness: false,
@@ -1261,6 +1332,43 @@ impl Plan {
             return Vec::new();
         }
         SOCKET_ENV.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Keep what the coding profile holds read-only unwritable in this box,
+    /// even under a writable root: the live repo source (`live`: the repo
+    /// and its scope sandbox base) and the coding run's real repo (`real`).
+    /// Where a writable root reaches the sandbox base inside the live repo,
+    /// that part stays writable ([`Plan::write_reopened`]).
+    fn deny_repo_writes(&mut self, live: Option<(PathBuf, PathBuf)>, real: Option<PathBuf>) {
+        if let Some((repo, base)) = live {
+            let (repo, base) = (resolved(&repo), resolved(&base));
+            for root in &self.writable {
+                if root.starts_with(&base) {
+                    self.write_reopened.push(root.clone());
+                } else if base.starts_with(root) {
+                    self.write_reopened.push(base.clone());
+                }
+            }
+            self.write_denied.push(repo);
+        }
+        self.write_denied.extend(real.map(|real| resolved(&real)));
+        for paths in [&mut self.write_denied, &mut self.write_reopened] {
+            paths.sort();
+            paths.dedup();
+        }
+    }
+
+    /// The write denials inside a carve-out, applied again after it.
+    #[cfg(any(target_os = "macos", target_os = "linux", test))]
+    fn write_denied_within_reopened(&self) -> Vec<&PathBuf> {
+        self.write_denied
+            .iter()
+            .filter(|denied| {
+                self.write_reopened
+                    .iter()
+                    .any(|reopened| denied.starts_with(reopened))
+            })
+            .collect()
     }
 
     /// Let `engine` (the harness being launched) run: drop it from the
@@ -1399,6 +1507,14 @@ impl Plan {
         for regex in &self.writable_regex {
             profile.push_str(&format!("(allow file-write* (regex #\"{regex}\"))\n"));
         }
+        // Creating the directory only: no writes inside it (beyond the
+        // writable roots), no chmod, no rename.
+        for dir in &self.creatable_dirs {
+            profile.push_str(&format!(
+                "(allow file-write-create (literal \"{}\"))\n",
+                escape(dir)
+            ));
+        }
         for (root, read_only) in self.read_only_layers() {
             let verdict = if read_only { "deny" } else { "allow" };
             profile.push_str(&format!(
@@ -1412,6 +1528,30 @@ impl Plan {
                 "(deny file-write* (subpath \"{}\"))\n",
                 escape(path)
             ));
+        }
+        // A carve-out keeps its verdict: writable again, then the read-only
+        // layering and the denials inside it.
+        if !self.write_reopened.is_empty() {
+            let layers = self.read_only_layers();
+            for path in &self.write_reopened {
+                profile.push_str(&format!(
+                    "(allow file-write* (subpath \"{}\"))\n",
+                    escape(path)
+                ));
+                for (root, read_only) in read_only_layers_within(&layers, path) {
+                    let verdict = if read_only { "deny" } else { "allow" };
+                    profile.push_str(&format!(
+                        "({verdict} file-write* (subpath \"{root}\"))\n({verdict} file-link (subpath \"{root}\"))\n",
+                        root = escape(&root)
+                    ));
+                }
+            }
+            for path in self.write_denied_within_reopened() {
+                profile.push_str(&format!(
+                    "(deny file-write* (subpath \"{}\"))\n",
+                    escape(path)
+                ));
+            }
         }
         for dir in &self.secret_dirs {
             profile.push_str(&format!(
@@ -1759,6 +1899,53 @@ impl Plan {
                 path.clone().into(),
             ]);
         }
+        // A carve-out keeps its verdict: bound writable again, then the
+        // read-only layering and the denials inside it.
+        if !self.write_reopened.is_empty() {
+            let layers = self.read_only_layers();
+            for path in self
+                .write_reopened
+                .iter()
+                .filter(|path| path.exists() && keep(path))
+            {
+                args.extend([
+                    OsString::from("--bind"),
+                    path.clone().into(),
+                    path.clone().into(),
+                ]);
+                for (root, read_only) in read_only_layers_within(&layers, path)
+                    .into_iter()
+                    .filter(|(root, _)| keep(root))
+                {
+                    let read_only = read_only
+                        || self
+                            .workspace
+                            .read_only_dirs
+                            .iter()
+                            .any(|dir| root.starts_with(dir));
+                    args.extend([
+                        OsString::from(if read_only {
+                            "--ro-bind-try"
+                        } else {
+                            "--bind-try"
+                        }),
+                        root.clone().into_os_string(),
+                        root.into_os_string(),
+                    ]);
+                }
+            }
+            for path in self
+                .write_denied_within_reopened()
+                .into_iter()
+                .filter(|path| path.exists() && keep(path))
+            {
+                args.extend([
+                    OsString::from("--ro-bind"),
+                    path.clone().into(),
+                    path.clone().into(),
+                ]);
+            }
+        }
         for dir in self
             .secret_dirs
             .iter()
@@ -1887,7 +2074,9 @@ mod tests {
                 ("grok", PathBuf::from("/Users/o/.grok/bin")),
             ],
             writable_regex: Vec::new(),
+            creatable_dirs: Vec::new(),
             write_denied: Vec::new(),
+            write_reopened: Vec::new(),
             read_only: Vec::new(),
             magician_ports: vec![3002],
             fenced: false,
@@ -2105,6 +2294,67 @@ mod tests {
         }
     }
 
+    /// A task shell compiles Swift and clang modules into the module cache
+    /// under the per-user cache dir, and writes nowhere else in that dir:
+    /// the rest of `…/C` is other apps' caches. `…/C/clang` itself may be
+    /// created (a user who never ran clang has none), nothing else in it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_task_shell_writes_the_compiler_module_cache_and_not_the_rest_of_the_user_cache_dir() {
+        let cache =
+            resolved(&darwin_user_cache_dir().expect("macOS gives every user a cache dir"));
+        let clang = cache.join("clang");
+        let module_cache = clang.join("ModuleCache");
+        assert!(
+            module_cache.starts_with("/private/var"),
+            "SBPL matches the real path, not the /var symlink: {module_cache:?}"
+        );
+        let plan = Plan::with_denies(&ShellSandboxConfig::default(), Default::default());
+        assert!(plan.writable.contains(&module_cache));
+        assert!(!plan.writable.contains(&cache) && !plan.writable.contains(&clang));
+        assert_eq!(plan.creatable_dirs, vec![clang.clone()]);
+        assert!(plan.writes_allowed(&module_cache.join("2D8LMZVD367GV/SwiftShims.pcm")));
+        assert!(!plan.writes_allowed(&cache.join("com.apple.other/cache.db")));
+        let profile = plan.macos_profile();
+        assert!(profile.contains(&format!(
+            "(allow file-write* (subpath \"{}\"))",
+            sbpl_escape(&module_cache)
+        )));
+        assert!(profile.contains(&format!(
+            "(allow file-write-create (literal \"{}\"))",
+            sbpl_escape(&clang)
+        )));
+        assert!(
+            !profile.contains(&format!("(subpath \"{}\")", sbpl_escape(&clang))),
+            "only the clang dir entry, never its contents"
+        );
+        if available() {
+            let parses = std::process::Command::new("/usr/bin/sandbox-exec")
+                .args(["-p", &profile, "/usr/bin/true"])
+                .status()
+                .unwrap()
+                .success();
+            assert!(parses, "sandbox-exec takes the profile");
+        }
+    }
+
+    /// The module cache comes only from the OS's per-user cache dir (none
+    /// off macOS, whatever `TMPDIR` says), and a writable root that does not
+    /// exist yet is never bound by bwrap.
+    #[test]
+    fn module_cache_dirs_follow_the_user_cache_dir_and_missing_roots_are_not_bound() {
+        if cfg!(not(target_os = "macos")) {
+            assert_eq!(compiler_module_cache_dir(), None);
+        }
+        let mut boxed = plan(NetworkMode::Allow, None);
+        let missing = PathBuf::from("/nonexistent-user-cache/C/clang/ModuleCache");
+        boxed.writable.push(missing.clone());
+        assert!(!boxed
+            .bwrap_args()
+            .iter()
+            .any(|arg| arg == missing.as_os_str()));
+    }
+
     #[test]
     fn bwrap_isolates_network_only_when_it_can() {
         let deny = plan(NetworkMode::Deny, None).bwrap_args();
@@ -2183,7 +2433,9 @@ mod tests {
                 "^{}/state\\.json",
                 regex::escape(&resolved(agents.path()).to_string_lossy())
             )],
+            creatable_dirs: Vec::new(),
             write_denied: Vec::new(),
+            write_reopened: Vec::new(),
             read_only: Vec::new(),
             magician_ports: Vec::new(),
             fenced: false,
@@ -2285,7 +2537,9 @@ mod tests {
             nested_agent_packages: NESTED_AGENT_PACKAGES.to_vec(),
             nested_agent_dirs: Vec::new(),
             writable_regex: Vec::new(),
+            creatable_dirs: Vec::new(),
             write_denied: Vec::new(),
+            write_reopened: Vec::new(),
             read_only: Vec::new(),
             magician_ports: Vec::new(),
             fenced: false,
@@ -2385,6 +2639,117 @@ mod tests {
             allow_tmp < deny_repo && allow_regex < deny_repo,
             "last match wins: the deny follows every allow"
         );
+    }
+
+    /// A coding run's god-mode box (`wrap_coding_call`) keeps the live repo
+    /// source unwritable even under a writable root (`.`, the repo root, in
+    /// the seed), but its scope sandbox base keeps its verdict, with the
+    /// read-only roots and the run's real repo inside it denied again after.
+    #[test]
+    fn a_coding_god_box_denies_the_live_repo_but_keeps_its_sandbox_base() {
+        let mut coding = plan(NetworkMode::Deny, None);
+        coding.writable = vec![PathBuf::from("/repo"), PathBuf::from("/private/tmp")];
+        coding.read_only = vec![PathBuf::from("/repo/magician_data_v3/notes")];
+        coding.deny_repo_writes(
+            Some((
+                PathBuf::from("/repo"),
+                PathBuf::from("/repo/magician_data_v3"),
+            )),
+            Some(PathBuf::from("/repo/magician_data_v3/scopes/real")),
+        );
+        assert_eq!(
+            coding.write_reopened,
+            vec![PathBuf::from("/repo/magician_data_v3")]
+        );
+        let profile = coding.macos_profile();
+        let last = |rule: &str| {
+            profile
+                .rfind(rule)
+                .unwrap_or_else(|| panic!("{rule} missing:\n{profile}"))
+        };
+        let allow_repo = profile
+            .find("(allow file-write* (subpath \"/repo\"))")
+            .unwrap();
+        let deny_repo = last("(deny file-write* (subpath \"/repo\"))");
+        let reopen_base = last("(allow file-write* (subpath \"/repo/magician_data_v3\"))");
+        let notes_again = last("(deny file-write* (subpath \"/repo/magician_data_v3/notes\"))");
+        let real_again = last("(deny file-write* (subpath \"/repo/magician_data_v3/scopes/real\"))");
+        assert!(allow_repo < deny_repo, "the repo deny follows the writable root");
+        assert!(deny_repo < reopen_base, "the base keeps its verdict");
+        assert!(reopen_base < notes_again && reopen_base < real_again);
+
+        // No writable root reaches the base: nothing is re-opened.
+        let mut elsewhere = plan(NetworkMode::Deny, None);
+        elsewhere.deny_repo_writes(
+            Some((
+                PathBuf::from("/repo"),
+                PathBuf::from("/repo/magician_data_v3"),
+            )),
+            None,
+        );
+        assert!(elsewhere.write_reopened.is_empty());
+        assert_eq!(elsewhere.write_denied, vec![PathBuf::from("/repo")]);
+    }
+
+    #[test]
+    fn bwrap_rebinds_the_live_repo_sandbox_base_after_its_denial() {
+        let work = tempfile::tempdir().unwrap();
+        let repo = resolved(work.path()).join("repo");
+        let base = repo.join("magician_data_v3");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut plan = plan(NetworkMode::Deny, None);
+        plan.writable = vec![repo.clone()];
+        plan.deny_repo_writes(Some((repo.clone(), base.clone())), None);
+        let args = plan.bwrap_args();
+        let at = |flag: &str, path: &Path| {
+            args.windows(2)
+                .position(|pair| pair[0] == flag && pair[1].as_os_str() == path.as_os_str())
+                .unwrap_or_else(|| panic!("{flag} {} missing: {args:?}", path.display()))
+        };
+        assert!(at("--ro-bind", &repo) < at("--bind", &base));
+    }
+
+    /// The real launcher, on macOS: in a coding run's god-mode box a write
+    /// into the live repo fails, one into its sandbox base works.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_exec_holds_the_live_repo_in_a_coding_god_box() {
+        if !available() {
+            return;
+        }
+        let work = tempfile::tempdir().unwrap();
+        let repo = resolved(work.path()).join("repo");
+        let base = repo.join("magician_data_v3");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut plan = plan(NetworkMode::Deny, None);
+        plan.writable = vec![repo.clone()];
+        plan.secret_dirs.clear();
+        plan.secret_files.clear();
+        plan.nested_agents.clear();
+        plan.nested_agent_dirs.clear();
+        plan.deny_repo_writes(Some((repo.clone(), base.clone())), None);
+        let boxed = launch(
+            &plan,
+            OsStr::new("/bin/sh"),
+            &[
+                OsString::from("-c"),
+                OsString::from(format!(
+                    "touch '{}'; touch '{}'",
+                    repo.join("in-repo").display(),
+                    base.join("in-base").display()
+                )),
+            ],
+        )
+        .unwrap();
+        let _ = std::process::Command::new(&boxed.program)
+            .args(&boxed.args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!repo.join("in-repo").exists(), "the live repo stays unwritable");
+        assert!(base.join("in-base").exists(), "its sandbox base stays writable");
     }
 
     #[test]

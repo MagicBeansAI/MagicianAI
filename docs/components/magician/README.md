@@ -37,8 +37,9 @@ Landing page for the `magician` runtime. Dated updates:
 - **Storage.** Profile `local_embedded`; remote adapters and the migration
   coordinator stay unselected at startup. Rollback invalidates forward evidence after
   `RollbackPending`. `SecretRef` accepts slash-separated `credentials_ref`. The
-  skill-working envelope does not steal CLI CWD. JSONL commit markers stay on the
-  file provider. See [storage-abstraction.md](storage-abstraction.md),
+  skill-working envelope does not steal an admitted CLI CWD or task work root;
+  a workspace-mode CLI with neither runs in it, never the scope root. JSONL
+  commit markers stay on the file provider. See [storage-abstraction.md](storage-abstraction.md),
   [jsonl-durability](jsonl-durability.md).
 - **Notes** live at
   `$MAGICIAN_ROOT_DIR/MagicanNotes/spaces/<principal>/<workspace>`

@@ -2,7 +2,7 @@
   "name": "magician-desktop",
   "private": true,
   "packageManager": "pnpm@10.33.0",
-  "version": "0.3.29",
+  "version": "0.3.30",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,13 +13,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-autostart": "^2.0.0",
     "@tauri-apps/plugin-shell": "^2.0.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
-    "@tauri-apps/cli": "^2.11.4",
+    "@tauri-apps/cli": "^2.12.4",
     "jsdom": "^26.1.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",

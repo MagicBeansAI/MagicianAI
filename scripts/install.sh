@@ -202,6 +202,35 @@ verify_release_sha256() {
   log "  SHA-256 checksum verified."
 }
 
+# Whether the backend this install starts finds a ripgrep the way
+# runtime_core::process::resolve_ripgrep does: MAGICIAN_RG alone when set (a
+# non-executable override is missing, never a fall-through), the repo's
+# rg.bin, the rg skill's pinned copy for this host's platform, or rg on PATH.
+# A Homebrew rg that install-prerequisites.sh just installed is not on this
+# shell's PATH yet, so its directory joins PATH here, and the backend
+# phase_run starts inherits it.
+ripgrep_available() {
+  if [ -n "${MAGICIAN_RG:-}" ]; then
+    [ -x "$MAGICIAN_RG" ]
+    return
+  fi
+  local os="" arch="" candidate
+  case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; esac
+  case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64) arch=x64 ;; esac
+  for candidate in "$REPO/rg.bin" "$REPO/skillshub/rg/bin/rg" \
+      "$REPO/skillshub/node_modules/@vscode/ripgrep-$os-$arch/bin/rg"; do
+    [ -x "$candidate" ] && return 0
+  done
+  command -v rg >/dev/null 2>&1 && return 0
+  for candidate in /opt/homebrew/bin /usr/local/bin; do
+    if [ -x "$candidate/rg" ]; then
+      export PATH="$candidate:$PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # phase_prereqs — foundational host CLI tools (+ container runtime for FLOW=container).
 # Non-fatal: a failing optional prereq step is logged loudly but does not abort
@@ -220,6 +249,14 @@ phase_prereqs() {
   if ! MAGICIAN_PREREQS_SLIM="$_slim" MAGICIAN_INSTALL_MODE="$MODE" MAGICIAN_INSTALL_FLOW="$FLOW" \
        bash "$REPO/scripts/install-prerequisites.sh"; then
     warn "install-prerequisites.sh reported a failure — continuing (non-fatal)"
+  fi
+  # The grep and glob agent tools refuse without ripgrep (container images
+  # install their own). A miss warns rather than stops: the rest of the
+  # install works, and the startup log and /health name the missing ripgrep.
+  if [ "$FLOW" = local ] && [ -n "${MAGICIAN_RG:-}" ] && [ ! -x "$MAGICIAN_RG" ]; then
+    warn "MAGICIAN_RG=$MAGICIAN_RG is not an executable, and it overrides every other ripgrep; Magician's grep and glob tools refuse until you unset it or point it at an rg."
+  elif [ "$FLOW" = local ] && ! ripgrep_available; then
+    warn "ripgrep (rg) was not found; Magician's grep and glob tools refuse until it is. Run 'brew install ripgrep' (or your package manager's ripgrep), or 'make -C skillshub setup-deps' for the pinned copy."
   fi
   if [ "$FLOW" = container ]; then
     # Idempotent: auto-selects Apple `container` (macOS>=26 + arm64) else

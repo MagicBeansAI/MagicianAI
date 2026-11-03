@@ -629,6 +629,29 @@ pub fn canonical_runtime_fact_of(
     (mapped.execution_id == scope.execution_id).then_some(mapped)
 }
 
+/// Characters of a failed tool call's text a `tool.failed` row keeps — the
+/// native loop's action-event bound (`MAX_JOURNALED_ERROR_CHARS`). Long
+/// enough for a tool's whole explanation, short enough that a failure
+/// dumping a full log stays a bounded row.
+const MAX_TOOL_FAILURE_ERROR_CHARS: usize = 2_000;
+
+/// A failed tool call's text as a `tool.failed` row carries it: whole when it
+/// fits, otherwise cut to `MAX_TOOL_FAILURE_ERROR_CHARS` with a trailing `…`
+/// so a reader can see it was cut. Applied here for every producer of
+/// `AgenticActionExecuted`; a producer that bounds its own event (the plane)
+/// calls it too, and a text already within the bound passes unchanged.
+pub(crate) fn bounded_tool_failure_error(error: &str) -> String {
+    if error.chars().count() <= MAX_TOOL_FAILURE_ERROR_CHARS {
+        return error.to_owned();
+    }
+    let mut cut = error
+        .chars()
+        .take(MAX_TOOL_FAILURE_ERROR_CHARS - 1)
+        .collect::<String>();
+    cut.push('…');
+    cut
+}
+
 pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRuntimeEvent> {
     match event {
         RuntimeTransportEvent::MessageProcessingStarted {
@@ -1769,7 +1792,7 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
                 "action_type": action_type,
                 "target": target,
                 "latency_ms": latency_ms,
-                "error": error,
+                "error": error.as_deref().map(bounded_tool_failure_error),
                 "timestamp_ms": timestamp,
             }),
             execution_status_hint: Some("running".to_string()),
@@ -2143,8 +2166,14 @@ pub fn map_v2_realtime_event(event: &RuntimeTransportEvent) -> Option<MappedRunt
                 "iterations_used": iterations_used,
                 "timestamp_ms": timestamp,
             }),
-            execution_status_hint: Some("running".to_string()),
-            task_status_hint: Some("running"),
+            // A cycle ending says nothing about where the execution now
+            // stands: it ends `paused` when the run parks on its children or
+            // the user. The runtime's own status transition carries that. A
+            // `running` hint here overwrote a delegated coordinator's
+            // `waiting_for_children` two seconds after it parked, and the
+            // parent resume then refused it as not waiting — forever.
+            execution_status_hint: None,
+            task_status_hint: None,
             current_step_id: None,
             active_child_execution_ids: None,
         }),
@@ -2279,6 +2308,25 @@ fn task_status_hint_non_terminal(execution_status: &str) -> Option<&'static str>
         Some("completed") | Some("failed") | Some("cancelled") => None,
         other => other,
     }
+}
+
+/// Whether an event's status hint may move an execution out of
+/// `waiting_for_children`. Only the runtime's own state machine and the
+/// resume-family events can; a progress event (an LLM call, an iteration, a
+/// cycle boundary) stamped with a parked parent's id once overwrote the park,
+/// and the parent resume then refused it as not waiting.
+pub fn status_hint_may_end_children_wait(event_type: ArtifactV2EventType) -> bool {
+    matches!(
+        event_type,
+        ArtifactV2EventType::ExecutionStatusChanged
+            | ArtifactV2EventType::ExecutionResponsibilityChanged
+            | ArtifactV2EventType::SubGoalOutcome
+            | ArtifactV2EventType::AgenticResumed
+            | ArtifactV2EventType::WorkflowResumed
+            | ArtifactV2EventType::WorkflowStageResumed
+            | ArtifactV2EventType::HitlResolved
+            | ArtifactV2EventType::AgentCycleStarted
+    )
 }
 
 fn normalize_waiting_state_status(raw: &str) -> Option<&'static str> {
@@ -2535,6 +2583,37 @@ mod tests {
         }
     }
 
+    /// A `tool.failed` row's error is bounded whatever produced the event: a
+    /// failure that dumps a whole log is cut to the action-event bound with a
+    /// visible `…`, and a short one is kept whole.
+    #[test]
+    fn tool_failed_error_is_bounded_for_every_producer() {
+        use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+        let failed = |error: String| RuntimeTransportEvent::AgenticActionExecuted {
+            execution_id: "exec-1".into(),
+            principal: Some("anonymous".into()),
+            workspace: Some("default".into()),
+            plan_id: "plan-1".into(),
+            step_id: "step-1".into(),
+            iteration: 0,
+            action_type: "bash".into(),
+            target: "bash(cmd=make)".into(),
+            success: false,
+            latency_ms: 7,
+            error: Some(error),
+            call_id: None,
+            detail: None,
+            timestamp: 1_700_000_000_042,
+        };
+        let long = map_v2_realtime_event(&failed("é".repeat(5_000))).expect("should map");
+        let cut = long.payload["error"].as_str().expect("error text");
+        assert_eq!(cut.chars().count(), MAX_TOOL_FAILURE_ERROR_CHARS);
+        assert!(cut.ends_with('…'), "a cut is marked");
+
+        let short = map_v2_realtime_event(&failed("exit 2: no rule".into())).expect("should map");
+        assert_eq!(short.payload["error"], "exit 2: no rule");
+    }
+
     #[test]
     fn completed_execution_status_change_suppresses_terminal_task_status_hint() {
         use crate::magician_v2::realtime_events::RuntimeTransportEvent;
@@ -2567,6 +2646,32 @@ mod tests {
         let running = map_v2_realtime_event(&make("Running")).expect("should map");
         assert_eq!(running.execution_status_hint.as_deref(), Some("running"));
         assert_eq!(running.task_status_hint, Some("running"));
+    }
+
+    #[test]
+    fn a_completed_agent_cycle_carries_no_status_hint() {
+        use crate::magician_v2::realtime_events::RuntimeTransportEvent;
+        for outcome in ["paused", "success", "failure", "cancelled"] {
+            let mapped = map_v2_realtime_event(&RuntimeTransportEvent::AgentCycleCompleted {
+                principal: Some("anonymous".into()),
+                workspace: Some("default".into()),
+                agent_id: "ceo".into(),
+                goal_id: "goal-1".into(),
+                cycle_id: "cycle-1".into(),
+                execution_id: Some("exec-deleg-1".into()),
+                outcome: outcome.into(),
+                iterations_used: 11,
+                timestamp: 1_700_000_000_000,
+            })
+            .expect("should map");
+            assert_eq!(mapped.event_type, ArtifactV2EventType::AgentCycleCompleted);
+            assert_eq!(mapped.execution_status_hint, None, "outcome {outcome}");
+            assert_eq!(mapped.task_status_hint, None, "outcome {outcome}");
+        }
+        assert!(!status_hint_may_end_children_wait(ArtifactV2EventType::LlmRequested));
+        assert!(!status_hint_may_end_children_wait(ArtifactV2EventType::AgenticIterationStarted));
+        assert!(status_hint_may_end_children_wait(ArtifactV2EventType::ExecutionStatusChanged));
+        assert!(status_hint_may_end_children_wait(ArtifactV2EventType::SubGoalOutcome));
     }
 
     #[test]

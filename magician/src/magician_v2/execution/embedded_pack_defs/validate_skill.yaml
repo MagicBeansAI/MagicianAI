@@ -1,0 +1,27 @@
+name: validate_skill
+description: Check a skill in the repo's skillshub/ against the SKILL.md spec and return the validator's verdict and output.
+version: "1.0.0"
+guide: |
+  Tool name: `validate_skill`
+
+  Runs `python3 skillshub/scripts/validate_skill_md.py skillshub/<name>` from
+  the magician checkout and returns `{ skill, status: valid | invalid, command,
+  exit_code, timed_out, output_tail }`. It only reads files, so it does not ask
+  the owner. Use it after adding or editing a skill, before `test_skill` and
+  `install_skill`.
+parameters:
+  - name: name
+    required: true
+    param_type: string
+    description: The skill's folder name under skillshub/ (for example `impeccable`).
+implementation:
+  type: compiled
+  provider_name: validate_skill
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 180
+  categories:
+    - coding
+    - filesystem
+  composition_category: action
+  sandbox: none

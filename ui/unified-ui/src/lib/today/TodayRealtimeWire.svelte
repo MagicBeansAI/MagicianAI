@@ -18,6 +18,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { fade, slide } from 'svelte/transition';
 	import { goto } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import Icon from '$lib/shared/icons/Icon.svelte';
 	import { timedFetch } from '$lib/shared/fetch';
 	import { taxonomyFor } from '$lib/realtime/event-taxonomy';
@@ -386,7 +387,7 @@
 		else if ('focus_area' in u && typeof u.focus_area === 'string') summary = u.focus_area;
 		else if ('reason' in u && typeof u.reason === 'string') summary = u.reason;
 		else summary = 'Autonomous agent cycle logged';
-		const href = u.thread_id ? `/t/${encodeURIComponent(u.thread_id)}` : '/feed';
+		const href = u.thread_id ? threadHref(u.thread_id) : '/feed';
 
 		return {
 			id: `agent-update-${u.id}`,

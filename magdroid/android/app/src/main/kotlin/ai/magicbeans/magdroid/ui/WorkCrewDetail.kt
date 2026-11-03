@@ -193,7 +193,6 @@ internal fun WorkOperations(push: (WorkRoute) -> Unit) {
     var sequenceRunning by remember { mutableStateOf(false) }
     var sequenceTicket by remember { mutableIntStateOf(0) }
     val sequenceResults = remember { mutableStateListOf<JsonElement>() }
-    val targets = listOf("cmo" to "content-calendar", "cro" to "weekly-gtm-review", "cpo" to "backlog-grooming", "cto" to "morning-engineering-standup", "ceo" to "morning-briefing")
     DisposableEffect(Unit) { onDispose { sequenceTicket++ } }
     var change by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(state.identity) { change = null; confirmSequence = false; sequenceTicket++; sequenceRunning = false; sequenceResults.clear() }
@@ -213,7 +212,7 @@ internal fun WorkOperations(push: (WorkRoute) -> Unit) {
                 WorkActionRow(if (sequenceRunning) "Dispatching…" else "Start team sequence", Icons.Outlined.FastForward, enabled = !sequenceRunning && !state.busy && state.value != null) { confirmSequence = true }
                 sequenceResults.forEach { WorkRowDivider(); WorkRecord(it) }
             }
-            WorkFootnote("Dispatch the existing CMO, CRO, CPO, CTO and CEO focus areas in order. This does not wait for their runs to finish.")
+            WorkFootnote("Dispatch each crew member's team routines (their focus areas) in order. This does not wait for their runs to finish.")
         } }
         item { WorkGroup("Inspect") {
             WorkRow("Anomalies and repair evidence", icon = Icons.Outlined.ReportProblem) { push(WorkRoute("endpoint", "/api/magician/v2/harness/anomalies", "Anomalies")) }
@@ -223,15 +222,21 @@ internal fun WorkOperations(push: (WorkRoute) -> Unit) {
         item { WorkGroup("Web console") { WorkRelatedTools(WorkWebContext(section = WorkSection.Operations)) } }
     }
     if (confirmSequence) AlertDialog(
-        onDismissRequest = { confirmSequence = false }, title = { Text("Dispatch the five company focus areas?", color = Ink) },
+        onDismissRequest = { confirmSequence = false }, title = { Text("Dispatch the team routines?", color = Ink) },
         confirmButton = { TextButton(onClick = {
             confirmSequence = false; sequenceRunning = true; sequenceResults.clear(); val ticket = ++sequenceTicket; val identity = state.identity
             scope.launch {
-                for ((agent, goal) in targets) {
+                // The live roster, read once: a routine retired since this screen opened must not run.
+                val agents = resource.perform("/api/magician/v2/agents", identity, WorkMethod.Get, body = null, successNotice = null)
+                val targets = teamRoutineTargets(agents)
+                if (agents != null && targets.isEmpty() && sequenceTicket == ticket) {
+                    resource.reportError("No team routines are configured: no harness crew member has a focus area.")
+                }
+                for (target in targets) {
                     if (sequenceTicket != ticket || resource.state.value.identity != identity) break
-                    val result = resource.perform("/api/magician/v2/agents/$agent/trigger", identity, body = buildJsonObject { put("goal_id", "harness:$agent:$goal"); put("trigger", "manual.harness.company_loop") })
+                    val result = resource.perform("/api/magician/v2/agents/${target.agentId}/trigger", identity, body = buildJsonObject { put("goal_id", target.goalId); put("trigger", "manual.harness.company_loop") })
                     if (sequenceTicket != ticket || resource.state.value.identity != identity) break
-                    sequenceResults.add(buildJsonObject { put("target", agent); put("result", result ?: buildJsonObject { put("status", "failed"); put("reason", resource.state.value.error ?: "Dispatch failed") }) })
+                    sequenceResults.add(buildJsonObject { put("target", "${target.agentId} · ${target.label}"); put("result", result ?: buildJsonObject { put("status", "failed"); put("reason", resource.state.value.error ?: "Dispatch failed") }) })
                 }
                 if (sequenceTicket == ticket) sequenceRunning = false
             }

@@ -22,6 +22,7 @@ use std::{
     sync::OnceLock,
 };
 
+use magician::magician_v2::skills::scope_env::{parse_runtime_package, ScopeEnvSource};
 use serde::Deserialize;
 use tool_runtime_core::{
     action_overrides::{
@@ -32,10 +33,10 @@ use tool_runtime_core::{
     canary::SkillRuntimeCanary,
     credential_injection::{ChildEnvironmentBaseline, ChildEnvironmentVariable},
     manifest::{
-        AuthKind, ProfileSelection, RuntimeLimits, RuntimeProtocol, SkillRuntimeContract,
-        SKILL_RUNTIME_CONTRACT_V1,
+        AuthKind, McpTransport, ProfileSelection, RuntimeLimits, RuntimeProtocol,
+        SkillRuntimeContract, SKILL_RUNTIME_CONTRACT_V1,
     },
-    manifest_parser::{parse_skill_runtime_package, SkillRuntimePackage},
+    manifest_parser::SkillRuntimePackage,
     manifest_validation::validate_skill_runtime_contract,
 };
 
@@ -205,7 +206,11 @@ fn tool_skills() -> &'static [ToolSkill] {
             if !declares_contract {
                 continue;
             }
-            let package = parse_skill_runtime_package(&source)
+            // A skillshub manifest is the template every scope links to: a
+            // `${NAME}` scope reference is shape-checked and stands in as a
+            // reserved origin (`skills::scope_env`), exactly as the catalog
+            // judges it. Each scope resolves its own value at load.
+            let package = parse_runtime_package(&source, ScopeEnvSource::Template)
                 .map_err(|error| error.to_string())
                 .and_then(|package| {
                     package.ok_or_else(|| {
@@ -991,11 +996,19 @@ fn every_tool_skill_declares_bins_that_exist() {
         // the committed workspace lock. A generic install hint is not enough:
         // retaining this stricter rule catches an adapter deleted out from
         // under its own manifest.
-        let entrypoint = contract.requires.entrypoint.clone().or_else(|| {
-            (contract.requires.bins.len() == 1)
-                .then(|| contract.requires.bins.iter().next().cloned())
-                .flatten()
-        });
+        // A stdio MCP server names it as its transport executable: the
+        // validator refuses `requires.entrypoint` on every MCP contract.
+        let entrypoint = match &contract.runtime {
+            RuntimeProtocol::Mcp {
+                transport: McpTransport::Stdio { executable, .. },
+                ..
+            } => Some(executable.clone()),
+            _ => contract.requires.entrypoint.clone().or_else(|| {
+                (contract.requires.bins.len() == 1)
+                    .then(|| contract.requires.bins.iter().next().cloned())
+                    .flatten()
+            }),
+        };
         let ships_bin_dir = skill.dir.join("bin").is_dir();
         match (entrypoint, ships_bin_dir) {
             (Some(entrypoint), true)

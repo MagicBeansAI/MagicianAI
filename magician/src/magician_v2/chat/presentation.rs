@@ -779,6 +779,7 @@ fn artifact_refs_from_content_blocks(
             absolute_path: _,
             label,
             size,
+            primary: _,
         } = block
         {
             artifacts.push(StructuredArtifactRefV1 {
@@ -1551,6 +1552,7 @@ mod tests {
             absolute_path: None,
             label: None,
             size: 42,
+            primary: false,
         }
     }
 

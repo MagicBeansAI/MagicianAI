@@ -54,6 +54,7 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -506,6 +507,57 @@ def usage_profile(response: dict[str, Any]) -> str:
     return str(usage.get("profile") or "")
 
 
+def local_runtime_root(client: Client) -> Path | None:
+    """The served runtime root when this machine can see it: only for a
+    loopback base URL (a remote runtime keeps its scopes on another disk, so
+    its index cannot be checked from here, whatever this shell exports), then
+    MAGICIAN_ROOT_DIR, MAGICIAN_STORAGE_PATH (the order run-supervisor.sh
+    resolves), else the default ~/MagicianNotes."""
+    host = (urllib.parse.urlparse(client.base_url).hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1", "::1"):
+        return None
+    for name in ("MAGICIAN_ROOT_DIR", "MAGICIAN_STORAGE_PATH"):
+        root = os.environ.get(name, "").strip()
+        if root:
+            return Path(root)
+    return Path.home() / "MagicianNotes"
+
+
+def index_paused_for_rebuild(root: Path, principal: str, slug: str) -> bool:
+    """The maintainer paused the scope until an explicit rebuild
+    (rebuild-required.json): its journal will not drain, so stop waiting."""
+    return (root / "scopes" / principal / slug / "memory" / "index" / "rebuild-required.json").is_file()
+
+
+def index_covers_writes(root: Path, principal: str, slug: str) -> bool:
+    """The scope's derived memory index exists AND has applied every journaled
+    canonical write — the signal that hybrid retrieval sees the whole haystack.
+    Found the hard way: a scope whose index has not been built serves
+    question-time retrieval from the lexical fast stage ALONE
+    (retrieval_backends: ["fast_snapshot"]), which misses anything not near a
+    turn's head — the fast-lane flip's root cause. A manifest alone is not
+    enough: the first build lands about a minute into ingest, and the later
+    sessions (often holding the gold answer) wait in changes.json until the
+    next build applies them. A memory write that lands after ingest (extraction,
+    consolidation) re-dirties the journal and extends the wait until the next
+    build applies it, bounded by --index-wait-timeout."""
+    index_dir = root / "scopes" / principal / slug / "memory" / "index"
+    try:
+        # Same test as the maintainer's cold start: an empty manifest
+        # (document_count 0) still serves lexical-only retrieval.
+        if not json.loads((index_dir / "manifest.json").read_text()).get("document_count"):
+            return False
+    except (OSError, ValueError, AttributeError):
+        return False
+    try:
+        journal = json.loads((index_dir / "changes.json").read_text())
+    except FileNotFoundError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return not (journal or {}).get("entries")
+
+
 def memory_search(client: Client, query: str) -> int:
     payload = client.json("POST", "/api/magician/v2/chat/memory/search", {"query": query})
     return len((payload or {}).get("results") or [])
@@ -554,6 +606,16 @@ def purge_workspace(client: Client, slug: str) -> None:
 # Ingestion protocols
 # ---------------------------------------------------------------------------
 
+
+QUESTION_FRAMING = (
+    "You are answering a question about this user from your memory of their "
+    "past conversations. Answer from that memory. When the question asks "
+    "about totals, counts, dates, durations, or which event came first: "
+    "gather the relevant dated facts from memory, compute or order them "
+    "explicitly, and state the final answer. When the question asks for "
+    "advice or a preference, answer from the user's stated preferences and "
+    "history before generic advice."
+)
 
 INGEST_INSTRUCTION = (
     "This is a record of a past conversation, shared for your memory only: "
@@ -661,7 +723,10 @@ def lived_messages(sessions: list[list[dict[str, Any]]]) -> list[list[str]]:
 
 def distinctive_phrase(text: str) -> str:
     """A lowercase probe phrase for the memory/search settle check: several
-    consecutive mid-length words, unlikely to appear verbatim elsewhere."""
+    consecutive mid-length words, unlikely to appear verbatim elsewhere.
+    Dataset turn contents are not always strings (ints and other JSON scalars
+    appear), so coerce first."""
+    text = str(text)
     words = re.findall(r"[a-zA-Z']{4,}", text)
     for index in range(max(1, len(words) - 5)):
         candidate = " ".join(words[index : index + 5]).lower()
@@ -727,7 +792,7 @@ def judge_prompt(question_type: str, question_id: str, question: str, answer: st
         template = _JUDGE_TEMPLATES["abstention"]
     else:
         template = _JUDGE_TEMPLATES[_JUDGE_TYPE_MAP.get(question_type, question_type)]
-    return template.format(question, answer, response)
+    return template.format(str(question), str(answer), str(response))
 
 
 def judge_label(raw_reply: str) -> bool:
@@ -741,7 +806,8 @@ def judge_label(raw_reply: str) -> bool:
 
 
 def _normalize(text: str) -> str:
-    text = text.lower()
+    # Dataset gold answers can be JSON scalars (ints for count questions).
+    text = str(text).lower()
     text = re.sub(r"\b(a|an|the)\b", " ", text)
     text = re.sub(r"[^a-z0-9 ]", " ", text)
     return " ".join(text.split())
@@ -787,6 +853,10 @@ class InstanceResult:
     cost_usd: dict[str, float] = field(default_factory=lambda: {"ingest": 0.0, "question": 0.0, "judge": 0.0})
     tokens: dict[str, int] = field(default_factory=lambda: {"ingest_in": 0, "ingest_out": 0, "question_in": 0, "question_out": 0})
     settle_found: bool = False
+    # "ready" (index applied every write), "timeout", "rebuild_required" (the
+    # maintainer paused the scope), or "unchecked" (no principal, or the
+    # runtime root is not visible from this machine).
+    index_status: str = "unchecked"
     settle_seconds: float = 0.0
     wall_seconds: float = 0.0
     hitl_interruptions: list[dict[str, Any]] = field(default_factory=list)
@@ -843,10 +913,25 @@ def run_instance(
                 if profile and profile not in result.profiles_seen:
                     result.profiles_seen.append(profile)
 
-        # ---- settle: wait for the last session's content to be searchable --
-        probe = distinctive_phrase(sessions[-1][-1].get("content", "")) if sessions else "conversation transcript"
+        # ---- settle: wait for retrieval to be REAL, not just episodes on
+        # disk. Two gates, reported separately: (1) the episode probe (content
+        # landed); (2) index_covers_writes — a non-empty index that has applied
+        # every journaled write (a manifest alone is NOT enough), with a
+        # rebuild-required pause as its own exit. Without it, question-time
+        # retrieval silently degrades to lexical head-matching, which is
+        # exactly how a fast-lane instance flips correct->wrong while every
+        # episode holds the gold sentence.
+        # Some dataset instances contain empty haystack sessions; probe with
+        # the last turn of the last NON-empty one (the settle substring check
+        # needs real content, and sessions[-1][-1] crashes on empties).
+        probe_source = next(
+            (s[-1].get("content", "") for s in reversed(sessions) if s),
+            "conversation transcript",
+        )
+        probe = distinctive_phrase(probe_source)
         deadline = time.monotonic() + args.settle_timeout
         found = False
+        index_ready = False
         while time.monotonic() < deadline:
             try:
                 if memory_search(client, probe) > 0:
@@ -855,13 +940,49 @@ def run_instance(
             except EvalFailure:
                 pass
             time.sleep(SETTLE_POLL_SECONDS)
+        principal = getattr(client, "principal", "") or ""
+        root = local_runtime_root(client)
+        # No principal (fake client, or a session that did not report one) or
+        # no visible runtime root means the index cannot be located: say so
+        # instead of waiting.
+        checkable = bool(principal) and root is not None
+        index_paused = False
+        index_deadline = time.monotonic() + args.index_wait_timeout
+        while checkable and time.monotonic() < index_deadline:
+            if index_covers_writes(root, principal, slug):
+                index_ready = True
+                break
+            if index_paused_for_rebuild(root, principal, slug):
+                index_paused = True
+                break
+            time.sleep(SETTLE_POLL_SECONDS)
         if args.settle_extra > 0:
             time.sleep(args.settle_extra)
+        # Two separate verdicts: content searchable, and index caught up.
         result.settle_found = found
+        result.index_status = (
+            "unchecked" if not checkable
+            else "ready" if index_ready
+            else "rebuild_required" if index_paused
+            else "timeout"
+        )
+        if not principal:
+            print(f"  warning: no principal reported, so the memory index for {slug} "
+                  "was not checked — retrieval may be fast-snapshot only")
+        elif root is None:
+            print(f"  warning: runtime root not visible from here (set MAGICIAN_ROOT_DIR), so the "
+                  f"memory index for {slug} was not checked — retrieval may be fast-snapshot only")
+        elif index_paused:
+            print(f"  warning: memory index for {slug} is paused until an explicit rebuild "
+                  "(rebuild-required.json) — retrieval is lexical only")
+        elif not index_ready:
+            print(f"  warning: memory index for {slug} did not apply every write "
+                  f"within {args.index_wait_timeout:.0f}s — retrieval may miss the latest sessions")
 
         # ---- question in a brand-new session (durable memory only) ---------
         question_session = new_chat_session(client, f"lme-{question_id}-question")
-        response = send_message(client, question_session, instance["question"], model_selection=args.answer_model_selection)
+        question_text = f"{QUESTION_FRAMING}\n\nQuestion: {instance['question']}"
+        response = send_message(client, question_session, question_text, model_selection=args.answer_model_selection)
         result.prediction = assistant_text(response).strip()
         result.question_turns = 1
         cost, tokens_in, tokens_out = usage_cost(response)
@@ -937,6 +1058,7 @@ def run_instance(
 
 def aggregate(results: list[InstanceResult]) -> dict[str, Any]:
     judged = [r for r in results if r.judged and not r.error]
+    checked = [r for r in results if r.index_status != "unchecked"]
     per_type: dict[str, dict[str, Any]] = {}
     for question_type in sorted({r.question_type for r in results}):
         typed = [r for r in judged if r.question_type == question_type]
@@ -955,6 +1077,9 @@ def aggregate(results: list[InstanceResult]) -> dict[str, Any]:
         "token_f1": round(sum(r.f1 for r in judged) / len(judged), 4) if judged else None,
         "per_question_type": per_type,
         "settle_found_rate": round(sum(1 for r in results if r.settle_found) / len(results), 4) if results else None,
+        "index_ready_rate": (
+            round(sum(1 for r in checked if r.index_status == "ready") / len(checked), 4) if checked else None
+        ),
         "cost_usd": {
             "ingest": round(sum(r.cost_usd["ingest"] for r in results), 4),
             "question": round(sum(r.cost_usd["question"] for r in results), 4),
@@ -1039,7 +1164,7 @@ def write_html(path: Path, report: dict[str, Any]) -> None:
             f"<td>{escape(instance['gold_answer'][:80])}</td>"
             f"<td>{instance['f1']:.2f}</td>"
             f"<td>${sum(instance['cost_usd'].values()):.3f}</td>"
-            f"<td>{'ok' if instance['settle_found'] else 'timeout'}</td>"
+            f"<td>{'ok' if instance['settle_found'] else 'timeout'} · index {escape(instance.get('index_status', 'unchecked'))}</td>"
             f"<td>{escape(instance['error'][:80])}</td>"
             "</tr>"
         )
@@ -1122,6 +1247,24 @@ def self_test(args: argparse.Namespace) -> int:
     assert result.judge_prompt_kind == "abstention", "abstention prompt must be selected for _abs ids"
     assert result.ingest_turns >= 1, "digest ingestion must send at least one message"
     assert result.f1 >= 0.0
+    assert result.settle_found, "content settle is reported on its own, not folded into the index check"
+    assert result.index_status == "unchecked", "the fake client has no principal or visible root"
+    with tempfile.TemporaryDirectory() as tmp:
+        index_dir = Path(tmp) / "scopes" / "p" / "w" / "memory" / "index"
+        assert not index_covers_writes(Path(tmp), "p", "w"), "no manifest: not ready"
+        index_dir.mkdir(parents=True)
+        (index_dir / "manifest.json").write_text('{"document_count": 0}')
+        assert not index_covers_writes(Path(tmp), "p", "w"), "an empty index is not ready"
+        (index_dir / "manifest.json").write_text('{"document_count": 12}')
+        (index_dir / "changes.json").write_text('{"entries": {"user": {"generation": 3}}}')
+        assert not index_covers_writes(Path(tmp), "p", "w"), "pending journal entries: not ready"
+        (index_dir / "changes.json").write_text('{"entries": {}, "next_generation": 4}')
+        assert index_covers_writes(Path(tmp), "p", "w")
+        assert not index_paused_for_rebuild(Path(tmp), "p", "w")
+        (index_dir / "rebuild-required.json").write_text("{}")
+        assert index_paused_for_rebuild(Path(tmp), "p", "w")
+    assert local_runtime_root(Client("http://10.0.0.5:3002", None)) is None, "a remote root is not visible here"
+    assert local_runtime_root(Client("http://127.0.0.1:3002", None)) is not None
     prompt = judge_prompt("temporal-reasoning", "x", "q", "18 days", "19 days")
     assert "off-by-one" in prompt, "temporal template must be the off-by-one one"
     messages = digest_messages(["2023/05/01 (Mon)"], [fixture_instance["haystack_sessions"][0]])
@@ -1166,6 +1309,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-hitl", dest="hitl", action="store_false", help="disable the automatic user-request answerer")
     parser.add_argument("--settle-timeout", type=float, default=DEFAULT_SETTLE_TIMEOUT_SECONDS)
     parser.add_argument("--settle-extra", type=float, default=DEFAULT_SETTLE_EXTRA_SECONDS)
+    parser.add_argument("--index-wait-timeout", type=float, default=600.0,
+                        help="how long to wait for the scope's memory index manifest before asking (retrieval is lexical-only until it exists)")
     parser.add_argument("--max-cost-usd", type=float, default=DEFAULT_MAX_COST_USD, help="abort once summed cost exceeds this")
     parser.add_argument("--keep-workspaces", action="store_true", help="do not purge instance workspaces (debugging)")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -1253,7 +1398,7 @@ def main(argv: list[str] | None = None) -> int:
                 results.append(result)
                 print(
                     f"  judged={'yes' if result.judge_correct else 'no' if result.judged else '—'} "
-                    f"f1={result.f1:.2f} settle={'ok' if result.settle_found else 'timeout'} "
+                    f"f1={result.f1:.2f} settle={'ok' if result.settle_found else 'timeout'} index={result.index_status} "
                     f"cost=${sum(result.cost_usd.values()):.3f} ({result.ingest_turns} ingest turns, "
                     f"{result.wall_seconds:.0f}s)"
                 )

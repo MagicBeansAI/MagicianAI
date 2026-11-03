@@ -1,6 +1,6 @@
 ---
 name: agentmail-send
-version: 0.2.2
+version: 0.2.3
 description: Send/reply/forward email from Magican's AgentMail inbox (magican@agentmail.to). Capped at 50
   EMAIL_SENDS/day. Returns the provider id and verifies the actual sent Message-ID header for bounce correlation. Reading is the separate (free) agentmail-read tool.
 metadata:
@@ -14,6 +14,7 @@ metadata:
       bins:
       - agentmail-send-adapter
       - agentmail
+      - python3
     install_hint:
       docs: npm install -g agentmail-cli; set AGENT_MAIL_KEY (inbox-scoped) in skillshub/operator-config.yaml;
         make -C skillshub setup-env
@@ -30,6 +31,7 @@ metadata:
         bins:
         - agentmail-send-adapter
         - agentmail
+        - python3
       runtime:
         protocol: cli
         command_prefix:

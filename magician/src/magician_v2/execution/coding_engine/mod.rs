@@ -343,6 +343,11 @@ pub fn set_live_repo_source_root(root: PathBuf) {
     let _ = LIVE_REPO_SOURCE_ROOT.set(canonical);
 }
 
+/// The live repo source root recorded at startup, if any.
+pub fn live_repo_source_root() -> Option<PathBuf> {
+    LIVE_REPO_SOURCE_ROOT.get().cloned()
+}
+
 /// Process-wide scope-storage base (`config.storage_path` resolved against the
 /// repo root), set once at startup. The fence treats this subtree as WRITABLE
 /// even though it nests inside the repo — it holds scope data + the shadow
@@ -503,8 +508,10 @@ where
 }
 
 /// The current coding run's real repo path, if a coding turn scoped it (see
-/// `CODING_RUN_REAL_REPO`). Read by the OS-sandbox builder to fence the real repo.
-fn coding_run_real_repo() -> Option<PathBuf> {
+/// `CODING_RUN_REAL_REPO`). Read by the OS-sandbox builder to fence the real
+/// repo, and by the shell box for a coding run's god-mode call
+/// (`shell_box::wrap_coding_call`).
+pub(crate) fn coding_run_real_repo() -> Option<PathBuf> {
     CODING_RUN_REAL_REPO.try_with(|path| path.clone()).ok()
 }
 
@@ -2113,8 +2120,8 @@ pub enum CodingEngineKind {
     /// Slice C1 is a live picker row when `coding.claude.enabled` and exactly
     /// one reviewed binary is found. Isolation/version overlays wait for C2.
     ClaudeCode,
-    /// Local `agy` headless NDJSON. Dormant: the factory is Unconstructable
-    /// and no VibeDev route spawns it.
+    /// Local `agy` headless NDJSON. The factory constructs it and VibeDev
+    /// runs it when it is the resolved engine (`adapter_spec_for_engine`).
     AgyCli,
 }
 
@@ -2282,6 +2289,13 @@ impl RepoConfigPosture {
     }
 }
 
+/// The fence around [`CodingEngineRequest::append_system_prompt`] text placed
+/// ahead of a prompt, so the engine can tell the standing instructions from the
+/// task.
+pub const APPENDED_INSTRUCTIONS_BEGIN: &str =
+    "----- BEGIN STANDING INSTRUCTIONS (follow them for all of this work) -----";
+pub const APPENDED_INSTRUCTIONS_END: &str = "----- END STANDING INSTRUCTIONS -----";
+
 #[derive(Clone)]
 pub struct CodingEngineRequest {
     pub prompt: String,
@@ -2299,8 +2313,17 @@ pub struct CodingEngineRequest {
     pub grok: GrokTurnOptions,
     /// Claude-only spawn/turn options. Other adapters must not read these.
     pub claude: ClaudeTurnOptions,
-    /// Agy-only spawn/turn options. Dormant; no live adapter reads these.
+    /// Agy-only spawn/turn options. Other adapters must not read these.
     pub agy: AgyTurnOptions,
+    /// Instructions every engine layers onto its own base prompt: the
+    /// executing agent's persona, then its active procedure playbook (with
+    /// the files it links to). The handler writes each file outside the
+    /// shadow tree so it never enters the diff. Each adapter delivers them
+    /// its own way — Pi `--append-system-prompt <path>` per file, Claude its
+    /// `--append-system-prompt` flag, Codex `developerInstructions` on a new
+    /// thread, Grok and Agy a fenced block ahead of a new session's first
+    /// prompt ([`Self::prompt_with_appended_instructions`]).
+    pub append_system_prompt: Vec<PathBuf>,
     pub env: BTreeMap<String, String>,
     /// Build settings every engine receives after its own env filtering —
     /// today the shared `CARGO_TARGET_DIR`. The CLI adapters rebuild their
@@ -2388,6 +2411,44 @@ impl CodingEngineRequest {
         }
     }
 
+    /// The text of [`Self::append_system_prompt`], file by file in order.
+    /// `None` when there is nothing to add. A file that cannot be read is left
+    /// out with a warning naming `engine`, never silently.
+    pub fn append_system_prompt_text(&self, engine: CodingEngineKind) -> Option<String> {
+        let mut sections = Vec::new();
+        for path in &self.append_system_prompt {
+            match std::fs::read_to_string(path) {
+                Ok(text) if !text.trim().is_empty() => sections.push(text.trim().to_string()),
+                Ok(_) => {},
+                Err(error) => tracing::warn!(
+                    target: "coding_engine",
+                    engine = selection::engine_str(engine),
+                    path = %path.display(),
+                    %error,
+                    "could not read an appended system-prompt file; the engine runs without it"
+                ),
+            }
+        }
+        (!sections.is_empty()).then(|| sections.join("\n\n"))
+    }
+
+    /// `prompt` behind a fenced copy of the appended instructions, for an
+    /// engine with no system-prompt channel (Grok ACP, Agy). Only a NEW
+    /// session gets it: a resumed one already holds the block in the first
+    /// prompt of its history, so sending it again would duplicate it.
+    pub fn prompt_with_appended_instructions(
+        &self,
+        engine: CodingEngineKind,
+        prompt: &str,
+    ) -> String {
+        match self.append_system_prompt_text(engine) {
+            Some(instructions) => format!(
+                "{APPENDED_INSTRUCTIONS_BEGIN}\n{instructions}\n{APPENDED_INSTRUCTIONS_END}\n\n{prompt}"
+            ),
+            None => prompt.to_string(),
+        }
+    }
+
     pub fn new(
         prompt: impl Into<String>,
         workspace_root: impl Into<PathBuf>,
@@ -2408,6 +2469,7 @@ impl CodingEngineRequest {
             grok: GrokTurnOptions::default(),
             claude: ClaudeTurnOptions::default(),
             agy: AgyTurnOptions::default(),
+            append_system_prompt: Vec::new(),
             env: BTreeMap::new(),
             build_env: BTreeMap::new(),
             repo_config: RepoConfigPosture::Stripped,
@@ -3296,6 +3358,7 @@ fn copy_workspace_tree(
             if should_ignore_dir(file_name.as_os_str(), options) {
                 continue;
             }
+            remove_stale_shadow_entry(&dst, |kind| !kind.is_dir())?;
             std::fs::create_dir_all(&dst)
                 .with_context(|| format!("create shadow dir {}", dst.display()))?;
             copy_workspace_tree(workspace_root, &src, shadow_root, options)?;
@@ -3304,6 +3367,7 @@ fn copy_workspace_tree(
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("create shadow parent {}", parent.display()))?;
             }
+            remove_stale_shadow_entry(&dst, |kind| !kind.is_file())?;
             std::fs::copy(&src, &dst)
                 .with_context(|| format!("copy {} -> {}", src.display(), dst.display()))?;
         }
@@ -3311,8 +3375,33 @@ fn copy_workspace_tree(
     Ok(())
 }
 
+/// A persistent shadow is re-synced over what the last run left behind, so
+/// `dst` may already hold an entry. Remove it when `stale` says this entry
+/// cannot be reused in place: `symlink(2)` refuses an existing path, and
+/// `create_dir_all` or `fs::copy` through a stale symlink would write wherever
+/// that link points instead of into the shadow.
+fn remove_stale_shadow_entry(dst: &Path, stale: impl Fn(&std::fs::FileType) -> bool) -> Result<()> {
+    let Ok(metadata) = std::fs::symlink_metadata(dst) else {
+        return Ok(());
+    };
+    let kind = metadata.file_type();
+    if !stale(&kind) {
+        return Ok(());
+    }
+    if kind.is_dir() {
+        std::fs::remove_dir_all(dst)
+    } else {
+        std::fs::remove_file(dst)
+    }
+    .with_context(|| format!("remove stale shadow entry {}", dst.display()))
+}
+
 fn copy_symlink(src: &Path, dst: &Path) -> Result<()> {
     let target = std::fs::read_link(src).with_context(|| format!("readlink {}", src.display()))?;
+    if std::fs::read_link(dst).is_ok_and(|existing| existing == target) {
+        return Ok(());
+    }
+    remove_stale_shadow_entry(dst, |_| true)?;
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create symlink parent {}", parent.display()))?;
@@ -4042,6 +4131,48 @@ mod tests {
         // Strays from the prior run are pruned so they don't pollute the diff.
         assert!(!shadow.join("stray.txt").exists());
         assert!(!shadow.join("scratch").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_persistent_workspace_resyncs_over_the_symlinks_a_prior_run_left() {
+        let tmp = TempDir::new().unwrap();
+        let real = tmp.path().join("real");
+        let shadow = tmp.path().join("shadow");
+        write(&real.join("skillshub/anatomy/SKILL.md"), "anatomy\n");
+        write(&real.join("notes/today.md"), "real\n");
+        std::fs::create_dir_all(real.join(".claude/skills")).unwrap();
+        std::os::unix::fs::symlink("../../skillshub/anatomy", real.join(".claude/skills/anatomy"))
+            .unwrap();
+        std::os::unix::fs::symlink("skillshub", real.join("retargeted")).unwrap();
+
+        sync_persistent_workspace(&real, &shadow, &ShadowPatchOptions::default()).unwrap();
+        // The same link again (EEXIST before), a link whose target moved, and
+        // a link that is now a real file: the copy must not write through the
+        // old link into the shadow's `skillshub`.
+        std::fs::remove_file(real.join("retargeted")).unwrap();
+        std::os::unix::fs::symlink("notes", real.join("retargeted")).unwrap();
+        std::os::unix::fs::symlink("skillshub/anatomy/SKILL.md", shadow.join("flipped")).unwrap();
+        write(&real.join("flipped"), "now a file\n");
+        sync_persistent_workspace(&real, &shadow, &ShadowPatchOptions::default()).unwrap();
+
+        assert_eq!(
+            std::fs::read_link(shadow.join(".claude/skills/anatomy")).unwrap(),
+            Path::new("../../skillshub/anatomy")
+        );
+        assert_eq!(
+            std::fs::read_link(shadow.join("retargeted")).unwrap(),
+            Path::new("notes")
+        );
+        assert!(!shadow.join("flipped").is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(shadow.join("flipped")).unwrap(),
+            "now a file\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(shadow.join("skillshub/anatomy/SKILL.md")).unwrap(),
+            "anatomy\n"
+        );
     }
 
     #[test]

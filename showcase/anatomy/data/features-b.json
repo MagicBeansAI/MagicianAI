@@ -318,28 +318,28 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "get_active_session_handler",
-     "line": 1324,
+     "line": 1348,
      "why": "Bots resolve their chat session here"
     },
     {
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "route_inbound_query",
-     "line": 911,
+     "line": 931,
      "why": "Applies envoy routing before session creation"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "get_or_create_session",
-     "line": 30402,
+     "line": 30817,
      "why": "Binds envoy agent on first guest message"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "public_chat_policy_for_source",
-     "line": 9546,
+     "line": 9638,
      "why": "Selects public-chat policy by source surface"
     },
     {
@@ -413,7 +413,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "get_active_session_handler",
-     "line": 1324,
+     "line": 1348,
      "title": "Bot requests a session",
      "say": "The bot asks the server for the active session, passing channel, address, verification status and whether the user typed the control prefix.",
      "evidence": "docs/components/magician/envoy-agent.md:104-110"
@@ -440,7 +440,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "get_or_create_session",
-     "line": 30402,
+     "line": 30817,
      "title": "Bind the envoy agent",
      "say": "The first guest message creates a session bound to the envoy agent, and later messages reuse it, so each stranger stays isolated.",
      "evidence": "docs/components/magician/envoy-agent.md:147-152"
@@ -678,7 +678,7 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": null,
      "fn": "note_link",
-     "line": 5000,
+     "line": 5003,
      "why": "The one canonical relative note link, /notes?path=…&workspace=…"
     },
     {
@@ -699,21 +699,21 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "capture_selection",
-     "line": 2252,
+     "line": 2255,
      "why": "Saves a selection with its source"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "publish_task_note",
-     "line": 2448,
+     "line": 2451,
      "why": "Publishes a task page into notes"
     },
     {
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "auto_publish_completed_task",
-     "line": 2583,
+     "line": 2586,
      "why": "Auto-publishes completed tasks"
     },
     {
@@ -824,7 +824,7 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "capture_selection",
-     "line": 2252,
+     "line": 2255,
      "title": "Save a selection",
      "say": "Highlighting text and choosing save to notes files the selection along with the title and link of the page it came from.",
      "evidence": "docs/features/README.md:152; docs/features/contextual.md:53"
@@ -833,7 +833,7 @@
      "file": "magician/src/magician_v2/notes.rs",
      "type": "NotesSettingsStore",
      "fn": "publish_task_note",
-     "line": 2448,
+     "line": 2451,
      "title": "Publish task pages",
      "say": "Completed tasks can be published as note pages, by hand or automatically, giving a readable record that lives outside the task store.",
      "evidence": "notes.rs:2442 auto_publish_completed_task; docs/features/README.md:153"
@@ -906,35 +906,35 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "create_task",
-     "line": 5419,
+     "line": 5538,
      "why": "Core task creation in the V3 store"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 22861,
+     "line": 23039,
      "why": "Launches an execution for a task"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/models.rs",
      "type": "TaskManifest",
      "fn": null,
-     "line": 184,
+     "line": 185,
      "why": "Durable task manifest shape"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/models.rs",
      "type": "TaskLifecycle",
      "fn": null,
-     "line": 144,
+     "line": 145,
      "why": "Persistent vs internal lifecycle routing"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/reducer.rs",
      "type": "FilesystemArtifactV2Reducer",
      "fn": null,
-     "line": 401,
+     "line": 404,
      "why": "Reduces state changes into on-disk files"
     },
     {
@@ -969,14 +969,14 @@
      "file": "magician/src/magician_v2/artifact_v2/events.rs",
      "type": null,
      "fn": "map_v2_realtime_event",
-     "line": 632,
+     "line": 655,
      "why": "Runtime events become task history"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/execution_artifacts.rs",
      "type": "FilesystemExecutionArtifactIndexStore",
      "fn": "upsert_artifact",
-     "line": 1420,
+     "line": 1431,
      "why": "Indexes each run's artifacts"
     },
     {
@@ -1060,7 +1060,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "fn": "delivered_file_outputs_for_terminal",
      "type": null,
-     "line": 41287,
+     "line": 42375,
      "why": "Keep delivered files beside the answer"
     }
    ],
@@ -1090,7 +1090,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "create_task",
-     "line": 5419,
+     "line": 5538,
      "title": "Write the manifest",
      "say": "The service writes the task manifest and state, marking it persistent or internal so background work stays off the main task list.",
      "evidence": "docs/components/magician/internal-tasks-api.md:3,7"
@@ -1108,7 +1108,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 22861,
+     "line": 23039,
      "title": "Start an execution",
      "say": "Starting execution creates a run under the task, which agents carry out, handing sub-work to the delegation dispatcher when they need help.",
      "evidence": "service.rs:22087; scheduler.rs:29"
@@ -1117,7 +1117,7 @@
      "file": "magician/src/magician_v2/artifact_v2/reducer.rs",
      "type": "FilesystemArtifactV2Reducer",
      "fn": null,
-     "line": 401,
+     "line": 404,
      "title": "Durable state on disk",
      "say": "Every state change is reduced into files on disk, so tasks, executions and outputs survive restarts and can be inspected later.",
      "evidence": "reducer.rs:76 (ArtifactV2Reducer trait), reducer.rs:401"
@@ -1179,7 +1179,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "fn": "delivered_file_outputs_for_terminal",
      "type": null,
-     "line": 41287,
+     "line": 42375,
      "title": "Keep delivered files beside the answer",
      "say": "Files the run wrote and explicitly named as delivered appear beside the answer, using their own filenames and copies checked against their digests."
     }
@@ -1217,7 +1217,7 @@
      "file": "magician/src/magician_v2/execution/goal_workspace_access.rs",
      "type": null,
      "fn": "refusal",
-     "line": 1022,
+     "line": 1075,
      "why": "Choose who may enter"
     },
     {
@@ -1247,6 +1247,13 @@
      "fn": null,
      "line": 1,
      "why": "Show linked Playbooks and distinguish missing documents from lookup failures"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "closedGoals",
+     "line": 133,
+     "why": "Done and dropped goals are split out of the open tree"
     }
    ],
    "configKeys": [
@@ -1295,7 +1302,7 @@
      "file": "magician/src/magician_v2/execution/goal_workspace_access.rs",
      "type": null,
      "fn": "refusal",
-     "line": 1022,
+     "line": 1075,
      "title": "Choose who may enter",
      "say": "Workspace membership limits which agents can read or change its notes. A private goal stays with its permitted owner, even under God mode.",
      "evidence": "magician/src/magician_v2/execution/goal_workspace_access.rs:941"
@@ -1335,6 +1342,14 @@
      "title": "Connect a goal to its playbook",
      "say": "On the Web, choose an optional playbook when creating a goal. Linked goals show whether the document is missing or could not be checked. The link does not start work.",
      "evidence": "GoalCreateForm.svelte; GoalRow.svelte; GoalsWorkspace.svelte"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/work/goals.ts",
+     "type": null,
+     "fn": "closedGoals",
+     "line": 133,
+     "title": "Done and dropped goals move to Closed",
+     "say": "The Goals screen shows open goals as trees. Done and dropped goals are listed only under Closed, with their closing date; a closed parent is noted on its children."
     }
    ]
   },
@@ -1356,7 +1371,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "reconcile_autonomous_scheduler_entries",
-     "line": 9325,
+     "line": 9372,
      "why": "Turns declarations into scheduler entries"
     },
     {
@@ -1412,7 +1427,7 @@
      "file": "magician/src/magician_v2/execution/plane/grant.rs",
      "type": "PlaneGrantRegistry",
      "fn": "mint",
-     "line": 1189,
+     "line": 1192,
      "why": "Mints short-lived plane grants"
     },
     {
@@ -1426,7 +1441,7 @@
      "file": "magician/src/magician_v2/execution/plane/dispatch.rs",
      "type": null,
      "fn": "plane_tools_call",
-     "line": 57,
+     "line": 60,
      "why": "Authorizes and executes each tool call"
     },
     {
@@ -1539,7 +1554,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "reconcile_autonomous_scheduler_entries",
-     "line": 9325,
+     "line": 9372,
      "title": "Scheduler picks it up",
      "say": "The server reconciles scheduler entries from those declarations, so each focus area fires on its own cron schedule as a separate cycle.",
      "evidence": "docs/components/magician/autonomous-agents.md:29"
@@ -1566,7 +1581,7 @@
      "file": "magician/src/magician_v2/execution/plane/grant.rs",
      "type": "PlaneGrantRegistry",
      "fn": "mint",
-     "line": 1189,
+     "line": 1192,
      "title": "Mint a plane grant",
      "say": "Magician mints a short-lived grant and gives the engine an MCP configuration pointing back at itself, so every tool call returns through Magician.",
      "evidence": "docs/components/magician/plane.md:6-7; engine.rs:321 mcp_config_document"
@@ -1575,7 +1590,7 @@
      "file": "magician/src/magician_v2/execution/plane/dispatch.rs",
      "type": null,
      "fn": "plane_tools_call",
-     "line": 57,
+     "line": 60,
      "title": "Every call is governed",
      "say": "Each tool call is authorized against the grant, and revocation is checked again just before the action runs, so stale grants cannot slip through.",
      "evidence": "docs/components/magician/plane.md:11-16"
@@ -1609,7 +1624,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/propose_program_revision.rs",
      "type": null,
      "fn": "handle",
-     "line": 246,
+     "line": 244,
      "why": "Approval-gated revision proposed by an agent"
     },
     {
@@ -1623,7 +1638,7 @@
      "file": "magician-api/src/programs_api.rs",
      "type": null,
      "fn": "save_program_handler",
-     "line": 242,
+     "line": 245,
      "why": "Save endpoint: owner session or paired phone"
     },
     {
@@ -1700,7 +1715,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/propose_program_revision.rs",
      "type": null,
      "fn": "handle",
-     "line": 246,
+     "line": 244,
      "title": "Agents propose, you approve",
      "say": "An agent that learns something can propose the next version of a playbook. Nothing changes until you approve it, and a document edited in the meantime is refused."
     },
@@ -2014,7 +2029,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "start_vibedev_rail_run",
-     "line": 17276,
+     "line": 17379,
      "why": "Diverts the chat turn into VibeDev"
     },
     {
@@ -2235,7 +2250,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": "ChatService",
      "fn": "start_vibedev_rail_run",
-     "line": 17276,
+     "line": 17379,
      "title": "Divert the chat turn",
      "say": "After saving the user's message and before any model call, the chat turn is diverted into the VibeDev rail instead of producing a reply.",
      "evidence": "docs/components/magician/vibedev-rail.md:26"
@@ -2568,7 +2583,7 @@
      "file": "desktop/src-tauri/src/config.rs",
      "type": "ContextualAssistConfig",
      "fn": null,
-     "line": 69,
+     "line": 74,
      "why": "Enable, exclusions, hotkey-only settings"
     },
     {
@@ -2693,7 +2708,7 @@
      "file": "desktop/src-tauri/src/overlay.rs",
      "type": null,
      "fn": "show_overlay_window",
-     "line": 635,
+     "line": 640,
      "why": "Summon quick chat"
     },
     {
@@ -2707,7 +2722,7 @@
      "file": "desktop/src-tauri/src/overlay.rs",
      "type": null,
      "fn": "set_hud_expanded",
-     "line": 4011,
+     "line": 4016,
      "why": "A normal desktop window"
     },
     {
@@ -2729,7 +2744,7 @@
      "file": "desktop/src-tauri/src/overlay.rs",
      "type": null,
      "fn": "show_overlay_window",
-     "line": 635,
+     "line": 640,
      "title": "Summon quick chat",
      "say": "A desktop shortcut opens a compact themed chat panel near your current screen, with history and the usual composer controls.",
      "evidence": "desktop/src-tauri/src/overlay.rs:1706"
@@ -2747,7 +2762,7 @@
      "file": "desktop/src-tauri/src/overlay.rs",
      "type": null,
      "fn": "set_hud_expanded",
-     "line": 4011,
+     "line": 4016,
      "title": "A normal desktop window",
      "say": "The expanded app fills most of the screen, with a draggable native title bar and standard close, minimize and fullscreen controls.",
      "evidence": "desktop/src-tauri/src/overlay.rs:3964"
@@ -2758,7 +2773,7 @@
      "fn": "remove",
      "title": "Manage chat files",
      "say": "Files shows uploads and artifacts with individual and total sizes. Delete removes one chat copy after confirmation; task originals remain under Work.",
-     "line": 68
+     "line": 69
     },
     {
      "file": "ui/unified-ui/src/lib/magician/chat/components/ChatModelsPage.svelte",
@@ -2783,7 +2798,7 @@
      "fn": "compact_task_user_output_bundle",
      "title": "Keep useful findings visible",
      "say": "Partial results preserve source findings across the run, lead with useful answers, and keep remaining gaps and verification limits separate.",
-     "line": 1927
+     "line": 2100
     },
     {
      "file": "ui/unified-ui/src/lib/shell/hudWindow.ts",
@@ -3052,7 +3067,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 50839,
+     "line": 51472,
      "why": "Classifies each action before execution"
     },
     {
@@ -3073,7 +3088,7 @@
      "file": "magician/src/magician_v2/agents/outward_policy.rs",
      "type": null,
      "fn": "capture_for_task",
-     "line": 403,
+     "line": 410,
      "why": "Record instead of send by default"
     },
     {
@@ -3087,7 +3102,7 @@
      "file": "magician/src/magician_v2/user_requests/service.rs",
      "type": "UserRequestService",
      "fn": "ask",
-     "line": 2111,
+     "line": 2133,
      "why": "Channel-agnostic ask-the-human primitive"
     },
     {
@@ -3108,14 +3123,14 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27747,
+     "line": 27958,
      "why": "Canonical answer endpoint"
     },
     {
      "file": "magician/src/magician_v2/user_requests/service.rs",
      "type": "UserRequestService",
      "fn": "respond",
-     "line": 2742,
+     "line": 2764,
      "why": "Resolves the waiting ask"
     },
     {
@@ -3136,7 +3151,7 @@
      "file": "magician/src/magician_v2/chat/escalation_listener.rs",
      "type": null,
      "fn": "extract_escalation",
-     "line": 853,
+     "line": 856,
      "why": "Builds action-required card from events"
     },
     {
@@ -3157,7 +3172,7 @@
      "file": "magician/src/magician_v2/execution/approval_preview.rs",
      "type": null,
      "fn": "approval_preview_for_action",
-     "line": 188,
+     "line": 189,
      "why": "Readable card instead of the raw call"
     },
     {
@@ -3215,6 +3230,13 @@
      "fn": null,
      "why": "Keep every open ask visible",
      "line": 1
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": "delegated_child_may_suspend_on_terminal",
+     "line": 5915,
+     "why": "A delegated child parks at an approval gate instead of failing"
     }
    ],
    "configKeys": [
@@ -3242,7 +3264,7 @@
      "file": "magician/src/magician_v2/user_requests/service.rs",
      "type": "UserRequestService",
      "fn": "ask",
-     "line": 2111,
+     "line": 2133,
      "title": "Something needs you",
      "say": "When an agent needs input, approval, a clarification or a decision, it raises one canonical ask instead of guessing.",
      "evidence": "docs/components/magician/hitl-attention.md:1-18"
@@ -3251,7 +3273,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 50839,
+     "line": 51472,
      "title": "Spot outward actions",
      "say": "Before executing, each action is classified, and anything that can send email, messages or invitations, including raw passthrough arguments, counts as outward.",
      "evidence": "docs/components/magician/outward-actions.md:1-23"
@@ -3260,7 +3282,7 @@
      "file": "magician/src/magician_v2/agents/outward_policy.rs",
      "type": null,
      "fn": "capture_for_task",
-     "line": 403,
+     "line": 410,
      "title": "Capture by default",
      "say": "An outward action is captured by default. Optional owner-chat, owner-task and OPC choices use the trusted origin, which delegation and restarts preserve. Other permission and recipient checks still apply.",
      "evidence": "docs/components/magician/outward-actions.md#optional-context-controls"
@@ -3296,7 +3318,7 @@
      "file": "magician/src/magician_v2/execution/approval_preview.rs",
      "type": null,
      "fn": "approval_preview_for_action",
-     "line": 188,
+     "line": 189,
      "title": "A card, not a raw call",
      "say": "A tool can describe its own approval: who wants to change what, their reason, the changed lines and any warning. Web, iPhone and Android show that card instead of the raw call.",
      "evidence": "docs/components/magician/hitl-attention.md"
@@ -3305,10 +3327,18 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27747,
+     "line": 27958,
      "title": "Answer once",
      "say": "The owner answers through one endpoint from Attention, chat, a bot or a phone, and the waiting work resumes with that answer.",
      "evidence": "docs/components/magician/hitl-attention.md:547; main.rs:13460"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": "delegated_child_may_suspend_on_terminal",
+     "line": 5915,
+     "title": "Approvals inside delegated work",
+     "say": "When an agent you delegated to reaches an approval gate, the child run suspends and the card reaches you. It used to be cancelled within a second and retried in a loop; now the work waits until you answer."
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/approved_replay.rs",
@@ -3425,21 +3455,21 @@
      "file": "magician/src/magician_v2/secrets/credential_material_adapter.rs",
      "type": "ScopedCredentialMaterialAdapter",
      "fn": "for_secret_references",
-     "line": 339,
+     "line": 343,
      "why": "Scoped secrets for governed tools"
     },
     {
      "file": "magician/src/magician_v2/secrets/credential_material_adapter.rs",
      "type": null,
      "fn": "resolve_once",
-     "line": 600,
+     "line": 604,
      "why": "Credentials redeemed exactly once"
     },
     {
      "file": "magician/src/magician_v2/secrets/credential_material_adapter.rs",
      "type": null,
      "fn": "resolve_secret_references",
-     "line": 680,
+     "line": 639,
      "why": "Vault first, legacy env fallback"
     },
     {
@@ -3600,7 +3630,7 @@
      "file": "magician/src/magician_v2/skills/activation.rs",
      "type": null,
      "fn": "activate_procedure_skill",
-     "line": 54,
+     "line": 56,
      "why": "Loads procedure skill and scripts"
     },
     {
@@ -3614,14 +3644,14 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "install_skill_handler",
-     "line": 310,
+     "line": 311,
      "why": "Installs a skill into scope"
     },
     {
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "list_skills_catalog_handler",
-     "line": 2583,
+     "line": 2637,
      "why": "Catalog for the Skills page"
     },
     {
@@ -3636,7 +3666,7 @@
      "type": null,
      "fn": "install_skill",
      "why": "Keep account state through updates",
-     "line": 383
+     "line": 378
     },
     {
      "file": "magician-api/src/browser_signin/bots.rs",
@@ -3710,7 +3740,7 @@
      "file": "magician/src/magician_v2/skills/activation.rs",
      "type": null,
      "fn": "activate_procedure_skill",
-     "line": 54,
+     "line": 56,
      "title": "Activate procedures",
      "say": "Procedure skills are activated on demand, loading their instructions and any helper scripts as ephemeral tools for the current run.",
      "evidence": "activation.rs:18-54; runner.rs:45"
@@ -3719,7 +3749,7 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "install_skill_handler",
-     "line": 310,
+     "line": 311,
      "title": "Install and run",
      "say": "From the Skills page the owner browses the catalog, installs or uninstalls skills, edits their environment and runs actions directly.",
      "evidence": "skills_api.rs:1958-1975"
@@ -3739,7 +3769,7 @@
      "fn": "install_skill",
      "title": "Keep account state through updates",
      "say": "Skill updates replace package code atomically while credentials and provider sessions stay in durable workspace state. Explicitly removed skills remain removed during repair.",
-     "line": 383
+     "line": 378
     },
     {
      "file": "magician-api/src/browser_signin/bots.rs",
@@ -3869,7 +3899,7 @@
      "file": "magios/Magios/ChatView.swift",
      "fn": null,
      "type": "ChatWelcomeView",
-     "line": 2374,
+     "line": 2250,
      "why": "Start from an editable suggestion"
     },
     {
@@ -3966,7 +3996,7 @@
      "file": "magios/Magios/ChatView.swift",
      "fn": null,
      "type": "ChatWelcomeView",
-     "line": 2374,
+     "line": 2250,
      "title": "Start from an editable suggestion",
      "say": "New mobile chats show editable prompt starters and recent conversations. Choosing a starter fills a draft without sending it."
     }
@@ -4032,7 +4062,7 @@
      "file": "magician/src/magician_v2/web_push.rs",
      "type": null,
      "fn": "attention_web_path",
-     "line": 336,
+     "line": 340,
      "why": "Push deep links into attention"
     },
     {
@@ -4727,28 +4757,28 @@
      "file": "magician-api/src/voice_control_handler.rs",
      "type": null,
      "fn": "voice_control_ws_handler",
-     "line": 193,
+     "line": 195,
      "why": "One control websocket per call"
     },
     {
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "start",
-     "line": 921,
+     "line": 988,
      "why": "Starts realtime provider session"
     },
     {
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "CallBoundary",
      "fn": null,
-     "line": 263,
+     "line": 262,
      "why": "Grounds each call turn"
     },
     {
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "rotate",
-     "line": 1956,
+     "line": 2003,
      "why": "Rotates long sessions"
     },
     {
@@ -4783,14 +4813,14 @@
      "file": "magician-api/src/media_api.rs",
      "type": null,
      "fn": "synthesize_tts_handler",
-     "line": 1675,
+     "line": 1692,
      "why": "Text-to-speech endpoint"
     },
     {
      "file": "magician-api/src/media_api.rs",
      "type": null,
      "fn": "submit_voice_note_handler",
-     "line": 2436,
+     "line": 2455,
      "why": "Dictated voice notes"
     },
     {
@@ -4811,7 +4841,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "fn": "requested_chat_session_is_usable",
      "type": null,
-     "line": 394,
+     "line": 433,
      "why": "Stay with the selected chat"
     },
     {
@@ -4910,7 +4940,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "start",
-     "line": 921,
+     "line": 988,
      "title": "Orchestrator starts",
      "say": "The voice orchestrator starts a realtime session with the configured provider and sets call boundaries that ground each turn of the conversation.",
      "evidence": "voice_control_handler.rs:335, 2683; voice_orchestrator.rs:264, 342"
@@ -4946,7 +4976,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "type": "VoiceOrchestrator",
      "fn": "rotate",
-     "line": 1956,
+     "line": 2003,
      "title": "Keep long calls alive",
      "say": "Long calls can rotate to a fresh provider session for a recorded reason, so the conversation continues past provider session limits.",
      "evidence": "voice_orchestrator.rs:90 RotateReason, :114 RotationResult; media_rails/voice_context_compactor.rs"
@@ -4955,7 +4985,7 @@
      "file": "magician-api/src/media_api.rs",
      "type": "",
      "fn": "synthesize_tts_handler",
-     "line": 1675,
+     "line": 1692,
      "title": "Dictation and speech",
      "say": "Outside calls, dictated voice notes are transcribed and saved, and replies can be spoken aloud through the text-to-speech endpoint.",
      "evidence": "media_api.rs:2190 submit_voice_note_handler; main.rs:13632"
@@ -4964,7 +4994,7 @@
      "file": "magician-media/src/media_rails/voice_orchestrator.rs",
      "fn": "requested_chat_session_is_usable",
      "type": null,
-     "line": 394,
+     "line": 433,
      "title": "Stay with the selected chat",
      "say": "When its owner and agent match, the call binds to the chat shown at start. Later tab switches do not move its transcripts or usage."
     },
@@ -5471,7 +5501,7 @@
      "file": "magician/src/magician_v2/content_sources/capability_reader.rs",
      "type": null,
      "fn": "register_capability_reader_manifests",
-     "line": 946,
+     "line": 947,
      "why": "Skill manifests become readers"
     },
     {
@@ -6141,7 +6171,7 @@
      "file": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte",
      "type": null,
      "fn": "toggleChatGodMode",
-     "line": 1160,
+     "line": 1162,
      "why": "Composer orb toggles one chat"
     },
     {
@@ -6176,42 +6206,42 @@
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "set_chat_override",
-     "line": 435,
+     "line": 443,
      "why": "Stores per-chat on/off choice"
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/types.rs",
      "type": null,
      "fn": "god_session_for",
-     "line": 197,
+     "line": 199,
      "why": "Grants session only to trusted runs"
     },
     {
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "god_mode_shell_override",
-     "line": 2729,
+     "line": 2892,
      "why": "Shell refusal routed to god mode"
     },
     {
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "http_destination_reach",
-     "line": 2071,
+     "line": 2134,
      "why": "God-mode approval for the runtime HTTP API; origin-bound redirects"
     },
     {
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "authorize_file_read_path",
-     "line": 687,
+     "line": 700,
      "why": "Search tools share file-read approvals and privacy fences"
     },
     {
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": "GodAction",
      "fn": "authorize",
-     "line": 1964,
+     "line": 2023,
      "why": "Checks grants, asks owner, decides"
     },
     {
@@ -6225,7 +6255,7 @@
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "record",
-     "line": 1276,
+     "line": 1285,
      "why": "Saves session or always grants"
     },
     {
@@ -6247,7 +6277,7 @@
      "type": null,
      "fn": "set_chat_auto_override",
      "why": "Choose automatic approval deliberately",
-     "line": 493
+     "line": 501
     },
     {
      "file": "magios/Magios/ComposerExecutionModes.swift",
@@ -6255,6 +6285,13 @@
      "type": "ComposerExecutionModes",
      "line": 116,
      "why": "See the mode in the mobile composer"
+    },
+    {
+     "file": "magician/src/magician_v2/god_mode.rs",
+     "type": null,
+     "fn": "trust_allows",
+     "line": 669,
+     "why": "Only trusted agents may use a chat's god mode"
     }
    ],
    "configKeys": [
@@ -6287,7 +6324,7 @@
      "file": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte",
      "type": null,
      "fn": "toggleChatGodMode",
-     "line": 1160,
+     "line": 1162,
      "title": "Per-chat orb switch",
      "say": "Clicking the glowing orb in the composer overrides that default for one chat, along with every run the chat starts. Mobile mode saves stay bound to the connection whose settings were shown."
     },
@@ -6295,7 +6332,7 @@
      "file": "magician/src/magician_v2/execution/agentic/types.rs",
      "type": null,
      "fn": "god_session_for",
-     "line": 197,
+     "line": 199,
      "title": "Only trusted agents",
      "say": "When a run starts, it gets a god mode session only if the agent is trusted and god mode is on for it. Everyone else keeps the normal sandbox."
     },
@@ -6303,9 +6340,17 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "god_mode_shell_override",
-     "line": 2729,
+     "line": 2892,
      "title": "Sandbox says no",
      "say": "When the sandbox would refuse a command, the request goes to god mode instead of failing."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/native_executors.rs",
+     "type": null,
+     "fn": "god_mode_shell_override",
+     "line": 3563,
+     "title": "Carried into coding runs, still boxed",
+     "say": "God mode set in a chat now reaches the coding runs that chat starts, for their Magician tools. A coding run's shell stays inside its box and asks like any run; writes to Magician's own repository ask every time, allow-once only. Only super god mode lifts the box."
     },
     {
      "file": "magician/src/magician_v2/god_mode/shell_scope.rs",
@@ -6319,7 +6364,7 @@
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": "GodAction",
      "fn": "authorize",
-     "line": 1964,
+     "line": 2023,
      "title": "Ask the owner",
      "say": "If no earlier grant covers the action, the owner chooses once, this session, always, or deny. No answer within thirty minutes means deny."
     },
@@ -6327,7 +6372,7 @@
      "file": "magician/src/magician_v2/god_mode.rs",
      "type": null,
      "fn": "record",
-     "line": 1276,
+     "line": 1285,
      "title": "Remember the answer",
      "say": "Lasting approvals are saved at the scope the owner picked, and all forgotten when the god mode setting changes."
     },
@@ -6354,7 +6399,7 @@
      "fn": "set_chat_auto_override",
      "title": "Choose automatic approval deliberately",
      "say": "Optional automatic approval handles eligible God mode requests. Deletes, root commands, hidden code and blocked operations still require the owner’s answer.",
-     "line": 493
+     "line": 501
     },
     {
      "file": "magios/Magios/ComposerExecutionModes.swift",

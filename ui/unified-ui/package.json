@@ -1,7 +1,7 @@
 {
   "name": "unified-ui",
   "private": true,
-  "version": "0.1.70",
+  "version": "0.1.73",
   "packageManager": "npm@10.9.3",
   "type": "module",
   "scripts": {

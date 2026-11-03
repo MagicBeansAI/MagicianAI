@@ -22,7 +22,10 @@ private final class WorkMockURLProtocol: URLProtocol {
     override func startLoading() {
         if let stream = Self.stream { stream(self); return }
         do {
-            let (status, body, headers) = try Self.handle!(request)
+            // A request that lands after tearDown (a model from the previous
+            // test still loading) fails instead of trapping on a nil handler.
+            guard let handle = Self.handle else { throw URLError(.cancelled) }
+            let (status, body, headers) = try handle(request)
             let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: Data(body.utf8))
@@ -30,6 +33,14 @@ private final class WorkMockURLProtocol: URLProtocol {
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
     override func stopLoading() { Self.onStop?() }
+}
+
+/// Polls until `condition` is false, for up to `timeout`. The old fixed budget
+/// (100 polls of 2 ms) ran out on a loaded host and asserted mid-load.
+@MainActor
+private func waitWhile(timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
+    let deadline = Date().addingTimeInterval(timeout)
+    while condition(), Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
 }
 
 final class WorkAPITests: XCTestCase {
@@ -161,14 +172,14 @@ final class WorkAPITests: XCTestCase {
             return (200, offset == "1" ? #"{"tasks":[{"id":"task_tagged","title":"Beyond loaded page","status":"pending","tags":[{"id":"only-tag","name":"only-tag"}]}],"pagination":{"total":2,"limit":500,"offset":1,"has_more":false}}"# : #"{"tasks":[{"id":"task_first","title":"First","status":"pending"}],"pagination":{"total":2,"limit":500,"offset":0,"has_more":true}}"#, [:])
         }
         let model = TasksViewModel(session: mockSession()); model.searchQuery = "only-tag"
-        for _ in 0..<100 where model.taskLoadState != .loaded { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.taskLoadState != .loaded }
         XCTAssertEqual(model.visibleTasks.map(\.id), ["task_tagged"]); XCTAssertTrue(offsets.contains("1")); XCTAssertFalse(model.tasksHasMore)
         model.searchQuery = ""; model.toggleTag("only-tag")
-        for _ in 0..<100 where model.taskLoadState != .loaded { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.taskLoadState != .loaded }
         XCTAssertEqual(model.visibleTasks.map(\.id), ["task_tagged"])
         let task = try JSONDecoder().decode(TaskV3.self, from: Data(#"{"id":"task_failed","title":"Failed","status":"failed","synthesis_failed_execution_id":"run/+one"}"#.utf8))
         model.retrySynthesis(task)
-        for _ in 0..<100 where model.mutatingTaskID != nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.mutatingTaskID != nil }
         XCTAssertEqual(model.actionErrorMessage, "synthesis busy"); XCTAssertNil(model.retryingSynthesisId)
     }
     @MainActor
@@ -203,20 +214,20 @@ final class WorkAPITests: XCTestCase {
         }
         let model = TasksViewModel(session: mockSession()); model.lane = .internalTasks
         model.internalAgentFilter = "crew/+one"; model.internalStatusFilter = "completed"; model.searchQuery = "notes & quotes"; model.setSort(field: .agent); model.internalPageSize = 100
-        for _ in 0..<100 where model.internalTaskLoadState != .loaded { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.internalTaskLoadState != .loaded }
         XCTAssertEqual(model.internalTasks.count, 3)
         let query = URLComponents(url: paths.last(where: { $0.path.hasSuffix("/tasks/internal") })!, resolvingAgainstBaseURL: false)!.queryItems!
         XCTAssertEqual(query.first { $0.name == "agent_id" }?.value, "crew/+one"); XCTAssertEqual(query.first { $0.name == "query" }?.value, "notes & quotes"); XCTAssertEqual(query.first { $0.name == "sort" }?.value, "agent_id"); XCTAssertEqual(query.first { $0.name == "limit" }?.value, "100")
         model.searchQuery = ""
-        for _ in 0..<100 where model.internalTaskLoadState != .loaded { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.internalTaskLoadState != .loaded }
         model.selectLoadedInternal(); XCTAssertEqual(model.selectedInternalIDs, ["good", "bad"])
         model.deleteSelectedInternal()
-        for _ in 0..<100 where model.mutatingTaskID != nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.mutatingTaskID != nil }
         XCTAssertEqual(deletes, ["good", "bad"]); XCTAssertEqual(model.selectedInternalIDs, ["bad"]); XCTAssertEqual(model.cleanupFailures["bad"], "record busy")
         model.loadReferences()
-        for _ in 0..<100 where model.referencesLoading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.referencesLoading }
         model.loadReferences(append: true)
-        for _ in 0..<100 where model.referencesLoading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.referencesLoading }
         XCTAssertEqual(model.completedReferences.map(\.id), ["task_one", "task_two"]); XCTAssertFalse(model.referencesHasMore)
     }
     @MainActor
@@ -317,15 +328,15 @@ final class WorkAPITests: XCTestCase {
             return (200, #"{"tasks":[]}"#, [:])
         }
         let model = TasksViewModel(session: mockSession()); model.reloadAgents()
-        for _ in 0..<100 where model.agentsLoading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.agentsLoading }
         XCTAssertEqual(model.agents.map(\.id), ["custom-owner"]); XCTAssertEqual(model.agents.first?.isPrimary, true)
         WorkMockURLProtocol.handle = { _ in (200, #"{"agents":[]}"#, [:]) }
         model.reloadAgents()
-        for _ in 0..<100 where model.agentsLoading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.agentsLoading }
         XCTAssertTrue(model.agents.isEmpty); XCTAssertNil(model.agentsError)
         WorkMockURLProtocol.handle = { _ in (503, #"{"error":"offline"}"#, [:]) }
         model.reloadAgents()
-        for _ in 0..<100 where model.agentsLoading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.agentsLoading }
         XCTAssertTrue(model.agents.isEmpty); XCTAssertNotNil(model.agentsError)
     }
 
@@ -397,14 +408,15 @@ final class WorkAPITests: XCTestCase {
         WorkMockURLProtocol.handle = { _ in (200, #"{"definition":{"agent_id":"writer","name":"Writer"}}"#, ["ETag": "\"header-v1\""]) }
         let frozen = client(currentCheck: { true }), resource = WorkResource(clientFactory: { frozen })
         resource.load("/api/magician/v2/agents/writer")
-        for _ in 0..<100 where resource.loading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { resource.loading }
         XCTAssertEqual(resource.value?["etag"].text, "\"header-v1\"")
     }
 
     @MainActor
     func testThreadPoolWalksAllPagesAndCountsOnlyMatchingTasks() async throws {
-        var offsets: [String] = []
+        var offsets: [String] = []; let lock = NSLock()
         WorkMockURLProtocol.handle = { request in
+            lock.lock(); defer { lock.unlock() }
             if request.url?.path.hasSuffix("/agents") == true { return (200, #"{"agents":[]}"#, [:]) }
             if request.url?.path.hasSuffix("/internal") == true { return (200, #"{"tasks":[]}"#, [:]) }
             let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
@@ -415,8 +427,8 @@ final class WorkAPITests: XCTestCase {
         }
         let model = TasksViewModel(session: mockSession())
         model.setThreadContext(" Launch ")
-        for _ in 0..<100 where model.isLoading { try await Task.sleep(nanoseconds: 2_000_000) }
-        XCTAssertEqual(offsets, ["0", "1"])
+        try await waitWhile { model.isLoading }
+        XCTAssertEqual(lock.withLock { offsets }, ["0", "1"])
         XCTAssertEqual(model.visibleTasks.map(\.id), ["scoped"])
         XCTAssertEqual(model.laneCount(.running), 1); XCTAssertEqual(model.laneCount(.completed), 0)
         XCTAssertFalse(model.tasksHasMore)
@@ -629,7 +641,7 @@ final class WorkAPITests: XCTestCase {
         let frozen = client(currentCheck: { current })
         let resource = WorkResource(clientFactory: { frozen })
         resource.load("/api/magician/v2/agents")
-        for _ in 0..<100 where resource.loading { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { resource.loading }
         XCTAssertEqual(resource.value?["name"], .string("First workspace"))
         current = false
         NotificationCenter.default.post(name: .magicianMobileConnectionDidChange, object: nil)
@@ -668,7 +680,7 @@ final class WorkAPITests: XCTestCase {
             let frozen = client(currentCheck: { true })
             let resource = WorkResource(clientFactory: { frozen })
             resource.load("/api/magician/v2/relentless/catalog?q=original")
-            for _ in 0..<100 where resource.loading { try await Task.sleep(nanoseconds: 2_000_000) }
+            try await waitWhile { resource.loading }
             XCTAssertEqual(resource.value?["filter"].text, "original")
             let write = Task { await resource.perform("/api/magician/v2/relentless/runs/run/cancel") }
             await fulfillment(of: [started], timeout: 3)
@@ -679,7 +691,7 @@ final class WorkAPITests: XCTestCase {
             release.signal()
             let result = await write.value
             XCTAssertEqual(result != nil, status == 200)
-            for _ in 0..<100 where resource.loading { try await Task.sleep(nanoseconds: 2_000_000) }
+            try await waitWhile { resource.loading }
             XCTAssertEqual(resource.path, "/api/magician/v2/relentless/catalog?q=latest")
             XCTAssertEqual(resource.value?["filter"].text, "latest")
             XCTAssertFalse(resource.busy)
@@ -702,12 +714,12 @@ final class WorkAPITests: XCTestCase {
                              priority: nil, dueDate: nil, tagNames: []) { completed = true }
         }
         create()
-        for _ in 0..<100 where model.mutatingTaskID != nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.mutatingTaskID != nil }
         XCTAssertFalse(completed, "A rejected creation must not dismiss the draft form")
         XCTAssertEqual(model.actionErrorMessage, "Choose an available crew member.")
         XCTAssertNil(model.mutatingTaskID)
         accept = true; create()
-        for _ in 0..<100 where model.mutatingTaskID != nil { try await Task.sleep(nanoseconds: 2_000_000) }
+        try await waitWhile { model.mutatingTaskID != nil }
         XCTAssertTrue(completed)
         XCTAssertNil(model.actionErrorMessage)
         XCTAssertEqual(model.actionNoticeMessage, "Task created.")

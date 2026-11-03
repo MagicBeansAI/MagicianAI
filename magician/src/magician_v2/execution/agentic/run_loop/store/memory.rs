@@ -869,6 +869,7 @@ impl LoopStateStore for MemoryLoopStateStore {
                         < projection_through
                 });
             let runtime_settlement_debt = ended.terminal != TerminalKind::HandedOff
+                && !state.retired_into_parent_segment
                 && (state.identity.task_id.is_some() || state.identity.execution_id.is_some())
                 && (ended.terminal == TerminalKind::CannotProceed
                     || state

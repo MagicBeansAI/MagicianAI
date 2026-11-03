@@ -157,10 +157,18 @@ host_prerequisites:
     label: uv Python package manager
     bins: [uv]
     install: { kind: homebrew_formula, formula: uv }
+  # The package ships its own pinned rg.bin for the grep and glob agent tools;
+  # this covers installs made before it did and anything that runs `rg` from
+  # PATH. Container images install ripgrep themselves.
+  ripgrep:
+    order: 50
+    label: ripgrep
+    bins: [rg]
+    install: { kind: homebrew_formula, formula: ripgrep }
 
 host_prerequisite_profiles:
   macos_container: [homebrew, python3]
-  macos_native: [homebrew, python3, node, uv]
+  macos_native: [homebrew, python3, node, uv, ripgrep]
   linux_container: [linux-python3]
 
 # External harnesses are operator-installed programs. Desktop may detect them,

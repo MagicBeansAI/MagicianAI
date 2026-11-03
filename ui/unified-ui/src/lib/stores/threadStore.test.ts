@@ -112,3 +112,37 @@ describe('thread archive and delete timeouts', () => {
 		}
 	});
 });
+
+describe('thread keys: slugs, aliases and the reserved `new` route', () => {
+	it('never creates a thread for the reserved `new` key', async () => {
+		const { calls } = installFetchMock([
+			{ method: 'GET', match: `${path}/new`, handle: () => jsonResponse({ error: 'missing' }, { status: 404 }) },
+			{ method: 'POST', match: path, handle: () => jsonResponse(thread) }
+		]);
+		expect(await threadStore.ensureThread('new')).toBeNull();
+		expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+	});
+
+	it('resolves a slug or alias key to the canonical thread id', async () => {
+		const renamed = { ...thread, slug: 'trip-planning', name: 'Trip planning' };
+		const { calls } = installFetchMock([
+			{ method: 'GET', match: `${path}/trip-planning`, handle: () => jsonResponse({ thread: renamed }) }
+		]);
+		const resolved = await threadStore.ensureThread('trip-planning');
+		expect(resolved).toMatchObject({ id: 'research', slug: 'trip-planning' });
+		expect(get(threadStore).activeThread?.id).toBe('research');
+		expect(get(threadStore).threads.find((candidate) => candidate.id === 'research')?.slug).toBe('trip-planning');
+		expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+	});
+
+	it('creates a named thread without an id so the server derives one', async () => {
+		const created = { ...thread, id: 'research-2', slug: 'research-2' };
+		const { calls } = installFetchMock([
+			{ method: 'POST', match: path, handle: () => jsonResponse(created) },
+			{ method: 'GET', match: path, handle: () => jsonResponse({ threads: [thread, created] }) }
+		]);
+		expect(await threadStore.createThread('Research')).toMatchObject({ id: 'research-2', slug: 'research-2' });
+		const post = calls.find((call) => call.method === 'POST');
+		expect(JSON.parse(String(post?.init?.body))).toEqual({ id: null, name: 'Research' });
+	});
+});

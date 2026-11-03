@@ -45,6 +45,12 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
             "reason": "activate_skill requires a non-empty `name`",
         }));
     };
+    let file = args
+        .get("file")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     // Skill search path: per-scope workspace skills + configured `paths` extras.
     let workspace_skills_dir = resources.scope_skills_root(&principal, &workspace);
@@ -110,6 +116,32 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         crate::magician_v2::skills::ActivationOutcome::Idempotent { activation, .. } => activation,
     };
 
+    // `file` opens one of the files the playbook links to. It is read before
+    // anything is persisted, so a refused file leaves the active playbook as
+    // it was.
+    let file_result = match file.as_deref() {
+        None => Value::Null,
+        Some(file) => match crate::magician_v2::skills::read_skill_file(
+            &activation.skill_dir,
+            &skill.body,
+            file,
+        ) {
+            Ok(content) => json!({"path": file, "content": content}),
+            Err(reason) => {
+                return Ok(json!({
+                    "status": "error",
+                    "reason": reason,
+                    "skill": skill.name,
+                    "linked_files": skill.linked_files(),
+                }));
+            },
+        },
+    };
+    let unchanged = matches!(
+        outcome,
+        crate::magician_v2::skills::ActivationOutcome::Idempotent { .. }
+    );
+
     // Persist `{name, activated_at}` to the `active_procedure_skill`
     // agent-scope memory tier. Body is re-resolved at prompt-build
     // time so a skill edit on disk takes effect on the next turn
@@ -133,10 +165,15 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         last_updated: Utc::now(),
         fields,
     };
-    if let Err(error) = memory_service
-        .save_native_tier(&agent_id, &tier_def, None, &record)
-        .await
-    {
+    // Opening a file of the playbook that is already active changes nothing.
+    let save = if unchanged && file.is_some() {
+        Ok(())
+    } else {
+        memory_service
+            .save_native_tier(&agent_id, &tier_def, None, &record)
+            .await
+    };
+    if let Err(error) = save {
         return Ok(json!({
             "status": "error",
             "reason": format!("Failed to persist active procedure skill: {error}"),
@@ -182,6 +219,7 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
         "outcome": reasoning,
         "message": status_message,
         "steering_message": activation.steering_message,
+        "file": file_result,
         "ephemeral_tools": ephemeral_names,
         "path_additions": path_additions,
         "previous_active": previous_name,

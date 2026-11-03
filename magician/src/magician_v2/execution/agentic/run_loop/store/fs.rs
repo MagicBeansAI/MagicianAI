@@ -7354,7 +7354,10 @@ impl FsLoopStateStore {
         // historical runtime/Artifact outcome, so rolling upgrades project
         // their remaining events but do not create permanent settlement debt.
         // CannotProceed retains its exact reconciler-owned compatibility path.
+        // A nested segment retired into its parent never settles the shared
+        // runtime execution, not even through receipt-less CannotProceed.
         let runtime_settlement_debt = ended.terminal != TerminalKind::HandedOff
+            && !committed.state.retired_into_parent_segment
             && (committed.state.identity.task_id.is_some()
                 || committed.state.identity.execution_id.is_some())
             && (ended.terminal == TerminalKind::CannotProceed

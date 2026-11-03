@@ -9,7 +9,7 @@
 //! a file the acting agent may not read is dropped from the results.
 
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -58,16 +58,45 @@ pub(super) async fn check_search_root(
     }
 }
 
-/// `rg args`, inside the shell's OS box when it applies here (outside a
-/// coding run, with a working launcher), so the kernel keeps it out of the
-/// goal workspaces the acting agent may not reach and out of secret stores.
-pub(super) fn ripgrep(args: &[OsString]) -> tokio::process::Command {
+/// What the `grep` and `glob` tools answer when no ripgrep resolves. A hard
+/// error naming the fix, not a spawn failure the model works around with a
+/// slower shell `grep`.
+pub(super) fn ripgrep_missing(tool: &str, wanted: &Path) -> Value {
+    tracing::error!(
+        tool,
+        wanted = %wanted.display(),
+        "ripgrep is missing: the {tool} tool cannot run"
+    );
+    json!({
+        "status": "error",
+        "error_kind": "ripgrep_missing",
+        "retryable": false,
+        "reason": format!(
+            "ripgrep (rg) is not installed for Magician, so `{tool}` cannot run. \
+             The owner must restore it: reinstall the Magician package (it ships rg.bin), \
+             run `make -C skillshub setup-deps setup-skill-bins` in a source checkout, \
+             or set {}=/path/to/rg.",
+            runtime_core::process::RIPGREP_PROGRAM_ENV
+        ),
+    })
+}
+
+/// `rg args` for the ripgrep [`runtime_core::process::resolve_ripgrep`]
+/// picks, inside the shell's OS box when it applies here (outside a coding
+/// run, with a working launcher), so the kernel keeps it out of the goal
+/// workspaces the acting agent may not reach and out of secret stores.
+/// `Err` carries the path that was looked for when none resolves.
+pub(super) fn ripgrep(args: &[OsString]) -> Result<tokio::process::Command, std::path::PathBuf> {
+    let (program, source) = runtime_core::process::resolve_ripgrep();
+    if source == runtime_core::process::RipgrepSource::Missing {
+        return Err(program);
+    }
     let sandbox = runtime_core::ShellSandboxConfig {
         os_enforce: true,
         ..runtime_core::ShellSandboxConfig::default()
     };
     let mut command =
-        match crate::magician_v2::execution::shell_box::wrap(OsStr::new("rg"), args, &sandbox) {
+        match crate::magician_v2::execution::shell_box::wrap(program.as_os_str(), args, &sandbox) {
             Some(boxed) => {
                 let mut command = tokio::process::Command::new(&boxed.program);
                 command.args(&boxed.args);
@@ -80,13 +109,13 @@ pub(super) fn ripgrep(args: &[OsString]) -> tokio::process::Command {
                 command
             },
             None => {
-                let mut command = tokio::process::Command::new("rg");
+                let mut command = tokio::process::Command::new(&program);
                 command.args(args);
                 command
             },
         };
     command.kill_on_drop(true);
-    command
+    Ok(command)
 }
 
 /// Whether a path `rg` printed may be shown to the acting agent. `rg` does
@@ -227,7 +256,11 @@ pub async fn handle(resources: Arc<AgentResources>, args: Value) -> Result<Value
     rg_args.push(pattern.into());
     rg_args.push(path.clone().into());
 
-    let output = match ripgrep(&rg_args).output().await {
+    let mut command = match ripgrep(&rg_args) {
+        Ok(command) => command,
+        Err(wanted) => return Ok(ripgrep_missing("grep", &wanted)),
+    };
+    let output = match command.output().await {
         Ok(o) => o,
         Err(e) => {
             return Ok(json!({
@@ -444,11 +477,8 @@ mod tests {
     /// End to end with a real `rg`, where one is installed.
     #[tokio::test]
     async fn grep_never_returns_a_non_members_workspace_hit() {
-        if std::process::Command::new("rg")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
+        let (rg, source) = runtime_core::process::resolve_ripgrep();
+        if source == runtime_core::process::RipgrepSource::Missing {
             return;
         }
         let fx = crate::magician_v2::execution::goal_workspace_access::test_fixture();
@@ -464,7 +494,7 @@ mod tests {
             .map(OsString::from)
             .chain(std::iter::once(parent.clone().into_os_string()))
             .collect();
-        let output = tokio::process::Command::new("rg")
+        let output = tokio::process::Command::new(&rg)
             .args(&args)
             .output()
             .await

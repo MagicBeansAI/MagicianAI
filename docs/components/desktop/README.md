@@ -244,7 +244,9 @@ Homebrew installer primitives. A missing required program is a hard stop.
 ### Packaging notes
 
 - Native-service packages are staged with `make stage-desktop-native-backend` and
-  covered provider-free by `make test-native-package`. Standard macOS release
+  covered provider-free by `make test-native-package`. They carry the pinned
+  ripgrep the `grep` and `glob` tools run (`rg.bin`, copied by the installer with
+  the other `*.bin`; `rg.exe` on Windows, copied by `install_windows_package` and the package's own `install.ps1`). Standard macOS release
   builds embed that package, and every backend executable and the app must pass
   Gatekeeper. `make release-desktop-native` builds, stages, requires and
   re-verifies it inside the finished bundle. Linux AppImage and Windows NSIS are

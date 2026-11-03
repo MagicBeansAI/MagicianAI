@@ -1,6 +1,6 @@
 ---
 name: hackernews-search
-version: 0.2.0
+version: 0.2.1
 description: 'Search Hacker News for recent stories and comments matching a query.
 
   Returns normalized items with points + comment counts. Uses HN''s
@@ -74,6 +74,7 @@ metadata:
     requires:
       bins:
       - hackernews-search
+      - python3
     install_hint:
       docs: Requires Python 3.9+. Zero credentials. Algolia HN endpoint is keyless.
     runtime_canary:
@@ -93,6 +94,8 @@ metadata:
       requires:
         bins:
         - hackernews-search
+        - python3
+        entrypoint: hackernews-search
       runtime:
         protocol: cli
         command_prefix: []

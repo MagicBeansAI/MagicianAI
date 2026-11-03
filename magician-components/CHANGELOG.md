@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- The macOS native-services host profile adds ripgrep (Homebrew `ripgrep`).
 - 0.1.10: Setup can move this computer's Cloudflare tunnel to a different zone when the step runs again.
 
 - 0.1.9: Guide owner identity claims and automatic signed webhook setup across installers.

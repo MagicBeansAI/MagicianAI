@@ -527,7 +527,10 @@ the default live lane runs free and cheap.
   Unknown or empty selections fail; a missing credential is SKIPPED, never PASS.
 - `make test-tool-skills`: provider-free contract suite. Magician-owned
   `tool_skill_contract` and `phase7_migration` run in `make test-phase5g-local`;
-  MagicRun keeps its own tests.
+  MagicRun keeps its own tests. `tool_skill_contract` parses each skillshub
+  manifest as a template (`skills::scope_env`): a `${NAME}` endpoint or issuer
+  is validated around the reserved `https://scope-env.invalid` stand-in, since
+  MagicRun's validator only ever sees resolved contracts.
 
 ## Source inventory and generation
 

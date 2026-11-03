@@ -7,7 +7,6 @@ struct WorkOperationsView: View {
     @State private var sequenceRunning = false
     @State private var sequenceID = UUID()
     @State private var sequenceResults: [WorkJSON] = []
-    private let targets = [("cmo", "content-calendar", "Content Calendar"), ("cro", "weekly-gtm-review", "Weekly GTM Review"), ("cpo", "backlog-grooming", "Backlog Grooming"), ("cto", "morning-engineering-standup", "Engineering Standup"), ("ceo", "morning-briefing", "Executive Briefing")]
     @ObservedObject private var theme = ThemeManager.shared
     var body: some View {
         WorkPage {
@@ -24,7 +23,7 @@ struct WorkOperationsView: View {
                         .disclosureGroupStyle(WorkDisclosureStyle(systemImage: "info.circle"))
                 }
             }
-            WorkGroupCard("Run team routines now", footer: "Dispatch the existing CMO, CRO, CPO, CTO and CEO focus areas in order. This does not wait for their runs to finish.") {
+            WorkGroupCard("Run team routines now", footer: "Dispatch each crew member's team routines (their focus areas) in order. This does not wait for their runs to finish.") {
                 WorkButtonRow(title: sequenceRunning ? "Dispatching…" : "Start team sequence", systemImage: "forward.end.alt") { confirmSequence = true }
                     .disabled(sequenceRunning || resource.busy || resource.value == nil)
                 ForEach(Array(sequenceResults.enumerated()), id: \.offset) { _, result in
@@ -45,7 +44,7 @@ struct WorkOperationsView: View {
         .task { resource.load("/api/magician/v2/harness/runtime") }.refreshable { resource.refresh() }
         .onChange(of: resource.scopeID) { _, _ in changeEnabled = nil; confirmSequence = false; sequenceID = UUID(); sequenceRunning = false; sequenceResults = [] }
         .onDisappear { sequenceID = UUID() }
-        .confirmationDialog("Dispatch the five company focus areas?", isPresented: $confirmSequence, titleVisibility: .visible) {
+        .confirmationDialog("Dispatch the team routines?", isPresented: $confirmSequence, titleVisibility: .visible) {
             Button("Dispatch reviewed sequence") { Task { await dispatchSequence() } }
             Button("Cancel", role: .cancel) {}
         }
@@ -67,13 +66,55 @@ struct WorkOperationsView: View {
     private func dispatchSequence() async {
         let ticket = UUID(); sequenceID = ticket; sequenceRunning = true; sequenceResults = []
         let scope = resource.scopeID
-        for (agent, goal, label) in targets {
+        // The live roster, read once: a routine retired since this screen opened must not run.
+        let agents = await resource.perform("/api/magician/v2/agents", method: "GET", body: nil, successNotice: nil)
+        let targets = agents.map(Self.teamRoutineTargets) ?? []
+        if agents != nil, targets.isEmpty, sequenceID == ticket {
+            resource.error = "No team routines are configured: no harness crew member has a focus area."
+        }
+        for target in targets {
             guard sequenceID == ticket, resource.scopeID == scope else { break }
-            let result = await resource.perform("/api/magician/v2/agents/" + agent + "/trigger", body: .object(["goal_id": .string("harness:" + agent + ":" + goal), "trigger": .string("manual.harness.company_loop")]))
+            let result = await resource.perform("/api/magician/v2/agents/" + target.agent + "/trigger", body: .object(["goal_id": .string(target.goal), "trigger": .string("manual.harness.company_loop")]))
             guard sequenceID == ticket, resource.scopeID == scope else { break }
-            sequenceResults.append(.object(["target": .string(label), "result": result ?? .object(["status": .string("failed"), "reason": .string(resource.error ?? "Dispatch failed")])]))
+            sequenceResults.append(.object(["target": .string(target.agent + " · " + target.label), "result": result ?? .object(["status": .string("failed"), "reason": .string(resource.error ?? "Dispatch failed")])]))
         }
         if sequenceID == ticket { sequenceRunning = false }
+    }
+
+    /// One stage per focus area of each harness agent, read from the live
+    /// definitions: a hard-coded list kept triggering routines retired months
+    /// ago. Agents in id order; focus areas whose names slug alike are one
+    /// server goal, so one stage.
+    static func teamRoutineTargets(_ agents: WorkJSON) -> [(agent: String, goal: String, label: String)] {
+        var seen = Set<String>()
+        return (agents["agents"].array ?? agents.array ?? [])
+            .map { $0["definition"] }
+            .filter { $0["harness"] != .null }
+            .compactMap { definition in definition["agent_id"].text.map { ($0, definition) } }
+            .sorted { $0.0 < $1.0 }
+            .flatMap { agent, definition in
+                (definition["autonomous_config"]["focus_areas"].array ?? []).compactMap { area -> (agent: String, goal: String, label: String)? in
+                    guard let name = area["name"].text else { return nil }
+                    let goal = "harness:\(agent):\(harnessGoalSlug(name))"
+                    guard seen.insert(goal).inserted else { return nil }
+                    return (agent, goal, name)
+                }
+            }
+    }
+
+    /// The backend's `slugify_name`: ASCII letters and digits kept, every other
+    /// run one `-`, trimmed, `unnamed` when empty, cut to 64 at a hyphen.
+    static func harnessGoalSlug(_ name: String) -> String {
+        let mapped = String(name.lowercased().unicodeScalars.map { scalar -> Character in
+            let value = scalar.value
+            return (97...122).contains(value) || (48...57).contains(value) ? Character(scalar) : "-"
+        })
+        let collapsed = mapped.split(separator: "-").joined(separator: "-")
+        if collapsed.isEmpty { return "unnamed" }
+        guard collapsed.count > 64 else { return collapsed }
+        let head = String(collapsed.prefix(64))
+        if let cut = head.lastIndex(of: "-") { return String(head[..<cut]) }
+        return head
     }
 
 }

@@ -207,13 +207,9 @@ def main() -> int:
         print(line)
 
     print(f"  done: {total} key(s) populated across {len(skills)} scope-layer skill(s)")
-    # Inputs for per-scope manifests live in these files, so render now.
-    import skill_render
-
-    failures = skill_render.render_scope(
-        Path(__file__).resolve().parents[1], data_root / "scopes" / args.scope
-    )
-    return 1 if failures else 0
+    # `${NAME}` manifest values are read from these files at load; nothing
+    # is rendered.
+    return 0
 
 
 if __name__ == "__main__":

@@ -777,6 +777,14 @@ pub enum ChildrenHandoffError {
         key: ExecutionKey,
         detail: String,
     },
+    /// The source segment ended on a terminal of its own — the reconciler
+    /// retired its park, or the run finished — before any handoff was
+    /// prepared. Nothing will ever hand it off, so a descriptor naming it is
+    /// stale rather than retryable.
+    SourceEndedWithoutHandoff {
+        key: ExecutionKey,
+        terminal: TerminalKind,
+    },
     JournalUnusable {
         key: ExecutionKey,
         detail: String,
@@ -803,6 +811,11 @@ impl std::fmt::Display for ChildrenHandoffError {
                     "loop-state segment {key} cannot be handed off: {detail}"
                 )
             },
+            Self::SourceEndedWithoutHandoff { key, terminal } => write!(
+                formatter,
+                "loop-state segment {key} cannot be handed off: it ended {} without a handoff",
+                terminal.settlement_label()
+            ),
             Self::JournalUnusable { key, detail } => {
                 write!(
                     formatter,
@@ -994,6 +1007,15 @@ async fn prepare_children_handoff_under_lease(
     let already_retired = replayed.terminal == Some(TerminalKind::HandedOff);
     match state.wait.as_ref() {
         None => {
+            if let Some(terminal) = replayed
+                .terminal
+                .filter(|terminal| !already_retired && !terminal.is_resumable())
+            {
+                return Err(ChildrenHandoffError::SourceEndedWithoutHandoff {
+                    key: source.clone(),
+                    terminal,
+                });
+            }
             if !already_retired {
                 return Err(ChildrenHandoffError::StateMismatch {
                     key: source.clone(),
@@ -3615,6 +3637,55 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary store root");
         let store = super::super::store::fs::FsLoopStateStore::new(root.path());
         children_handoff_contract(&store).await;
+    }
+
+    /// A park the reconciler retired is not a handoff that is late: nothing will
+    /// ever hand that segment off. The refusal says so in its own variant, so the
+    /// owner of a stale descriptor can drop it instead of retrying it forever.
+    #[tokio::test]
+    async fn a_retired_park_refuses_its_handoff_as_ended_rather_than_mismatched() {
+        let store = MemoryLoopStateStore::new();
+        let parent = key("handoff-retired");
+        park_on_after_the_boundary_that_parked_it(&store, &parent, &["child-1"]).await;
+        child_ending_as(&store, &key("child-1"), TerminalKind::Success).await;
+        let finding = one_finding_with(
+            &store,
+            recovering_policy(),
+            Utc::now().timestamp_millis() + HOUR_MS,
+        )
+        .await;
+        assert_eq!(
+            finding.action,
+            ParkAction::Retired {
+                terminal: TerminalKind::CannotProceed
+            }
+        );
+        let worker = ReconcilerWorker::named("reconciler-handoff-test").expect("valid worker");
+
+        let error = prepare_children_handoff(
+            &store,
+            &parent,
+            &["child-1".to_string()],
+            "handoff-retired-r2",
+            &worker,
+        )
+        .await
+        .expect_err("a retired segment cannot be handed off");
+        assert!(
+            matches!(
+                error,
+                ChildrenHandoffError::SourceEndedWithoutHandoff {
+                    terminal: TerminalKind::CannotProceed,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            journal_of(&store, &parent).await.len(),
+            2,
+            "the refusal appends nothing after the retirement"
+        );
     }
 
     #[tokio::test]

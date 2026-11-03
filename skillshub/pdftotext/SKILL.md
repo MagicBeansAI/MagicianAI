@@ -1,6 +1,6 @@
 ---
 name: pdftotext
-version: 0.2.0
+version: 0.2.1
 description: Extract exact plain text, page ranges, physical layout, TSV/bounding boxes, raw stream order, or password-protected content from PDF files with Poppler. Use for PDF-specialist extraction; prefer document-to-markdown for ordinary document reading and OCR for scanned/image-only PDFs.
 metadata:
   magician:
@@ -104,8 +104,9 @@ metadata:
             the requested result is present.
           parameters:
             input_file:
-              type: string
-              description: Path to the PDF file to extract text from
+              type: workspace_path
+              access: read_file
+              description: Read-only path to the PDF file to extract text from
               required: true
               max_length: 4096
             output_file:

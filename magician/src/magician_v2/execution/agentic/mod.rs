@@ -42,6 +42,7 @@ pub mod native_integration;
 pub mod native_lowering;
 pub mod native_types;
 pub mod output_verifier;
+pub(crate) mod platform_fault;
 /// Tier 4: bind a completed outward dispatch to the provider message it became.
 pub mod outward_settle;
 pub mod ownership_runtime;
@@ -57,6 +58,7 @@ pub mod types;
 mod value_refs;
 pub(crate) use value_refs::EXPORT_RESULT_TOOL;
 pub mod yield_decision;
+pub(crate) mod yield_deliverables;
 
 pub use decision::build_delegation_results_section;
 pub use decision::Decision;

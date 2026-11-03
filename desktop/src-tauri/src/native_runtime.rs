@@ -709,6 +709,8 @@ fn install_windows_package(root: &Path, prefix: &Path) -> Result<(), String> {
         "SHA256SUMS",
         "install.ps1",
         "uninstall.ps1",
+        // The pinned ripgrep the grep and glob tools run beside magician.exe.
+        "rg.exe",
     ] {
         let source = root.join(file);
         if source.is_file() {

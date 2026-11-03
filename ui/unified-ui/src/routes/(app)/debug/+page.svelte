@@ -2,6 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import { page } from '$app/stores';
 	import { get } from 'svelte/store';
 	import type { MuijComponent, MuijInteractionEventDetail } from '$lib/stores/muijStore';
@@ -3310,7 +3311,7 @@
 				}
 			if (componentId === 'veil-sota-chat-open-session' || componentId.endsWith(':veil-sota-chat-open-session')) {
 				if (sotaChatRunResult) {
-					await goto(`/t/${encodeURIComponent(sotaChatRunResult.threadId)}/chat?session=${encodeURIComponent(sotaChatRunResult.sessionId)}`);
+					await goto(threadHref(sotaChatRunResult.threadId, `/chat?session=${encodeURIComponent(sotaChatRunResult.sessionId)}`));
 				}
 				return;
 			}

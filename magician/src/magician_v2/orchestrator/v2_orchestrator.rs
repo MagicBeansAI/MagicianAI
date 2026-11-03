@@ -228,6 +228,11 @@ pub struct ResumablePauseLifecycleAdmission {
     resumable: bool,
     staged: bool,
     canonical_diff_approval: bool,
+    /// A pending pause a delegated child may hold for the owner
+    /// (`delegated_waiting_for_user_should_suspend`): a staged diff, an owner
+    /// question or an approval gate. Recovery reads it; tree cancellation
+    /// deliberately spares only `canonical_diff_approval`.
+    delegated_owner_answerable: bool,
     _execution_exclusion: StatelessTerminalExecutionLifecycleExclusion,
 }
 
@@ -242,6 +247,10 @@ impl ResumablePauseLifecycleAdmission {
 
     pub fn canonical_diff_approval(&self) -> bool {
         self.canonical_diff_approval
+    }
+
+    pub fn delegated_owner_answerable(&self) -> bool {
+        self.delegated_owner_answerable
     }
 }
 
@@ -270,6 +279,10 @@ impl DelegatedRecoveryPauseLifecycleAdmission {
     pub fn canonical_diff_approval(&self) -> bool {
         self.pause.canonical_diff_approval()
     }
+
+    pub fn delegated_owner_answerable(&self) -> bool {
+        self.pause.delegated_owner_answerable()
+    }
 }
 
 impl Drop for DelegatedRecoveryPauseLifecycleAdmission {
@@ -293,12 +306,25 @@ pub enum GovernedAppCancellationSignal {
 }
 
 /// Outcome of one bounded startup pass over interrupted runnable executions.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InterruptedExecutionRecoveryReport {
     pub scheduled: usize,
     pub already_owned: usize,
     pub deferred: usize,
     pub failed_nonrecoverable: usize,
+    /// The task-backed runs this pass resumed. A chat-spawned task reports to
+    /// its chat only through in-memory watchers, so startup re-arms them from
+    /// this list (`ChatService::rearm_chat_delivery_for_recovered_tasks`).
+    pub recovered_task_runs: Vec<RecoveredTaskRun>,
+}
+
+/// A task-backed run that startup recovery handed back to its runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveredTaskRun {
+    pub principal: String,
+    pub workspace: String,
+    pub task_id: String,
+    pub execution_id: String,
 }
 
 /// Process-local startup ownership must be released even when a detached
@@ -585,8 +611,57 @@ impl InterruptedPlanRecoveryBinding {
 #[derive(Debug, Clone)]
 enum InterruptedPlanRecoveryAdmission {
     Admitted(InterruptedPlanRecoveryBinding),
-    AlreadyOwned,
+    /// Another generation owns the run. `until_ms` is that ownership's
+    /// durable deadline when a live loop segment (its lease or placement
+    /// pin) refused the claim, so a caller can come back once it lapses.
+    /// `None` when no deadline is known: this process already owns it (an
+    /// in-flight recovery or live controls), or the durable exact/pre-seed
+    /// claim was lost to a peer that won it first.
+    AlreadyOwned {
+        until_ms: Option<i64>,
+    },
     Deferred(String),
+}
+
+/// Why [`MagicianV2Orchestrator::bind_interrupted_runtime_recovery_overrides`]
+/// bound nothing. Typed so a caller can tell a refusal it should come back to
+/// (another generation owns the run, possibly until a known deadline) from one
+/// it should report; `Display` keeps the strings callers logged before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InterruptedRuntimeRecoveryRefusal {
+    /// A live generation owns the run. `until_ms` is the durable deadline of
+    /// that ownership when it is known (a live segment's lease or pin);
+    /// `None` for this process's own recovery or a durable claim a peer won.
+    AlreadyOwned {
+        execution_id: String,
+        until_ms: Option<i64>,
+    },
+    /// Durable authority is not settled enough to recover from yet.
+    Deferred {
+        execution_id: String,
+        reason: String,
+    },
+    /// The authority could not be read or claimed at all.
+    Failed(String),
+}
+
+impl std::fmt::Display for InterruptedRuntimeRecoveryRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyOwned { execution_id, .. } => write!(
+                f,
+                "interrupted runtime {execution_id} is already owned by a live generation"
+            ),
+            Self::Deferred {
+                execution_id,
+                reason,
+            } => write!(
+                f,
+                "interrupted runtime {execution_id} retained for durable authority: {reason}"
+            ),
+            Self::Failed(detail) => f.write_str(detail),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2290,6 +2365,63 @@ fn take_hitl_cancel_outcome(execution_id: &str) -> Option<&'static str> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .remove(execution_id)
+}
+
+/// Why the runtime itself is cancelling an execution, by execution id. A
+/// forced child failure settles through the ordinary cancellation path, whose
+/// transition would otherwise be recorded as `UserCancelled` — a person
+/// reading the run then looks for someone who pressed cancel.
+static FORCED_CANCEL_CAUSES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Holds a forced cancellation's cause for one execution until dropped, so
+/// a cancelled or failing caller cannot leave it to label a later cancel.
+#[must_use = "dropping the guard clears the cause before the cancellation reads it"]
+pub(crate) struct ForcedCancelCause {
+    execution_id: String,
+}
+
+impl Drop for ForcedCancelCause {
+    fn drop(&mut self) {
+        take_forced_cancel_cause(&self.execution_id);
+    }
+}
+
+/// Bounded and single-line: the cause is a forced-failure reason that may
+/// carry model or tool text, and it is published in status-change events.
+pub(crate) fn set_forced_cancel_cause(execution_id: &str, cause: &str) -> ForcedCancelCause {
+    let mut cause = cause.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((cut, _)) = cause.char_indices().nth(300) {
+        cause.truncate(cut);
+        cause.push('…');
+    }
+    FORCED_CANCEL_CAUSES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(execution_id.to_string(), cause);
+    ForcedCancelCause {
+        execution_id: execution_id.to_string(),
+    }
+}
+
+pub(crate) fn take_forced_cancel_cause(execution_id: &str) -> Option<String> {
+    FORCED_CANCEL_CAUSES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(execution_id)
+}
+
+/// The reason a status transition records. A cancellation the runtime forced
+/// names its cause instead of the user-facing event it travels as.
+fn workflow_transition_reason(execution_id: &str, event: WorkflowEvent) -> String {
+    match event {
+        WorkflowEvent::UserCancelled => match take_forced_cancel_cause(execution_id) {
+            Some(cause) => format!("Cancelled by the runtime: {cause}"),
+            None => format!("Workflow event: {event:?}"),
+        },
+        _ => format!("Workflow event: {event:?}"),
+    }
 }
 
 /// V2 Orchestrator - Progressive replacement of V1 with enhanced query analysis
@@ -7046,7 +7178,7 @@ impl MagicianV2Orchestrator {
                     let recovery =
                         match self.claim_interrupted_plan_recovery(&current, None).await? {
                             InterruptedPlanRecoveryAdmission::Admitted(recovery) => recovery,
-                            InterruptedPlanRecoveryAdmission::AlreadyOwned => {
+                            InterruptedPlanRecoveryAdmission::AlreadyOwned { .. } => {
                                 return Err(format!(
                                     "accepted planned execution recovery is already owned:{}",
                                     current.id
@@ -10106,7 +10238,7 @@ impl MagicianV2Orchestrator {
                 .await
                 .map(|()| RuntimeResumeDriveProgress::DurableHandoff)
             },
-            InterruptedPlanRecoveryAdmission::AlreadyOwned => {
+            InterruptedPlanRecoveryAdmission::AlreadyOwned { .. } => {
                 Ok(RuntimeResumeDriveProgress::DurableHandoff)
             },
             InterruptedPlanRecoveryAdmission::Deferred(reason) => Err(format!(
@@ -11011,6 +11143,48 @@ impl MagicianV2Orchestrator {
             .map_err(|e| e.to_string())
     }
 
+    /// Whether a delegated child's parent or root is already `Cancelled`.
+    /// Tree cancellation commits `Cancelled` on the root and on each parent
+    /// before it visits that parent's children, so a child the cascade
+    /// deferred while its pause was still staged always finds this trace.
+    /// A missing or unreadable row is not a cancellation: the race this
+    /// closes is narrow, and failing closed would wedge the child's terminal
+    /// settlement on every projector pass.
+    pub(crate) async fn delegated_child_tree_cancelled(&self, child_execution_id: &str) -> bool {
+        let child = match self.conversation_store.get_execution(child_execution_id).await {
+            Ok(child) => child,
+            Err(V2StorageError::ExecutionNotFound(_)) => return false,
+            Err(error) => {
+                warn!(
+                    child_execution_id,
+                    %error,
+                    "delegated child row is unreadable; treating its tree as not cancelled"
+                );
+                return false;
+            },
+        };
+        for ancestor in [
+            child.parent_execution_id.as_deref(),
+            child.root_execution_id.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|ancestor| *ancestor != child_execution_id)
+        {
+            match self.conversation_store.get_execution_status(ancestor).await {
+                Ok(WaitingState::Cancelled) => return true,
+                Ok(_) | Err(V2StorageError::ExecutionNotFound(_)) => {},
+                Err(error) => warn!(
+                    child_execution_id,
+                    ancestor_execution_id = ancestor,
+                    %error,
+                    "delegated child's ancestor is unreadable; treating it as not cancelled"
+                ),
+            }
+        }
+        false
+    }
+
     /// Transition execution status based on workflow events
     /// Implements the V2 status state machine with proper transitions
     pub async fn transition_status(
@@ -11585,7 +11759,7 @@ impl MagicianV2Orchestrator {
                 &execution,
                 current_status.clone(),
                 new_status.clone(),
-                format!("Workflow event: {:?}", event),
+                workflow_transition_reason(execution_id, event),
             )
             .await?;
 
@@ -15802,7 +15976,7 @@ impl MagicianV2Orchestrator {
                     )
                     .await
                 },
-                InterruptedPlanRecoveryAdmission::AlreadyOwned => Err(format!(
+                InterruptedPlanRecoveryAdmission::AlreadyOwned { .. } => Err(format!(
                     "delegated parent continuation {} is already owned by a live runtime generation",
                     parent_execution.id
                 )),
@@ -19087,6 +19261,79 @@ impl MagicianV2Orchestrator {
         .map_err(|_| "pause persistence policy rejected the continuation".to_owned())
     }
 
+    /// The pause a parent parks on when it delegates: the exact continuation
+    /// the V3 readiness owner resumes, tagged [`ExecutionPauseKind::Delegation`]
+    /// so `internal_delegation_checkpoint_scoped` can find it again.
+    pub fn delegation_wait_pause_data(
+        pause_state: &crate::magician_v2::execution::agentic::AgenticPauseState,
+        executors: &crate::magician_v2::execution::agentic::ActionExecutors,
+    ) -> FullPauseData {
+        FullPauseData::new(
+            pause_state.clone(),
+            UserInputType::Confirmation {
+                confirm_label: None,
+                deny_label: None,
+                destructive: false,
+            },
+            executors.clone().without_manual_pause_signal(),
+            None,
+            None,
+        )
+        .with_pause_kind(ExecutionPauseKind::Delegation)
+    }
+
+    /// Persist the delegation checkpoint for a `WaitingForChildren` outcome and
+    /// answer the workflow event that parks the parent.
+    ///
+    /// Every reducer of that outcome goes through here — this orchestrator's
+    /// and the resume API's. The checkpoint is the only thing the readiness
+    /// owner prepares the exact handoff from: without it the parked loop
+    /// segment is never retired `HandedOff`, the resume falls through to
+    /// generic recovery, and that recovery finds the parked segment's own pin
+    /// and refuses the run as "already owned by a live generation". Measured
+    /// live 2026-11-01: a parent resumed from a HITL answer delegated through
+    /// the API reducer, which mapped the outcome without persisting this, and
+    /// the parent never resumed after its child finished.
+    pub async fn persist_delegation_wait_checkpoint(
+        store: Option<&FullPauseStore>,
+        execution_id: &str,
+        pause_state: Option<&crate::magician_v2::execution::agentic::AgenticPauseState>,
+        executors: &crate::magician_v2::execution::agentic::ActionExecutors,
+    ) -> WorkflowEvent {
+        let Some(pause_state) = pause_state else {
+            warn!(
+                execution_id = %execution_id,
+                "[MAGICIAN-V2-ORCHESTRATOR] legacy delegation outcome has no exact continuation checkpoint; retaining pre-checkpoint compatibility"
+            );
+            return WorkflowEvent::DelegationChildrenSpawned;
+        };
+        let Some(store) = store else {
+            error!(
+                execution_id = %execution_id,
+                "[MAGICIAN-V2-ORCHESTRATOR] full_pause_store is unavailable for delegation continuation"
+            );
+            return WorkflowEvent::ExecutionFailed;
+        };
+        let pause_data = Self::delegation_wait_pause_data(pause_state, executors);
+        // Heaped for the reason `persist_outcome_pause` gives.
+        if let Err(error) = Box::pin(
+            crate::magician_v2::execution::agentic::persist_pause_with_workflow_authority(
+                store, pause_data, true,
+            ),
+        )
+        .await
+        .map_err(|_| "pause persistence policy rejected the continuation".to_owned())
+        {
+            error!(
+                execution_id = %execution_id,
+                error = %error,
+                "[MAGICIAN-V2-ORCHESTRATOR] Refusing delegation wait without a durable continuation checkpoint"
+            );
+            return WorkflowEvent::ExecutionFailed;
+        }
+        WorkflowEvent::DelegationChildrenSpawned
+    }
+
     /// Prepare the exact durable continuation authority needed when the
     /// stateless loop classifies a pause-carrying max/budget outcome as a
     /// non-resumable journal terminal. This performs only pause persistence;
@@ -19319,14 +19566,17 @@ impl MagicianV2Orchestrator {
     }
 
     /// Re-run the canonical delegated-child HITL classifier from the exact
-    /// staged pause body. Only a DiffApproval carrying a staged proposal or
-    /// transaction id may suspend a child; ordinary free-form questions remain
-    /// force-failures exactly as in `agents::runtime`'s live path.
+    /// staged pause body. A staged DiffApproval, an owner-answerable question
+    /// and an approval gate (a `waiting_for_confirmation` receipt, whose body
+    /// is a `Confirmation`) may suspend a child; coordinator-only inputs
+    /// remain force-failures exactly as in `agents::runtime`'s live path.
     pub(crate) fn stateless_terminal_receipt_is_delegated_diff_approval(
         &self,
         descriptor: &crate::magician_v2::execution::agentic::run_loop::state::TerminalSettlementDescriptor,
     ) -> Result<bool, String> {
-        if descriptor.terminal_kind != "waiting_for_user" {
+        if !crate::magician_v2::agents::runtime::delegated_child_may_suspend_on_terminal(
+            &descriptor.terminal_kind,
+        ) {
             return Ok(false);
         }
         let (Some(key), Some(revision), Some(body_sha256)) = (
@@ -19362,6 +19612,50 @@ impl MagicianV2Orchestrator {
                 &pause.input_type,
             ),
         )
+    }
+
+    /// Whether a delegated receipt's exact staged pause body is a canonical
+    /// staged DiffApproval, the one delegated pause tree cancellation spares.
+    /// `None` when that exact generation is gone (consumed into its successor
+    /// or revoked), so no staged card remains to publish.
+    pub(crate) fn stateless_terminal_receipt_canonical_diff_approval(
+        &self,
+        descriptor: &crate::magician_v2::execution::agentic::run_loop::state::TerminalSettlementDescriptor,
+    ) -> Result<Option<bool>, String> {
+        let (Some(key), Some(revision), Some(body_sha256)) = (
+            descriptor.pause_key.as_ref(),
+            descriptor.pause_revision.as_ref(),
+            descriptor.pause_body_sha256.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        let store = self.full_pause_store_handle().ok_or_else(|| {
+            "full pause store is unavailable for delegated receipt classification".to_owned()
+        })?;
+        let pause = store
+            .load_exact_stateless_terminal_pause_projection(
+                &descriptor.principal,
+                &descriptor.workspace,
+                &descriptor.base_execution_id,
+                &crate::magician_v2::execution::agentic::DurablePauseCommit {
+                    key: key.clone(),
+                    revision: revision.clone(),
+                    body_sha256: body_sha256.clone(),
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(pause.map(|pause| {
+            matches!(
+                &pause.input_type,
+                UserInputType::DiffApproval {
+                    proposal_id: Some(_),
+                    ..
+                } | UserInputType::DiffApproval {
+                    transaction_id: Some(_),
+                    ..
+                }
+            )
+        }))
     }
 
     /// Prove that a receipt-prepared pause has already been consumed into its
@@ -19695,43 +19989,15 @@ impl MagicianV2Orchestrator {
                 .await
             },
             AgenticOutcome::WaitingForChildren { pause_state, .. } => {
-                Box::pin(async move {
-                    if let Some(pause_state) = pause_state.as_deref() {
-                        let Some(store) = self.full_pause_store_handle() else {
-                            error!(
-                                execution_id = %execution_id,
-                                "[MAGICIAN-V2-ORCHESTRATOR] full_pause_store is unavailable for delegation continuation"
-                            );
-                            return WorkflowEvent::ExecutionFailed;
-                        };
-                        let pause_data = FullPauseData::new(
-                            pause_state.clone(),
-                            UserInputType::Confirmation {
-                                confirm_label: None,
-                                deny_label: None,
-                                destructive: false,
-                            },
-                            executors.clone().without_manual_pause_signal(),
-                            None,
-                            None,
-                        )
-                        .with_pause_kind(ExecutionPauseKind::Delegation);
-                        if let Err(error) = self.persist_outcome_pause(&store, pause_data, true).await {
-                            error!(
-                                execution_id = %execution_id,
-                                error = %error,
-                                "[MAGICIAN-V2-ORCHESTRATOR] Refusing delegation wait without a durable continuation checkpoint"
-                            );
-                            return WorkflowEvent::ExecutionFailed;
-                        }
-                    } else {
-                        warn!(
-                            execution_id = %execution_id,
-                            "[MAGICIAN-V2-ORCHESTRATOR] legacy delegation outcome has no exact continuation checkpoint; retaining pre-checkpoint compatibility"
-                        );
-                    }
-                    WorkflowEvent::DelegationChildrenSpawned
-                })
+                // The one shared writer of this checkpoint; the resume API's
+                // reducer calls the same function.
+                let store = self.full_pause_store_handle();
+                Box::pin(Self::persist_delegation_wait_checkpoint(
+                    store.as_deref(),
+                    execution_id,
+                    pause_state.as_deref(),
+                    executors,
+                ))
                 .await
             },
             AgenticOutcome::MaxIterationsReached {
@@ -22286,6 +22552,15 @@ impl MagicianV2Orchestrator {
             )
     }
 
+    /// Whether this process holds live controls for `execution_id` — some
+    /// generation here is driving (or pausing, or cancelling) it right now.
+    /// Unlike [`Self::execution_is_owned_in_this_process`] a recent runtime
+    /// write alone does not count, so a caller re-dispatching a run whose
+    /// last owner already settled is not refused for minutes after it.
+    pub(crate) fn has_active_execution_controls(&self, execution_id: &str) -> bool {
+        self.active_execution_controls.contains_key(execution_id)
+    }
+
     /// When this process started, as the recovery sweeps measure it.
     pub(crate) fn process_started_at_ms() -> i64 {
         *PROCESS_STARTED_AT_MS
@@ -22396,28 +22671,51 @@ impl MagicianV2Orchestrator {
         .await
         .map_err(|error| format!("stateless pause admission refresh failed to join: {error}"))?
         .map_err(|error| error.to_string())?;
-        let canonical_diff_approval = store
+        let pending: Vec<_> = store
             .get_internal_pending_for_execution(execution_id)
-            .iter()
-            .any(|pause| {
+            .into_iter()
+            .filter(|pause| {
                 pause.principal.as_deref() == Some(principal)
                     && pause.workspace.as_deref() == Some(workspace)
-                    && matches!(
-                        &pause.input_type,
-                        UserInputType::DiffApproval {
-                            proposal_id: Some(_),
-                            ..
-                        } | UserInputType::DiffApproval {
-                            transaction_id: Some(_),
-                            ..
-                        }
+            })
+            .collect();
+        let canonical_diff_approval = pending.iter().any(|pause| {
+            matches!(
+                &pause.input_type,
+                UserInputType::DiffApproval {
+                    proposal_id: Some(_),
+                    ..
+                } | UserInputType::DiffApproval {
+                    transaction_id: Some(_),
+                    ..
+                }
+            )
+        });
+        // Iteration-limit, budget and manual pauses also carry a
+        // `Confirmation` body ("Extend and continue", "Resume"), but they are
+        // not the owner's ask a delegated child may hold: the live arm
+        // force-fails them. Only an input, escalation or approval-gate pause
+        // counts, plus the canonical diff kept from before kinds were read.
+        let delegated_owner_answerable = canonical_diff_approval
+            || pending.iter().any(|pause| {
+                matches!(
+                    pause.pause_kind,
+                    Some(
+                        ExecutionPauseKind::UserInput
+                            | ExecutionPauseKind::PrimitiveUserInput
+                            | ExecutionPauseKind::Escalation
+                            | ExecutionPauseKind::Confirmation
                     )
+                ) && crate::magician_v2::agents::runtime::delegated_waiting_for_user_should_suspend(
+                    &pause.input_type,
+                )
             });
         Ok(ResumablePauseLifecycleAdmission {
             _execution_id: execution_id.to_owned(),
             resumable: admission.public_count != 0 || admission.staged_count != 0,
             staged: admission.staged_count != 0,
             canonical_diff_approval,
+            delegated_owner_answerable,
             _execution_exclusion: execution_exclusion,
         })
     }
@@ -22551,6 +22849,51 @@ impl MagicianV2Orchestrator {
     /// for one runtime execution. The typed result preserves an expired exact
     /// continuation, live ownership, uncertain catalog state, and true
     /// pre-seed absence as distinct cases.
+    /// `exact_segment` of `base_execution_id`, when its committed loop state is
+    /// parked on delegated children naming its successor and no Delegation
+    /// checkpoint exists to hand it off. `Ok(None)` for every other segment,
+    /// including a legacy park that states no successor.
+    pub(crate) async fn stateless_parked_segment_without_delegation_checkpoint(
+        &self,
+        principal: &str,
+        workspace: &str,
+        base_execution_id: &str,
+        exact_segment: &str,
+    ) -> Result<Option<crate::magician_v2::execution::agentic::run_loop::state::ParkedChildrenSegment>, String>
+    {
+        use crate::magician_v2::execution::agentic::run_loop::store::LoopStateStore;
+
+        let key = crate::magician_v2::execution::agentic::run_loop::store::ExecutionKey::new(
+            principal,
+            workspace,
+            exact_segment,
+        )
+        .map_err(|error| format!("exact segment key is invalid: {error}"))?;
+        let committed =
+            crate::magician_v2::execution::agentic::run_loop::store::fs::FsLoopStateStore::new(
+                self.durable_artifact_workspace.base_root(),
+            )
+            .load(&key)
+            .await
+            .map_err(|error| format!("exact segment load failed: {error}"))?;
+        let Some(parked) = committed.and_then(|committed| {
+            crate::magician_v2::execution::agentic::run_loop::state::parked_children_segment_from_wait(
+                exact_segment,
+                committed.state.wait.as_ref(),
+            )
+        }) else {
+            return Ok(None);
+        };
+        if self
+            .internal_delegation_checkpoint_scoped(base_execution_id, principal, workspace)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(parked))
+    }
+
     pub(crate) async fn stateless_base_execution_recovery_authority(
         &self,
         principal: &str,
@@ -24380,6 +24723,12 @@ impl MagicianV2Orchestrator {
                     {
                         Ok(InterruptedRuntimeRecovery::Scheduled) => {
                             report.scheduled += 1;
+                            report.recovered_task_runs.push(RecoveredTaskRun {
+                                principal: execution.principal.clone(),
+                                workspace: execution.workspace.clone(),
+                                task_id: task_id.to_string(),
+                                execution_id: execution.id.clone(),
+                            });
                             continue;
                         },
                         Ok(InterruptedRuntimeRecovery::AlreadyOwned) => {
@@ -24864,7 +25213,7 @@ impl MagicianV2Orchestrator {
             .expect("interrupted execution recovery set poisoned")
             .contains(&recovery_key);
         if process_owned && recovery_owner_key != Some(recovery_key.as_str()) {
-            return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned);
+            return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned { until_ms: None });
         }
         let _lifecycle = self
             .acquire_resumable_pause_lifecycle_admission_scoped(
@@ -24924,7 +25273,7 @@ impl MagicianV2Orchestrator {
         }
         drop(manual_catalog);
         if self.active_execution_controls.contains_key(&observed.id) {
-            return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned);
+            return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned { until_ms: None });
         }
         let current = self
             .conversation_store
@@ -24976,7 +25325,9 @@ impl MagicianV2Orchestrator {
                     exact_segments = ?exact_segments,
                     "taskless PlanGraph restart retained by a live exact segment"
                 );
-                return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned);
+                return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned {
+                    until_ms: Some(until_ms),
+                });
             },
             BaseExecutionRecoveryAuthority::SettlementPending { exact_segments } => {
                 return Ok(InterruptedPlanRecoveryAdmission::Deferred(format!(
@@ -24993,6 +25344,44 @@ impl MagicianV2Orchestrator {
                 exact_segment,
                 revision,
             } => {
+                // A segment parked on its children that names its successor
+                // continues only through the exact delegation handoff, built
+                // from its Delegation checkpoint. Recovering it here instead
+                // re-enters the parked cursor rather than the successor; with no
+                // checkpoint at all nothing could ever hand it off (2026-11-01).
+                // Every generic recovery — a resumed parent, startup, accepted
+                // launch replay — passes this one claim, so it waits here.
+                match self
+                    .stateless_parked_segment_without_delegation_checkpoint(
+                        &current.principal,
+                        &current.workspace,
+                        &current.id,
+                        &exact_segment,
+                    )
+                    .await
+                {
+                    Ok(None) => {},
+                    Ok(Some(parked)) => {
+                        warn!(
+                            execution_id = %current.id,
+                            parked_segment = %parked.segment,
+                            resumes_as = %parked.resumes_as,
+                            children = parked.child_execution_ids.len(),
+                            "interrupted recovery deferred: the exact segment is parked on children with no delegation checkpoint"
+                        );
+                        return Ok(InterruptedPlanRecoveryAdmission::Deferred(format!(
+                            "{}:{}:{}",
+                            crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING,
+                            current.id,
+                            parked.segment
+                        )));
+                    },
+                    Err(error) => {
+                        return Ok(InterruptedPlanRecoveryAdmission::Deferred(format!(
+                            "stateless_parked_children_lookup_failed:{error}"
+                        )));
+                    },
+                }
                 let revision = revision.as_u64();
                 let Some(token) = self
                     .claim_stateless_exact_recovery(
@@ -25005,7 +25394,7 @@ impl MagicianV2Orchestrator {
                     )
                     .await?
                 else {
-                    return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned);
+                    return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned { until_ms: None });
                 };
                 (Some(exact_segment), Some(revision), token)
             },
@@ -25030,7 +25419,7 @@ impl MagicianV2Orchestrator {
                     )
                     .await?
                 else {
-                    return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned);
+                    return Ok(InterruptedPlanRecoveryAdmission::AlreadyOwned { until_ms: None });
                 };
                 (None, None, token)
             },
@@ -25227,7 +25616,7 @@ impl MagicianV2Orchestrator {
             InterruptedPlanRecoveryAdmission::Admitted(_) => {
                 return Err("Absent closure unexpectedly received exact authority".to_owned())
             },
-            InterruptedPlanRecoveryAdmission::AlreadyOwned
+            InterruptedPlanRecoveryAdmission::AlreadyOwned { .. }
             | InterruptedPlanRecoveryAdmission::Deferred(_) => return Ok(false),
         };
 
@@ -25346,26 +25735,37 @@ impl MagicianV2Orchestrator {
         &self,
         execution_id: &str,
         overrides: &mut crate::magician_v2::execution::AgenticContextOverrides,
-    ) -> Result<(), String> {
+    ) -> Result<(), InterruptedRuntimeRecoveryRefusal> {
         let execution = self
             .conversation_store
             .get_execution(execution_id)
             .await
-            .map_err(|error| format!("interrupted runtime authority read failed: {error}"))?;
+            .map_err(|error| {
+                InterruptedRuntimeRecoveryRefusal::Failed(format!(
+                    "interrupted runtime authority read failed: {error}"
+                ))
+            })?;
         match self
             .claim_interrupted_plan_recovery(&execution, None)
-            .await?
+            .await
+            .map_err(InterruptedRuntimeRecoveryRefusal::Failed)?
         {
             InterruptedPlanRecoveryAdmission::Admitted(recovery) => {
                 recovery.apply_to(overrides);
                 Ok(())
             },
-            InterruptedPlanRecoveryAdmission::AlreadyOwned => Err(format!(
-                "interrupted runtime {execution_id} is already owned by a live generation"
-            )),
-            InterruptedPlanRecoveryAdmission::Deferred(reason) => Err(format!(
-                "interrupted runtime {execution_id} retained for durable authority: {reason}"
-            )),
+            InterruptedPlanRecoveryAdmission::AlreadyOwned { until_ms } => {
+                Err(InterruptedRuntimeRecoveryRefusal::AlreadyOwned {
+                    execution_id: execution_id.to_owned(),
+                    until_ms,
+                })
+            },
+            InterruptedPlanRecoveryAdmission::Deferred(reason) => {
+                Err(InterruptedRuntimeRecoveryRefusal::Deferred {
+                    execution_id: execution_id.to_owned(),
+                    reason,
+                })
+            },
         }
     }
 
@@ -25773,7 +26173,7 @@ impl MagicianV2Orchestrator {
                 .await?;
                 Ok(true)
             },
-            InterruptedPlanRecoveryAdmission::AlreadyOwned => Ok(false),
+            InterruptedPlanRecoveryAdmission::AlreadyOwned { .. } => Ok(false),
             InterruptedPlanRecoveryAdmission::Deferred(reason) => {
                 if candidate.retry_attempt == 0 || candidate.retry_attempt.is_power_of_two() {
                     info!(
@@ -33558,6 +33958,44 @@ mod tests {
         generation
     }
 
+    /// A forced child failure cancels through the user-facing event. Its status
+    /// change names the runtime's cause once, and an ordinary cancel after it
+    /// reads as the user's again.
+    #[test]
+    fn a_forced_cancellation_names_its_cause_instead_of_the_user() {
+        let execution_id = "exec-forced-cancel-reason";
+        let _cause = set_forced_cancel_cause(
+            execution_id,
+            "Delegated child stateless segment\n ended as cannot_proceed",
+        );
+        assert_eq!(
+            workflow_transition_reason(execution_id, WorkflowEvent::UserCancelled),
+            "Cancelled by the runtime: Delegated child stateless segment ended as cannot_proceed"
+        );
+        assert_eq!(
+            workflow_transition_reason(execution_id, WorkflowEvent::UserCancelled),
+            "Workflow event: UserCancelled"
+        );
+        {
+            let _unused = set_forced_cancel_cause(execution_id, &"x".repeat(400));
+            assert_eq!(
+                workflow_transition_reason(execution_id, WorkflowEvent::ChildCompleted),
+                "Workflow event: ChildCompleted",
+                "only a cancellation consumes the cause"
+            );
+        }
+        assert_eq!(
+            take_forced_cancel_cause(execution_id),
+            None,
+            "dropping the guard clears an unconsumed cause"
+        );
+        let _bounded = set_forced_cancel_cause(execution_id, &"x".repeat(400));
+        assert_eq!(
+            take_forced_cancel_cause(execution_id).map(|cause| cause.chars().count()),
+            Some(301)
+        );
+    }
+
     /// The periodic sweep drove a freshly admitted delegated child a second
     /// time inside its run-start window. Activity this process produced
     /// within the grace is ownership; activity from before this process
@@ -33872,6 +34310,138 @@ mod tests {
             .commit(&key, &state, Revision::INITIAL)
             .await
             .unwrap();
+    }
+
+    /// [`seed_interrupted_recovery_test_segment`]'s recoverable exact segment
+    /// (lapsed pin, continuation checkpoint), committed parked on one child.
+    async fn seed_parked_children_test_segment(
+        orchestrator: &MagicianV2Orchestrator,
+        execution: &ExecutionRun,
+        segment: &str,
+        resumes_as: Option<&str>,
+    ) {
+        use crate::magician_v2::execution::agentic::run_loop::{
+            state::{
+                IterationContinuationCheckpoint, LoopSegmentBinding, LoopState, Placement,
+                ResumeAddress, RunIdentity, WaitReason, WorkerId,
+            },
+            store::{fs::FsLoopStateStore, ExecutionKey, LoopStateStore, Revision},
+        };
+        use crate::magician_v2::execution::agentic::{AgenticPauseState, EnvironmentState};
+
+        let key = ExecutionKey::new(
+            execution.principal.clone(),
+            execution.workspace.clone(),
+            segment.to_owned(),
+        )
+        .unwrap();
+        let mut state = LoopState::new(RunIdentity {
+            execution_id: Some(execution.id.clone()),
+            principal: Some(execution.principal.clone()),
+            workspace: Some(execution.workspace.clone()),
+            ..RunIdentity::default()
+        });
+        state.segment_binding = Some(LoopSegmentBinding {
+            base_execution_id: execution.id.clone(),
+            exact_segment_id: segment.to_owned(),
+            preseed_admission_token: None,
+        });
+        state.placement = Placement::Pinned {
+            worker: WorkerId::new("test-parked-holder"),
+            pinned_until_ms: 0,
+        };
+        state.wait = Some(WaitReason::Children {
+            child_execution_ids: vec!["exec-deleg-parked-child".to_string()],
+            resume: ResumeAddress {
+                run_resumes_as: resumes_as.map(str::to_owned),
+                ..ResumeAddress::default()
+            },
+        });
+        let mut pause = AgenticPauseState::new(
+            1,
+            "research",
+            "saved work",
+            EnvironmentState::Uninitialized,
+            String::new(),
+            10,
+            3,
+        );
+        pause.execution_id = Some(execution.id.clone());
+        pause.principal = Some(execution.principal.clone());
+        pause.workspace = Some(execution.workspace.clone());
+        pause.stateless_parked_segment = Some(segment.to_owned());
+        state.continuation_checkpoint =
+            Some(IterationContinuationCheckpoint::try_new(&pause).unwrap());
+        FsLoopStateStore::new(orchestrator.durable_artifact_workspace.base_root())
+            .commit(&key, &state, Revision::INITIAL)
+            .await
+            .unwrap();
+    }
+
+    /// Generic recovery is the one claim every non-exact resume passes —
+    /// a resumed parent, startup, accepted-launch replay. A recoverable
+    /// segment parked on its children that names its successor but has no
+    /// Delegation checkpoint must defer there instead of being re-entered
+    /// (the 2026-11-01 strand, once its pin lapsed); a legacy park that names
+    /// no successor keeps its old recovery.
+    #[tokio::test]
+    async fn generic_recovery_defers_a_parked_segment_without_its_delegation_checkpoint() {
+        let (orchestrator, _, store) = build_orchestrator_with_ask_loop()
+            .await
+            .expect("test runtime");
+        let pause_root = tempfile::TempDir::new().expect("temporary pause root");
+        orchestrator.set_full_pause_store(Arc::new(FullPauseStore::with_persistence(
+            pause_root.path(),
+        )));
+
+        let parked = test_execution_run("parked-without-checkpoint", WaitingState::Runnable);
+        store.insert_execution(parked.clone()).await;
+        seed_parked_children_test_segment(
+            &orchestrator,
+            &parked,
+            "parked-without-checkpoint-r134",
+            Some("parked-without-checkpoint-r138"),
+        )
+        .await;
+        match orchestrator
+            .claim_interrupted_plan_recovery(&parked, None)
+            .await
+            .expect("typed admission")
+        {
+            InterruptedPlanRecoveryAdmission::Deferred(reason) => assert!(
+                reason.starts_with(
+                    crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING
+                ),
+                "{reason}"
+            ),
+            other => panic!("a parked segment without its checkpoint was not deferred: {other:?}"),
+        }
+        let mut binding_overrides = crate::magician_v2::execution::AgenticContextOverrides::default();
+        assert!(matches!(
+            orchestrator
+                .bind_interrupted_runtime_recovery_overrides(&parked.id, &mut binding_overrides)
+                .await,
+            Err(InterruptedRuntimeRecoveryRefusal::Deferred { .. })
+        ));
+        assert!(!binding_overrides.interrupted_runtime_recovery);
+
+        let legacy = test_execution_run("parked-legacy-address", WaitingState::Runnable);
+        store.insert_execution(legacy.clone()).await;
+        seed_parked_children_test_segment(&orchestrator, &legacy, "parked-legacy-address-r9", None)
+            .await;
+        assert!(
+            !matches!(
+                orchestrator
+                    .claim_interrupted_plan_recovery(&legacy, None)
+                    .await
+                    .expect("typed admission"),
+                InterruptedPlanRecoveryAdmission::Deferred(ref reason)
+                    if reason.starts_with(
+                        crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING
+                    )
+            ),
+            "a park that names no successor keeps the legacy recovery path"
+        );
     }
 
     #[tokio::test]
@@ -37849,6 +38419,337 @@ tools: []
         );
     }
 
+    /// A delegated child parked on an approval gate waits for its owner, but a
+    /// root cancel still cascades to it: only a canonical staged diff approval
+    /// is spared, so an approval card cannot keep a cancelled tree's child
+    /// alive.
+    #[tokio::test]
+    async fn cancel_execution_tree_cascades_to_child_parked_on_approval_gate() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let parent_id = "wf-cancel-gate-parent";
+        let child_id = "wf-cancel-gate-child";
+        let mut parent = test_execution_run(parent_id, WaitingState::WaitingChildren);
+        parent.child_execution_ids = vec![child_id.to_string()];
+        parent.active_delegation_group = vec![child_id.to_string()];
+        store.insert_execution(parent).await;
+        let mut child = test_execution_run(child_id, WaitingState::WaitingUser);
+        child.parent_execution_id = Some(parent_id.to_string());
+        store.insert_execution(child).await;
+
+        let pause_root = tempfile::TempDir::new().expect("temporary pause root");
+        let pause_store = Arc::new(FullPauseStore::with_persistence(pause_root.path()));
+        orchestrator.set_full_pause_store(Arc::clone(&pause_store));
+        let pause_state = AgenticPauseState::new(
+            2,
+            "Tune creative-mind",
+            "creative-mind is updated",
+            EnvironmentState::Shell(ShellState::default()),
+            "Prepared the update",
+            8,
+            5,
+        )
+        .with_observability(child_id, "plan-gate", "step-gate")
+        .with_scope("user", "workspace");
+        let executors = orchestrator.build_action_executors_with_router_override(Some(Arc::new(
+            OperationLlmRouter::new(None),
+        )));
+        pause_store
+            .store_durable(
+                FullPauseData::new(
+                    pause_state,
+                    UserInputType::Confirmation {
+                        confirm_label: Some("Proceed".to_string()),
+                        deny_label: Some("Cancel".to_string()),
+                        destructive: false,
+                    },
+                    executors,
+                    Some("Update agent: approval rule requires the owner's sign-off".to_string()),
+                    None,
+                )
+                .with_pause_kind(ExecutionPauseKind::Confirmation),
+            )
+            .expect("approval-gate pause should persist");
+        assert_eq!(
+            pause_store
+                .get_internal_pending_for_execution(child_id)
+                .len(),
+            1
+        );
+
+        assert!(orchestrator
+            .cancel_execution_tree(parent_id)
+            .await
+            .expect("tree cancellation should succeed"));
+        assert_eq!(
+            store
+                .get_execution(parent_id)
+                .await
+                .expect("parent execution")
+                .waiting_state,
+            WaitingState::Cancelled
+        );
+        assert_eq!(
+            store
+                .get_execution(child_id)
+                .await
+                .expect("gated child execution")
+                .waiting_state,
+            WaitingState::Cancelled,
+            "a root cancel must still cascade to a child parked on an approval gate"
+        );
+    }
+
+    /// The receipt classifier reads an approval gate's exact pause body the
+    /// way it reads an owner question's, instead of answering "not
+    /// suspendable" from the terminal kind alone. Endings the owner never
+    /// answers are still refused without a body read.
+    #[tokio::test]
+    async fn delegated_receipt_classifier_reads_approval_gate_pause_bodies() {
+        use crate::magician_v2::execution::agentic::run_loop::state::{
+            TerminalOutcomeProjection, TerminalSettlementDescriptor,
+        };
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let descriptor = |terminal_kind: &str| TerminalSettlementDescriptor {
+            schema_version: 1,
+            principal: "user".into(),
+            workspace: "workspace".into(),
+            task_id: String::new(),
+            base_execution_id: "receipt-gate-child".into(),
+            exact_segment_id: "receipt-gate-child".into(),
+            terminal_kind: terminal_kind.into(),
+            terminal_seq: 2,
+            outcome: TerminalOutcomeProjection {
+                execution_status: "waiting_user".into(),
+                task_status: "waiting_for_user".into(),
+                outcome_type: terminal_kind.into(),
+                outcome_summary: "update_agent needs approval".into(),
+                iterations_used: Some(1),
+                is_terminal: false,
+                completion_kind: None,
+                open_items: Vec::new(),
+            },
+            waiting_for_user_diff_approval: true,
+            pipeline_loop_state_segment: None,
+            pipeline_stage_settlement: None,
+            pause_key: None,
+            pause_revision: None,
+            pause_body_sha256: None,
+            pause_resume_segment: None,
+            refinement_successor_segment: None,
+        };
+        for terminal_kind in ["paused_by_user", "failed", "success"] {
+            assert_eq!(
+                orchestrator
+                    .stateless_terminal_receipt_is_delegated_diff_approval(&descriptor(
+                        terminal_kind
+                    )),
+                Ok(false),
+                "{terminal_kind} is never an owner-answerable delegated pause"
+            );
+        }
+        // Without exact pause authority the body cannot be read, and the
+        // receipt is rejected rather than silently classified as forbidden.
+        for terminal_kind in ["waiting_for_user", "waiting_for_confirmation"] {
+            assert!(
+                orchestrator
+                    .stateless_terminal_receipt_is_delegated_diff_approval(&descriptor(
+                        terminal_kind
+                    ))
+                    .is_err(),
+                "{terminal_kind} must be classified from its exact pause body"
+            );
+        }
+
+        // A real staged gate: the exact `Confirmation` body the loop stages
+        // for an approval gate classifies as owner-answerable.
+        use crate::magician_v2::execution::agentic::types::StatelessTerminalPausePreparation;
+        store
+            .insert_execution(test_execution_run("receipt-gate-child", WaitingState::Executing))
+            .await;
+        let pause_root = tempfile::TempDir::new().expect("temporary pause root");
+        let pause_store = Arc::new(FullPauseStore::with_persistence(pause_root.path()));
+        orchestrator.set_full_pause_store(Arc::clone(&pause_store));
+        let executors = orchestrator.build_action_executors_with_router_override(Some(Arc::new(
+            OperationLlmRouter::new(None),
+        )));
+        let gate = AgenticOutcome::WaitingForConfirmation {
+            action_summary: "Update agent creative-mind".to_string(),
+            reason: "approval rule requires the owner's sign-off".to_string(),
+            action_type: "tool_call".to_string(),
+            action_json: "{\"tool\":\"update_agent\"}".to_string(),
+            secret_approval_challenge_id: None,
+            secret_approval_request: None,
+            pause_state: AgenticPauseState::new(
+                1,
+                "Tune creative-mind",
+                "creative-mind is updated",
+                EnvironmentState::Uninitialized,
+                String::new(),
+                8,
+                5,
+            )
+            .with_observability("receipt-gate-child", "plan-gate", "step-gate")
+            .with_scope("user", "workspace"),
+            iterations_used: 1,
+        };
+        let commit = orchestrator
+            .prepare_stateless_terminal_pause(
+                &executors,
+                &gate,
+                StatelessTerminalPausePreparation {
+                    source_revision: 1,
+                    terminal_seq: 2,
+                    worker_id: "gate-test-holder".into(),
+                    lease_fence: 1,
+                    lease_expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+                },
+            )
+            .await
+            .expect("gate pause staging")
+            .expect("a gate stages an exact pause");
+        let mut staged = descriptor("waiting_for_confirmation");
+        staged.pause_key = Some(commit.key.clone());
+        staged.pause_revision = Some(commit.revision.clone());
+        staged.pause_body_sha256 = Some(commit.body_sha256.clone());
+        staged.pause_resume_segment = Some("receipt-gate-child-r1".into());
+        assert_eq!(
+            orchestrator.stateless_terminal_receipt_is_delegated_diff_approval(&staged),
+            Ok(true),
+            "an approval gate's staged body is owner-answerable"
+        );
+    }
+
+    /// Exact-retry recovery spares a paused delegated child only on an ask the
+    /// owner answers. Iteration-limit, budget and manual pauses carry a
+    /// `Confirmation` body too, but the live arm force-fails them, so the
+    /// admission must not count them.
+    #[tokio::test]
+    async fn delegated_owner_answerable_admission_excludes_iteration_budget_and_manual_pauses() {
+        let Some((orchestrator, _session_manager, _store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let pause_root = tempfile::TempDir::new().expect("temporary pause root");
+        let pause_store = Arc::new(FullPauseStore::with_persistence(pause_root.path()));
+        orchestrator.set_full_pause_store(Arc::clone(&pause_store));
+        let executors = orchestrator.build_action_executors_with_router_override(Some(Arc::new(
+            OperationLlmRouter::new(None),
+        )));
+        for (execution_id, kind, answerable) in [
+            ("admission-approval-gate", ExecutionPauseKind::Confirmation, true),
+            ("admission-iteration-limit", ExecutionPauseKind::MaxIterations, false),
+            ("admission-budget", ExecutionPauseKind::Budget, false),
+            ("admission-manual", ExecutionPauseKind::Manual, false),
+        ] {
+            let pause_state = AgenticPauseState::new(
+                2,
+                "Tune creative-mind",
+                "creative-mind is updated",
+                EnvironmentState::Shell(ShellState::default()),
+                "",
+                8,
+                5,
+            )
+            .with_observability(execution_id, "plan-admission", "step-admission")
+            .with_scope("user", "workspace");
+            pause_store
+                .store_durable(
+                    FullPauseData::new(
+                        pause_state,
+                        UserInputType::Confirmation {
+                            confirm_label: Some("Proceed".to_string()),
+                            deny_label: Some("Cancel".to_string()),
+                            destructive: false,
+                        },
+                        executors.clone(),
+                        None,
+                        None,
+                    )
+                    .with_pause_kind(kind.clone()),
+                )
+                .expect("pause should persist");
+            let admission = orchestrator
+                .acquire_resumable_pause_lifecycle_admission_scoped(
+                    execution_id,
+                    "user",
+                    "workspace",
+                )
+                .await
+                .expect("scoped pause admission");
+            assert!(admission.resumable());
+            assert!(!admission.canonical_diff_approval());
+            assert_eq!(
+                admission.delegated_owner_answerable(),
+                answerable,
+                "{kind:?} pause"
+            );
+        }
+    }
+
+    /// The trace a tree cancel leaves for a child it deferred: `Cancelled` on
+    /// the parent or the root. A live tree, a missing ancestor or a missing
+    /// child is not one.
+    #[tokio::test]
+    async fn delegated_child_tree_cancelled_reads_parent_and_root() {
+        let Some((orchestrator, _session_manager, store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let cases = [
+            ("tree-live", WaitingState::WaitingChildren, WaitingState::WaitingChildren, false),
+            ("tree-parent-cancelled", WaitingState::Cancelled, WaitingState::WaitingChildren, true),
+            ("tree-root-cancelled", WaitingState::WaitingChildren, WaitingState::Cancelled, true),
+        ];
+        for (prefix, parent_state, root_state, cancelled) in cases {
+            let root_id = format!("{prefix}-root");
+            let parent_id = format!("{prefix}-parent");
+            let child_id = format!("{prefix}-child");
+            store.insert_execution(test_execution_run(&root_id, root_state)).await;
+            let mut parent = test_execution_run(&parent_id, parent_state);
+            parent.root_execution_id = Some(root_id.clone());
+            parent.parent_execution_id = Some(root_id.clone());
+            store.insert_execution(parent).await;
+            let mut child = test_execution_run(&child_id, WaitingState::WaitingUser);
+            child.root_execution_id = Some(root_id.clone());
+            child.parent_execution_id = Some(parent_id.clone());
+            store.insert_execution(child).await;
+            assert_eq!(
+                orchestrator.delegated_child_tree_cancelled(&child_id).await,
+                cancelled,
+                "{prefix}"
+            );
+        }
+        let mut orphan = test_execution_run("tree-orphan-child", WaitingState::WaitingUser);
+        orphan.parent_execution_id = Some("tree-orphan-missing-parent".to_string());
+        store.insert_execution(orphan).await;
+        assert!(
+            !orchestrator
+                .delegated_child_tree_cancelled("tree-orphan-child")
+                .await
+        );
+        // An unknown child (or any unreadable row) is never a cancellation,
+        // so a corrupt ancestor cannot wedge the child's settlement.
+        assert!(
+            !orchestrator
+                .delegated_child_tree_cancelled("tree-missing-child")
+                .await
+        );
+    }
+
     #[tokio::test]
     async fn cancel_execution_tree_drains_pending_captured_session_tasks() {
         let Some((orchestrator, _session_manager, store)) =
@@ -41272,6 +42173,121 @@ tools: []
             .expect("parent should remain loadable");
         assert_eq!(parent.waiting_state, WaitingState::Runnable);
         assert!(parent.active_delegation_group.is_empty());
+    }
+
+    /// The shared writer every `WaitingForChildren` reducer uses — this
+    /// orchestrator's and the resume API's — leaves exactly the checkpoint
+    /// `internal_delegation_checkpoint_scoped` hands off from.
+    #[tokio::test]
+    async fn a_delegation_wait_persists_the_delegation_checkpoint() {
+        let Some((orchestrator, _session_manager, _store)) =
+            build_orchestrator_with_ask_loop().await
+        else {
+            eprintln!("Skipping test: MagicutorClient native TLS unavailable");
+            return;
+        };
+        let parent_id = "delegation-wait-checkpoint-parent";
+        let pause_root = tempfile::TempDir::new().expect("temporary pause root");
+        let pause_store = FullPauseStore::with_persistence(pause_root.path());
+        let pause_state = AgenticPauseState::new(
+            1,
+            "Wait for delegated result",
+            "Publish the child result",
+            EnvironmentState::Shell(ShellState::default()),
+            "",
+            8,
+            5,
+        )
+        .with_observability(parent_id, "plan-delegation-wait", "step-delegation-wait")
+        .with_scope("user", "workspace")
+        .with_task_execution_context(
+            Some("delegation-wait-checkpoint-task".to_string()),
+            Some(parent_id.to_string()),
+            None,
+        );
+        let executors = orchestrator.build_action_executors_with_router_override(Some(Arc::new(
+            OperationLlmRouter::new(None),
+        )));
+
+        let parked = MagicianV2Orchestrator::persist_delegation_wait_checkpoint(
+            Some(&pause_store),
+            parent_id,
+            Some(&pause_state),
+            &executors,
+        )
+        .await;
+        assert!(matches!(parked, WorkflowEvent::DelegationChildrenSpawned));
+        let internal = pause_store.get_internal_pending_for_execution(parent_id);
+        assert_eq!(internal.len(), 1, "exactly one delegation checkpoint");
+        assert_eq!(internal[0].pause_kind, Some(ExecutionPauseKind::Delegation));
+
+        // Without a durable store the park is refused rather than left with
+        // nothing to hand off.
+        assert!(matches!(
+            MagicianV2Orchestrator::persist_delegation_wait_checkpoint(
+                None,
+                parent_id,
+                Some(&pause_state),
+                &executors,
+            )
+            .await,
+            WorkflowEvent::ExecutionFailed
+        ));
+        // A pre-checkpoint outcome keeps its compatibility shape.
+        assert!(matches!(
+            MagicianV2Orchestrator::persist_delegation_wait_checkpoint(
+                None, parent_id, None, &executors,
+            )
+            .await,
+            WorkflowEvent::DelegationChildrenSpawned
+        ));
+    }
+
+    /// A live segment's refusal carries its durable deadline out of the
+    /// recovery claim, typed, so the resume can come back when it lapses
+    /// instead of retrying inside it and giving up.
+    #[test]
+    fn interrupted_recovery_refusal_carries_the_owner_deadline() {
+        let source = include_str!("v2_orchestrator.rs");
+        let claim = source
+            .split("async fn claim_interrupted_plan_recovery_with_catalog_proof")
+            .nth(1)
+            .and_then(|tail| tail.split("fn schedule_interrupted_plan_execution").next())
+            .expect("typed recovery claim");
+        let live = claim
+            .find("taskless PlanGraph restart retained by a live exact segment")
+            .expect("live-segment refusal");
+        let carried = claim[live..]
+            .find("until_ms: Some(until_ms)")
+            .map(|offset| live + offset)
+            .expect("the live owner's deadline is carried");
+        assert!(live < carried);
+
+        let bind = source
+            .split("pub(crate) async fn bind_interrupted_runtime_recovery_overrides")
+            .nth(1)
+            .and_then(|tail| tail.split("pub async fn bind_server_owned_fresh_launch_overrides").next())
+            .expect("interrupted runtime binder");
+        assert!(bind.contains("Result<(), InterruptedRuntimeRecoveryRefusal>"));
+        assert!(bind.contains("InterruptedRuntimeRecoveryRefusal::AlreadyOwned {"));
+
+        let refusal = InterruptedRuntimeRecoveryRefusal::AlreadyOwned {
+            execution_id: "exec-parent".to_string(),
+            until_ms: Some(1_793_549_665_182),
+        };
+        assert_eq!(
+            refusal.to_string(),
+            "interrupted runtime exec-parent is already owned by a live generation",
+            "the message callers logged before is unchanged"
+        );
+        assert_eq!(
+            InterruptedRuntimeRecoveryRefusal::Deferred {
+                execution_id: "exec-parent".to_string(),
+                reason: "stateless_terminal_settlement_pending:seg".to_string(),
+            }
+            .to_string(),
+            "interrupted runtime exec-parent retained for durable authority: stateless_terminal_settlement_pending:seg"
+        );
     }
 
     #[tokio::test]

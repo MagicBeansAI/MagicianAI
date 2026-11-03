@@ -199,7 +199,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "preseed_explicit_tutor_run_for_turn",
-     "line": 11893,
+     "line": 11985,
      "why": "Starts or reuses run before first model call"
     },
     {
@@ -241,7 +241,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "dispatch_screen_draw_pack",
-     "line": 36514,
+     "line": 36936,
      "why": "Dispatches screen-draw shapes to the overlay"
     },
     {
@@ -262,7 +262,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "cancel_tutor_run_for_scope",
-     "line": 2562,
+     "line": 2594,
      "why": "Backs the scoped tutor cancel endpoint"
     },
     {
@@ -296,7 +296,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "preseed_explicit_tutor_run_for_turn",
-     "line": 11893,
+     "line": 11985,
      "title": "Run is preseeded",
      "say": "Before the model's first call, the chat service starts or reuses a scoped tutor run, so the model continues a lesson instead of deciding whether to begin.",
      "evidence": "service.rs:11588,11698; personal-tutor.md 'Preseeded start'"
@@ -323,7 +323,7 @@
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "dispatch_screen_draw_pack",
-     "line": 36514,
+     "line": 36936,
      "title": "Drawing on screen",
      "say": "Drawing steps become screen-draw shapes delivered to the transparent overlay, so the explanation appears directly on top of what the user is looking at.",
      "evidence": "service.rs:35570-35586; personal-tutor-overlay.md (/draw-overlay, tutor.draw.shape)"
@@ -429,7 +429,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "search_owner_memory_handler",
-     "line": 27133,
+     "line": 27344,
      "why": "POST /memory/search handler"
     },
     {
@@ -464,7 +464,7 @@
      "file": "magician-vector-index/src/vector_toolkit.rs",
      "type": "VectorTable",
      "fn": "search",
-     "line": 1298,
+     "line": 1302,
      "why": "Generic LanceDB vector search"
     },
     {
@@ -713,7 +713,7 @@
      "file": "magician-comms/src/channel_assist/resurfacing/worker.rs",
      "type": "ResurfacingWorker",
      "fn": null,
-     "line": 847,
+     "line": 846,
      "why": "Runs scorer and curator cadences"
     },
     {
@@ -914,7 +914,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "run_mining_pipeline",
-     "line": 3715,
+     "line": 3847,
      "why": "Reads traces, clusters, registers capabilities"
     },
     {
@@ -1068,7 +1068,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "run_mining_pipeline",
-     "line": 3715,
+     "line": 3847,
      "title": "Register learned APIs",
      "say": "The orchestrator runs this pipeline over traces from recent tasks and registers the learned capabilities per website, along with replay statistics.",
      "evidence": "v2_orchestrator.rs:3604-3608 'read stored traces → cluster → create capabilities → register'"
@@ -1169,7 +1169,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "configure_capability_evolution",
-     "line": 3426,
+     "line": 3558,
      "why": "Registers or removes generated runtime providers"
     },
     {
@@ -1197,14 +1197,14 @@
      "file": "magician/src/magician_v2/learning/store.rs",
      "type": "LearningStore",
      "fn": "create_procedure",
-     "line": 1041,
+     "line": 1044,
      "why": "Persists learned procedures"
     },
     {
      "file": "magician/src/magician_v2/learning/store.rs",
      "type": "LearningStore",
      "fn": "transition_procedure_status",
-     "line": 1260,
+     "line": 1263,
      "why": "Procedure status with decision history"
     },
     {
@@ -1314,7 +1314,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "configure_capability_evolution",
-     "line": 3426,
+     "line": 3558,
      "title": "Runtime registration",
      "say": "At configuration time the orchestrator registers generated providers, removing them when the feature is off and excluding trial packs unless explicitly allowed.",
      "evidence": "v2_orchestrator.rs:3319,3485-3495"
@@ -2277,7 +2277,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_preference_alignment",
-     "line": 2731,
+     "line": 2767,
      "why": "Native loop gate before executing an act"
     },
     {
@@ -2421,7 +2421,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_preference_alignment",
-     "line": 2731,
+     "line": 2767,
      "title": "Gate before acting",
      "say": "Before the agent loop carries out an outward act like sending, booking or purchasing, it pauses at a preference alignment gate.",
      "evidence": "apply.rs:2668,2853; preference-alignment.md intro"

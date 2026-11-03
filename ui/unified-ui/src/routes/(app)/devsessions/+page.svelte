@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { threadHref, threadLabels } from '$lib/threads/threadLinks';
 	import { onDestroy, onMount } from 'svelte';
 	import { timedFetch } from '$lib/shared/fetch';
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
@@ -147,7 +148,7 @@
 		}
 		await threadStore.updateThread(threadId, { display_mode: 'dev' });
 		await goto(
-			`/t/${encodeURIComponent(threadId)}?dev_session=${encodeURIComponent(session.id)}`
+			threadHref(threadId, `?dev_session=${encodeURIComponent(session.id)}`)
 		);
 	}
 
@@ -259,7 +260,7 @@
 							</span>
 						</div>
 						<div class="devsessions__thread">
-							<span>{session.uiThreadId ? `#${session.uiThreadId}` : 'unthreaded'}</span>
+							<span>{session.uiThreadId ? `#${$threadLabels(session.uiThreadId)}` : 'unthreaded'}</span>
 							<span>{session.id.slice(0, 8)}</span>
 						</div>
 						<div class="devsessions__cwd" title={session.workingDir ?? 'default cwd'}>

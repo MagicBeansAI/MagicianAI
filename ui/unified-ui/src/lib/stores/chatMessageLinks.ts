@@ -1,3 +1,5 @@
+import { threadHref } from '$lib/threads/threadLinks';
+
 /** Durable destinations; old projections resolve by exact turn + saved timestamp. */
 export interface ChatMessageOrigin {
     ui_thread_id: string;
@@ -32,7 +34,7 @@ export function originalAnswerHref(message: {
         query.set('source_turn', message.chat_turn_id);
         query.set('source_at', String(message.created_at));
     } else return null;
-    return `/t/${encodeURIComponent(origin.ui_thread_id)}/chat?${query}`;
+    return threadHref(origin.ui_thread_id, `/chat?${query}`);
 }
 export function messageTargetFromQuery(query: URLSearchParams): ChatMessageTarget | undefined {
     const messageId = query.get('message')?.trim();

@@ -15,6 +15,32 @@ dated, version-stamped heading when a release is published.
 
 ## [Unreleased]
 
+## [0.7.151] - 2026-11-02
+
+- **Approvals inside delegated work:** When an agent you delegated to hits an approval gate, you now get the approval card and the work waits for you, instead of being cancelled within a second and retried in a loop.
+- **God mode reaches coding work:** God mode set in a chat now carries into the coding runs it starts. Writes to Magician's own repo still ask you every time, allow-once only.
+- **Chats survive a restart:** A chat turn cut off by a restart no longer looks like it is still running, and Stop clears it. A task the chat started posts its result back to the chat after a restart, and no new work starts while Magician is shutting down.
+- **Windows tools:** Bare tool names such as `git` and `rg` are found on Windows.
+- **HTML slide decks:** Muse and the deck maker can build animated single-file HTML presentations with the new Frontend Slides procedure.
+
+## [0.7.150] - 2026-11-02
+
+- **Tasks pick up after you answer:** A task that hands work to another agent right after you answer its question now resumes when that agent finishes, instead of failing hours later.
+- **Why a tool failed:** The task panel on web, iOS and Android shows the reason a tool call failed, two lines with Show more.
+- **Long installs and Swift in tasks:** A shell command that runs out of time says how to give it longer or run it in the background, and a task's shell can now build Swift and clang modules.
+- **Chats with big images:** Images are scaled to fit before they are sent, so a chat holding large screenshots is no longer refused as too big.
+- **Delivered files and threads:** Files an agent produces reach you with the answer, threads get readable links that survive a rename, and tapping a thread in History lists its sessions.
+- **Agent tools:** grep and glob use Magician's own ripgrep, and web page reads work again for every agent.
+- **Decks as PDF, and Impeccable for designers:** Agents can export a PowerPoint deck to PDF, one page per slide, and Muse, the deck maker and the frontend engineers can use the Impeccable design procedure.
+- **Desktop voice keeps to itself:** Saying the wake word starts a new chat in a Desktop thread of its own instead of joining the chat you have open in #general.
+
+## [0.7.149] - 2026-10-31
+
+- **Security:** zip 9 (fixes RUSTSEC-2026-0367/0368/0369) in the server and in the desktop updater (now Tauri 2.12), and actix-http 3.20 on zstd 0.14.3 (RUSTSEC-2026-0391, -0398, -0403). zip 6 via duckdb, zip 8.6 via anydoc and zstd 0.13 via arrow and lance stay until upstream releases move.
+- **Teams of agents finish:** An agent that hands work to other agents, who hand work on again, now picks up when they finish; a CEO-led launch task used to stop there and fail. A cancellation the runtime forces says why instead of naming the user.
+- **Team routines follow your team:** Start team sequence on web, iOS and Android runs each harness agent's current focus areas instead of five routines retired in October, and the server refuses a retired routine. Pausing routines mid-cycle no longer raises an anomaly for autofix.
+- **Commands and chats on mobile:** A partly typed command (`/eng`) opens on iOS and Android as it does on the web, while a message that only starts with a command name is sent. iOS shows a spinner, then Try again, while a conversation opens.
+
 ## [0.7.148] - 2026-10-30
 
 - **Chats that last:** Long chats fold older turns into a running summary and can search their full history. `/engine`, `/run-engine` and `/voice-mode` pick engine, model and thinking on web, iOS and Android. Archiving or deleting a thread changes every session on it, and new chats on iOS open on the welcome screen.

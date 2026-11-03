@@ -1,6 +1,6 @@
 ---
 name: producthunt-search
-version: 0.3.0
+version: 0.3.1
 description: 'Search Product Hunt for recent launches matching a query. Uses PH''s
 
   public Atom feed — keyless. Returns normalized items with title,
@@ -130,6 +130,7 @@ metadata:
     requires:
       bins:
       - producthunt-search
+      - python3
     install_hint:
       docs: 'Requires Python 3.9+. Zero credentials. Product Hunt''s v2 GraphQL API
         is no longer public — every anonymous request returns HTTP 401
@@ -163,6 +164,8 @@ metadata:
       requires:
         bins:
         - producthunt-search
+        - python3
+        entrypoint: producthunt-search
       runtime:
         protocol: cli
         command_prefix: []

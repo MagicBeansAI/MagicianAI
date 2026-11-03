@@ -1,6 +1,6 @@
 ---
 name: metabase-mcp
-version: 0.2.1
+version: 0.2.2
 description: |
   Toolskill for a Metabase instance's own remote MCP server. Use it to search
   Metabase, read databases, tables, collections, questions, dashboards and
@@ -8,7 +8,7 @@ description: |
   questions, dashboards, metrics and collections when asked. Access is the
   signed-in Metabase user's browser OAuth session, so results follow that
   user's Metabase permissions. Each workspace points at its own Metabase:
-  setup renders the endpoint from the workspace's METABASE_BASE_URL.
+  the endpoint comes from the workspace's METABASE_BASE_URL.
 metadata:
   magician:
     setup: { definition: governed-mcp-oauth }
@@ -28,13 +28,13 @@ metadata:
         protocol: mcp
         transport:
           kind: streamable_http
-          # Placeholder (RFC 2606 reserved). Setup renders each workspace's
-          # own SKILL.md with its METABASE_BASE_URL; see render.yaml.
-          endpoint: https://metabase.invalid/api/metabase-mcp
+          # Resolved per workspace from its own skills/metabase-mcp/config/.env
+          # (an https origin); a workspace without one is not offered the skill.
+          endpoint: ${METABASE_BASE_URL}/api/metabase-mcp
         discovery:
           namespace: metabase
           oauth:
-            authorization_issuer: https://metabase.invalid
+            authorization_issuer: ${METABASE_BASE_URL}
             scopes:
               - agent:content:read
               - agent:content:write
@@ -188,9 +188,9 @@ one-time approval: the runtime does not trust remote tool annotations.
   token with a refresh available needs nothing; just make the call.
 - Tool returns permission denied: the signed-in Metabase user lacks access;
   say which collection or database is involved rather than retrying.
-- Skill missing from a workspace: that workspace has no METABASE_BASE_URL in
-  its `skills/metabase-mcp/config/.env`; setup renders the manifest once it is
-  set.
+- Skill missing from a workspace: that workspace has no valid
+  METABASE_BASE_URL in its `skills/metabase-mcp/config/.env`; set it (Skills
+  page, Environment) and the skill appears on the next request.
 
 Use the live schemas from `list_tools` for arguments. Current tools include
 `search`, `browse_data`, `get_content`, `run_saved_question`, `execute_query`,

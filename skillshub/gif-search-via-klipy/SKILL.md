@@ -1,6 +1,6 @@
 ---
 name: "gif-search-via-klipy"
-version: 0.2.1
+version: 0.2.2
 description: "Find expressive GIFs and reaction images via the Klipy API. Pick when the user wants a reaction, celebration, sympathy, humor, or emotion GIF using keyword lookup. Not for generating new GIFs (use video gen) or template-driven meme overlays (`meme-generation-via-imgflip`)."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.klipy.com
     requires:
-      bins: ["klipy-gif-search"]
+      bins: ["klipy-gif-search", "python3"]
       env: ["KLIPY_API_KEY"]
     install_hint:
       docs: "requires env: KLIPY_API_KEY — set in vault before activating"
@@ -33,7 +33,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [klipy-gif-search]
+        bins: [klipy-gif-search, python3]
+        entrypoint: klipy-gif-search
       runtime:
         protocol: cli
         command_prefix: []

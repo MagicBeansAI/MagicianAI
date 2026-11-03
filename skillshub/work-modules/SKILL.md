@@ -1,13 +1,13 @@
 ---
 name: "work-modules"
-version: 0.2.0
+version: 0.2.1
 description: "Run the composable work modules: durable multi-session runs with grounded answers and owner-facing gaps (Module C), scheduling negotiations with somebody outside (Module A), the obligation register — what is owed, by whom, by when (Module D), and claim manifests binding which claims an artifact revision carries (Module B substrate). Pull this whenever the work spans sessions, waits on somebody else, promises something with a deadline, or produces an artifact that makes claims. It RECORDS and READS; it never sends, books, or reads an inbox — the acting is another capability's, and submission is always a person's."
 metadata:
   magician:
     skill_type: tool
     user_invocable: false
     requires:
-      bins: ["work-modules"]
+      bins: ["work-modules", "python3"]
     install_hint:
       docs: "In-app execution uses the host-owned scoped local bridge with a per-call credential kept out of the child and model. The standalone adapter accepts an owner-supplied MAGICIAN_API_BEARER and local MAGICIAN_API_BASE."
     runtime_canary:
@@ -20,7 +20,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: ["work-modules"]
+        bins: ["work-modules", "python3"]
+        entrypoint: work-modules
       runtime:
         protocol: cli
         command_prefix: []

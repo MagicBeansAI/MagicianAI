@@ -1,6 +1,6 @@
 ---
 name: telegram-self
-version: 0.2.1
+version: 0.2.2
 description: Telegram personal account via tgcli — send messages, search chats, download media as yourself
   (not bot)
 metadata:
@@ -8,6 +8,7 @@ metadata:
     setup: { definition: telegram-self }
     requires:
       bins:
+      - tgcli-adapter
       - tgcli
     install_hint:
       docs: 'OAuth setup: tgcli auth --qr'
@@ -20,7 +21,12 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
+        # The runtime snapshots its entrypoint alone; tgcli's cli.js imports
+        # ./store-lock.js and ./core/*.js, so the tracked `tgcli-adapter` is
+        # the entrypoint and execs the `tgcli` PATH companion in place.
+        entrypoint: tgcli-adapter
         bins:
+        - tgcli-adapter
         - tgcli
       runtime:
         protocol: cli

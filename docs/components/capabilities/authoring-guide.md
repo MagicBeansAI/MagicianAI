@@ -150,7 +150,10 @@ per-action leaves.
 
 Every governed tool skill MUST declare either a live probe or an
 exemption. `make test-tool-skills-live` runs the probe through the
-production coordinator.
+production coordinator, with the lane's own work root as every call's task
+work root: `fixtures:` keys, `workspace_path` inputs and plain relative paths a
+workspace-mode CLI reads all name files below it, and packaged
+`skills/<name>/canary-fixtures/` files are staged there from the package.
 
 ```yaml
 runtime_canary:
@@ -158,7 +161,8 @@ runtime_canary:
   cost_tier: free          # or cheap / expensive
   action: run
   input: { query: "transformer architecture", limit: 3 }
-  fixtures: {}             # workspace-relative files materialized before the call
+  fixtures: {}             # files materialized before the call, relative to the
+                           # lane's task work root (`<scope>/workdirs/tool-skill-canary`)
   expect:
     stdout_contains: "usage"   # or min_items + items_pointer + error_pointer
     max_latency_ms: 30000

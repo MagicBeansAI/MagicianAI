@@ -357,6 +357,11 @@ pub struct TaskUserOutputSynthesisBundle {
     pub run_effects: String,
     #[serde(default)]
     pub source_evidence: SynthesisSourceEvidence,
+    /// The files delivered to the owner beside this answer (primary first),
+    /// with the instruction for naming and linking them. `None` when the run
+    /// delivered no file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_files: Option<SynthesisDeliveredFiles>,
     /// The ledger's facts (no path, command or time), held in the grounding
     /// corpus as evidence recorded by Magician.
     #[serde(skip)]
@@ -371,6 +376,157 @@ pub struct TaskUserOutputSynthesisBundle {
     /// output files before the prompt budget trims their previews.
     #[serde(skip)]
     pub grounding_corpus: Arc<GroundingCorpus>,
+}
+
+/// What the task-user synthesizer is told about the files delivered beside
+/// its answer. They are runtime facts — the files exist and are served at
+/// `url` — so the answer names and links them instead of repeating them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesisDeliveredFiles {
+    pub instruction: String,
+    pub files: Vec<SynthesisDeliveredFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SynthesisDeliveredFile {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// Served URL to link (never a host path).
+    pub url: String,
+    pub primary: bool,
+    /// For the primary deliverable when it is text: its first few KB, so
+    /// the answer can say what it holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_excerpt: Option<String>,
+    /// For the primary deliverable when it is markdown: its headings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outline: Vec<String>,
+}
+
+const DELIVERED_FILES_INSTRUCTION: &str = "These files were delivered to the owner as downloadable attachments beside this answer; their names, sizes and urls are runtime facts. Name the primary deliverable and link it as a markdown link to its `url`, and say in a sentence or two what it contains (use `head_excerpt` and `outline`). Do not repeat its contents: summarize the key findings only. Link any other file by its `url` where it matters. Never write host filesystem paths or file:// links.";
+const DELIVERED_FILE_HEAD_EXCERPT_CHARS: usize = 4_000;
+const DELIVERED_FILE_HEAD_READ_BYTES: u64 = 64 * 1024;
+const DELIVERED_FILE_OUTLINE_ITEMS: usize = 30;
+const DELIVERED_FILES_CORPUS_LABEL: &str = "magician:delivered_files";
+
+fn delivered_file_is_text(media_type: Option<&str>) -> bool {
+    media_type.is_some_and(|media| {
+        let media = media.to_ascii_lowercase();
+        media.starts_with("text/")
+            || ["json", "xml", "csv", "markdown", "yaml", "toml"]
+                .iter()
+                .any(|kind| media.contains(kind))
+    })
+}
+
+/// The first bytes of a delivered text file: a char-bounded excerpt and,
+/// for markdown, its headings.
+async fn delivered_file_head(path: &std::path::Path) -> Option<(String, Vec<String>)> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take(DELIVERED_FILE_HEAD_READ_BYTES)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let excerpt: String = text.chars().take(DELIVERED_FILE_HEAD_EXCERPT_CHARS).collect();
+    if excerpt.trim().is_empty() {
+        return None;
+    }
+    let outline = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with('#') && line.trim_start_matches('#').starts_with(' '))
+        .take(DELIVERED_FILE_OUTLINE_ITEMS)
+        .map(|line| line.chars().take(160).collect())
+        .collect();
+    Some((excerpt, outline))
+}
+
+/// The synthesis view of the delivered files (see [`SynthesisDeliveredFiles`]).
+pub(super) async fn synthesis_delivered_files(
+    delivered: &[super::delivered_links::DeliveredFileLink],
+) -> Option<SynthesisDeliveredFiles> {
+    if delivered.is_empty() {
+        return None;
+    }
+    let mut files = Vec::with_capacity(delivered.len());
+    for link in delivered {
+        let (head_excerpt, outline) =
+            if link.primary && delivered_file_is_text(link.media_type.as_deref()) {
+                let mut head = None;
+                for path in &link.source_paths {
+                    if let Some(found) = delivered_file_head(path).await {
+                        head = Some(found);
+                        break;
+                    }
+                }
+                match head {
+                    Some((excerpt, outline)) => (Some(excerpt), outline),
+                    None => (None, Vec::new()),
+                }
+            } else {
+                (None, Vec::new())
+            };
+        files.push(SynthesisDeliveredFile {
+            name: link.name.clone(),
+            title: link.title.clone(),
+            size_bytes: link.size,
+            media_type: link.media_type.clone(),
+            url: link.url.clone(),
+            primary: link.primary,
+            head_excerpt,
+            outline,
+        });
+    }
+    Some(SynthesisDeliveredFiles {
+        instruction: DELIVERED_FILES_INSTRUCTION.to_string(),
+        files,
+    })
+}
+
+/// The delivered files as evidence Magician recorded: an answer that names
+/// or links them states runtime facts, not unsupported claims. A primary
+/// deliverable's excerpt is the agent's own text — shown to the judge,
+/// never proof on its own.
+fn push_delivered_files_evidence(corpus: &mut GroundingCorpus, delivered: &SynthesisDeliveredFiles) {
+    let facts = delivered
+        .files
+        .iter()
+        .map(|file| {
+            let mut line = format!("Delivered file `{}` is attached at {}", file.name, file.url);
+            if let Some(title) = file.title.as_deref() {
+                line.push_str(&format!(" (title: {title})"));
+            }
+            if let Some(size) = file.size_bytes {
+                line.push_str(&format!(", {size} bytes"));
+            }
+            if let Some(media) = file.media_type.as_deref() {
+                line.push_str(&format!(", {media}"));
+            }
+            if file.primary {
+                line.push_str("; it is the primary deliverable");
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    corpus.push_with_origin(DELIVERED_FILES_CORPUS_LABEL, &facts, EvidenceOrigin::ToolResult);
+    for file in &delivered.files {
+        if let Some(excerpt) = file.head_excerpt.as_deref() {
+            corpus.push_with_origin(
+                format!("{DELIVERED_FILES_CORPUS_LABEL}:{}", file.name),
+                excerpt,
+                EvidenceOrigin::AgentWritten,
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1887,6 +2043,7 @@ impl ArtifactV2BundleBuilder for FilesystemArtifactV2BundleBuilder {
             preferred_media_type: None,
             run_effects: run_effects.render(),
             source_evidence: SynthesisSourceEvidence::default(),
+            delivered_files: synthesis_delivered_files(&ctx.delivered_files).await,
             run_effects_corpus_facts: run_effects.corpus_text(),
             run_effects_corpus_paths: run_effects.corpus_paths_text(),
             llm_routing_overrides: ctx.llm_routing_overrides.clone(),
@@ -1929,6 +2086,10 @@ impl ArtifactV2BundleBuilder for FilesystemArtifactV2BundleBuilder {
             )
             .await
         };
+        let mut corpus = corpus;
+        if let Some(delivered) = bundle.delivered_files.as_ref() {
+            push_delivered_files_evidence(&mut corpus, delivered);
+        }
         let corpus = Arc::new(corpus);
         bundle.source_evidence = select_synthesis_source_evidence(
             Arc::clone(&corpus),
@@ -6222,5 +6383,61 @@ mod preview_budget_tests {
         assert!(kept.starts_with("Order Preview"));
         assert!(kept.ends_with("Amount To Pay: $211"));
         assert_eq!(head_and_tail("short", 300), "short");
+    }
+}
+
+#[cfg(test)]
+mod delivered_files_synthesis_tests {
+    use super::*;
+    use crate::magician_v2::artifact_v2::delivered_links::DeliveredFileLink;
+
+    fn link(name: &str, path: std::path::PathBuf, primary: bool, media: &str) -> DeliveredFileLink {
+        DeliveredFileLink {
+            output_id: format!("out_task_user_attachment:{name}"),
+            name: name.to_string(),
+            url: format!("/api/magician/v3/tasks/task-1/outputs/delivered/exec-1/{name}"),
+            size: Some(42),
+            primary,
+            media_type: Some(media.to_string()),
+            title: primary.then(|| "Market list".to_string()),
+            source_paths: vec![path],
+        }
+    }
+
+    /// The synthesizer sees every delivered file by name and served URL, and
+    /// the primary text deliverable's head and outline so it can describe it.
+    #[tokio::test]
+    async fn synthesis_sees_the_delivered_files_and_the_primary_head() {
+        let temp = tempfile::tempdir().unwrap();
+        let report = temp.path().join("report.md");
+        std::fs::write(&report, "# Market list\n\n## Leaders\n- Acme\n## Challengers\n- Beta\n")
+            .unwrap();
+        let data = temp.path().join("data.csv");
+        std::fs::write(&data, "a,b\n1,2\n").unwrap();
+        let delivered = vec![
+            link("report.md", report, true, "text/markdown"),
+            link("data.csv", data, false, "text/csv"),
+        ];
+        let view = synthesis_delivered_files(&delivered)
+            .await
+            .expect("delivered files reach synthesis");
+        assert!(view.instruction.contains("link it"));
+        assert_eq!(view.files.len(), 2);
+        let primary = &view.files[0];
+        assert!(primary.primary);
+        assert_eq!(primary.title.as_deref(), Some("Market list"));
+        assert!(primary.head_excerpt.as_deref().unwrap().contains("Acme"));
+        assert_eq!(
+            primary.outline,
+            vec!["# Market list", "## Leaders", "## Challengers"]
+        );
+        assert!(view.files[1].head_excerpt.is_none(), "only the primary is excerpted");
+        let rendered = serde_json::to_string(&view).unwrap();
+        assert!(!rendered.contains(temp.path().to_string_lossy().as_ref()), "no host path reaches the prompt");
+        assert!(synthesis_delivered_files(&[]).await.is_none());
+
+        let mut corpus = GroundingCorpus::default();
+        push_delivered_files_evidence(&mut corpus, &view);
+        assert!(corpus.has_tool_evidence(), "the delivered-file facts are runtime evidence");
     }
 }

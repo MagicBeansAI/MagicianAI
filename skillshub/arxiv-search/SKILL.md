@@ -1,7 +1,7 @@
 ---
 name: arxiv-search
 description: Search arXiv's public Atom API for recent research papers without a browser.
-version: 0.2.0
+version: 0.2.1
 metadata:
   magician:
     # The one HTTPS host this skill reaches when an app runs it in the
@@ -97,6 +97,7 @@ metadata:
     requires:
       bins:
       - arxiv-search
+      - python3
     runtime_canary:
       schema_version: tool-runtime.canary.v1
       cost_tier: free
@@ -114,6 +115,8 @@ metadata:
       requires:
         bins:
         - arxiv-search
+        - python3
+        entrypoint: arxiv-search
       runtime:
         protocol: cli
         command_prefix: []

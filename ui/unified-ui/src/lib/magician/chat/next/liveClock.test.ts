@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { formatElapsed, LIVE_TICK_MS, liveClock, runningElapsed, secondTick } from './liveClock';
+import {
+	AGE_TICK_MS,
+	formatElapsed,
+	LIVE_TICK_MS,
+	liveClock,
+	minuteTick,
+	runningElapsed,
+	secondTick
+} from './liveClock';
 
 describe('liveClock', () => {
 	beforeEach(() => {
@@ -21,6 +29,20 @@ describe('liveClock', () => {
 
 		a();
 		expect(vi.getTimerCount()).toBe(1);
+		b();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('runs one minute interval for every card age, and none once the last card leaves', () => {
+		const seen: number[] = [];
+		const a = minuteTick.subscribe((now) => seen.push(now));
+		const b = minuteTick.subscribe(() => {});
+		expect(vi.getTimerCount()).toBe(1);
+
+		vi.advanceTimersByTime(AGE_TICK_MS);
+		expect(seen).toEqual([100_000, 100_000 + AGE_TICK_MS]);
+
+		a();
 		b();
 		expect(vi.getTimerCount()).toBe(0);
 	});

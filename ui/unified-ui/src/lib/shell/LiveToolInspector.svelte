@@ -15,6 +15,7 @@
 	import { v2Events } from '$lib/realtime/v2-websocket';
 	import { applyExecutionControl } from '$lib/magician/execution/controlClient';
 	import { showError } from '$lib/shared/stores/notifications';
+	import { threadLabels } from '$lib/threads/threadLinks';
 
 	/// null = the unscoped /dev workbench (all sessions, no thread label).
 	export let threadId: string | null = null;
@@ -96,7 +97,7 @@
 	<header class="tool-inspector__head">
 		<span class="tool-inspector__title">In flight</span>
 		<span class="tool-inspector__count">{inFlight.length}</span>
-		<span class="tool-inspector__thread">{threadId ? `#${threadId}` : 'all sessions'}</span>
+		<span class="tool-inspector__thread">{threadId ? `#${$threadLabels(threadId)}` : 'all sessions'}</span>
 	</header>
 	{#if inFlight.length === 0}
 		<p class="tool-inspector__empty">No tools currently running.</p>

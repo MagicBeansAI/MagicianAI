@@ -2,7 +2,7 @@
 
 Empty chats mirror Web's local greeting, four editable prompt starters and three recent conversations, using themed compact cards, scrolling and a single column on narrow screens or at large text sizes; starter taps focus a draft without sending.
 
-History session rows show a compact Working badge for current chat/task activity, refreshed only while the drawer is visible in the foreground. When that 3 s `/chat/activity` poll sees a visible row's working state flip, or a turn finishes in the open chat, the drawer re-reads its current page quietly (rows stay, no spinner, tab/lane/search untouched; at most once per poll interval). Archive, restore and delete hold the row with "Archiving…" / "Restoring…" / "Deleting…" until the server answers, one change at a time; a thread change waits up to 10 minutes because it walks every session on that thread. A failure keeps the row and shows the drawer's error, and an open chat switches to a new session only after its delete succeeds. Thread names stay on one line; hover shows the full name, and the long-press menu leads with it. The top bar's session menu shows the same progress in place of its icon.
+History session rows show a compact Working badge for current chat/task activity, refreshed only while the drawer is visible in the foreground. When that 3 s `/chat/activity` poll sees a visible row's working state flip, or a turn finishes in the open chat, the drawer re-reads its current page quietly (rows stay, no spinner, tab/lane/search untouched; at most once per poll interval). Archive, restore and delete hold the row with "Archiving…" / "Restoring…" / "Deleting…" until the server answers, one change at a time; a thread change waits up to 10 minutes because it walks every session on that thread. A failure keeps the row and shows the drawer's error, and an open chat switches to a new session only after its delete succeeds. Thread names stay on one line; hover shows the full name, and the long-press menu leads with it. The top bar's session menu shows the same progress in place of its icon. A thread tap opens its newest session and keeps History on Sessions filtered to that thread (`ui_thread_id`, both lanes) behind a `#name ×` label; New Session there creates in that thread.
 
 The transcript opens on the newest 200 messages; the session read's `has_more` (or, from an older server, a full 200-message page) says older ones exist. Dragging the first message into view reads one older page (`GET .../messages?before=<oldest id>&limit=50`), prepended with duplicates dropped and task lifecycles re-coalesced, while the top row reads "Loading earlier messages…" (a failure offers Retry and keeps the transcript). The first visible message stays where it was, programmatic scrolls (open, follow-to-bottom) never trigger a read, and a page for a chat already left is dropped. Prepended replies load their Steps on appear like any other bubble.
 
@@ -84,7 +84,9 @@ controls, playbook history/restore and version-checked owner editing (a conflict
 keeps the draft), per-focus-area shared documents, grouped-card crew screens
 (shared rows in `ui/WorkGroupedRows.kt`), guided Quality and complete advanced specs,
 exact artifact review/capture, learning monitoring, operator decisions and the
-Team routines. Frozen URL/header snapshots and lifetime invalidation prevent
+Team routines, whose sequence dispatches one stage per focus area of each
+harness agent from the live definitions (bridge `work/TeamRoutines.kt`).
+Frozen URL/header snapshots and lifetime invalidation prevent
 old editors or confirmations from following a machine switch. Crew → Quality
 retains the selected member in catalog filters and the new draft through
 contract review/start. A task or proposal still supplies its recorded owner.
@@ -117,6 +119,31 @@ Work editors. Note links (`/notes?path=…&workspace=…`, the same route on a p
 origin, `magican://notes?…`) in chat, task summaries, asks and notes open the
 native Notes screen on that note (`NoteLinks.kt`); another workspace switches to
 the one paired machine signed in to it, or shows "This note is in another workspace".
+Every other chat link (Markdown replies, structured text/callout/summary copy and
+artifact rows) goes through one opener (`rememberChatOutputHandler`,
+`ChatSessionDetails.kt`) over the shared rule set `ChatLinks.classify`
+(bridge `chat/ChatLinks.kt`, the Kotlin twin of web `classifyRef`): `file://`
+reads as its absolute path; a path inside a task's `outputs/` (absolute,
+`file://` or `/api/magician/v3/tasks/{id}/outputs/…`) and other `/api/magician/…`
+resources are downloaded with the device bearer and opened through the app's
+FileProvider, as is an absolute link on the paired origin; other host paths and
+workspace-relative files open on the machine (chat-session `outputs/open-file`);
+chat links (`/chat?session=…`, `/t/<thread>[/chat|files|settings|models][?session=…]`)
+open that conversation, or the thread's latest one (`ChatDeepLinks`), `/history`
+opens History; `/t/<thread>?selected=…`, `/work…`, `/tasks…`, `/crew…` go to Work;
+Attention, Today, Observe, Settings, `/notes` and `/vibe` open their screens
+(`ChatLinks.appDestination`); only other app routes open the machine's web page
+in the browser; http(s)/mailto/tel go to the
+system. A link it cannot open shows "Can't open link". Paths a reply only mentions
+(inline code, bare `/…/file.ext` in prose, `file://`) become links
+(`ChatLinks.linkifyMarkdown`).
+A thread's URL slug follows its name; its id never changes. A `/t/<key>` link
+(slug, old slug or id) resolves to the canonical id through
+`GET /api/magician/v2/ui-threads/{key}` before opening (`ThreadDirectory`,
+cached; the key is used as the id when the lookup fails). Thread chips show the
+thread's name, falling back to its id. New Thread asks for the name first
+(Create stays off while it is empty), posts only the name — the server derives
+id and slug — and opens the new thread.
 
 Related tools open the connected web console through its normal browser login.
 No native bearer or Cloudflare secret is placed in a URL. Only pages that consume
@@ -201,6 +228,20 @@ the single event hub plan.
   the last dot and breathes, unless animations are off), a thin ring around the
   chevron, no count and no separate spinner; settled, the step count. Then the
   turn's usage, **Inspect** (the turn's run) and, live, Stop.
+- Card times (`CardTimes` / `CardTimeText`, `CardTimesLine`): the live task
+  card shows "Created <time> · Updated <relative>" under its meta row, and an
+  open Steps card shows "Started … · Updated …" above its rows. The absolute
+  part is the time alone today, else month, day and time, in the phone's
+  locale and 24-hour setting; the relative part is the platform's "2 min. ago",
+  "just now" under a minute. A long press shows the exact updated date-time.
+  A part whose time is unknown is left out. Task card: Created is the task
+  record's `created_at` once fetched, else the first status update; Updated is
+  the later of the record's time (`state.last_progress_at` when present, else
+  `updated_at`, never the later of the two since heartbeats move `updated_at`)
+  and the latest status update. Steps: the earliest row start or event,
+  and the latest row event or call end. The task card's clock ticks each
+  second while running and every 30 s otherwise; the Steps card reads the
+  shared clock at 30 s.
 - The socket closes 5 s after the last subscriber leaves. Voice keeps its own
   control socket.
 
@@ -230,7 +271,9 @@ The chat and VibeDev composer docks skip a dismiss-only notice (`AttentionItem.i
   names the session that raised it (`chat_session_id`, stamped, in
   `input_schema.context` or scope) it is here exactly when that is this
   chat's session, whatever thread or task they share. Any other ask shows an origin line (`From <chat> · <agent>`
-  or `From task …`) and is answered with the dock's own controls. The deep panel
+  or `From task …`) and is answered with the dock's own controls. A failed tool
+  row in the deep panel's Run timeline shows why it failed under its title
+  (two lines, tap to expand; `TaskActivityCalls.failureDetail`). The deep panel
   merges the execution panel's `needs_attention` rows (a flattened feed item
   plus `hitl_request`) with feed asks for the same `task_id`. Rows are
   deduplicated by any identifier they share (correlation, pause state,
@@ -571,7 +614,9 @@ as you type (bridge `chat/ComposerCommands.kt`, a port of iOS
 `ComposerCommands.swift`; plan,
 engine/model/voice design).
 A command opens its options in the same card with a Back row; sending a
-composer that holds exactly a command opens it too. Options run client-side —
+composer that holds exactly a command, or a partial one whose every word is in a
+single command's name (`/eng`, `/budget defa`), opens it too; any other text
+after `/` is sent as a message. Options run client-side —
 never a chat message — clear the composer and show a toast (the server's
 `message`/`error` on failure).
 

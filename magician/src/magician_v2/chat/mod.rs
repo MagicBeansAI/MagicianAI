@@ -40,6 +40,8 @@ pub mod models;
 pub mod pack_direct;
 pub mod planning_listener;
 pub mod presentation;
+/// Chat prompt images scaled to the provider's limits before they are attached.
+pub(crate) mod prompt_image;
 pub mod public_contact_profile;
 pub mod retrieval_timing;
 pub mod service;

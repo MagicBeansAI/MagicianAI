@@ -5129,6 +5129,11 @@ pub async fn verify_task_user_answer(
                 .root_execution_id
                 .clone()
                 .unwrap_or_else(|| execution.execution_id.clone());
+            // The review belongs to the terminal output it checks, so it is
+            // exempt from the pre-dispatch TASK-STATE gate like that output's
+            // synthesis: a cancelled or retired task still publishes its
+            // answer, and dropping the review published it as "Not fully
+            // verified" because the reviewer was "unavailable".
             let task_ref = magicllm::dispatch::TaskRef::task(bundle.manifest.task_id.clone())
                 .with_agent(execution.agent_id.clone())
                 .with_scope(
@@ -5136,7 +5141,8 @@ pub async fn verify_task_user_answer(
                     bundle.scope.workspace().to_string(),
                 )
                 .with_execution(root_execution_id, execution.execution_id.clone())
-                .with_plan_step(execution.plan_id.clone(), execution.current_step_id.clone());
+                .with_plan_step(execution.plan_id.clone(), execution.current_step_id.clone())
+                .surviving_terminal_task();
             synthesis_router_with_execution_routing(
                 llm_router,
                 bundle.llm_routing_overrides.as_ref(),

@@ -1,0 +1,113 @@
+#!/bin/sh
+# OfficeCLI exporter plugin (plugin protocol v1): .pptx -> .pdf.
+#
+# OfficeCLI ships no PDF exporter outside Windows. This plugin renders the deck
+# with OfficeCLI's own `view html` (the renderer behind `view screenshot`),
+# adds print rules that put each slide on one page at the slide's size, and
+# prints that page with headless Chrome. Text stays selectable.
+#
+# OfficeCLI finds it on PATH as `officecli-exporter-pdf` and runs
+#   officecli-exporter-pdf export <source> --out <target> [--options <json>]
+# The source is only read. Set OFFICECLI_PDF_CHROME to choose the browser.
+
+set -u
+
+manifest='{"name":"officecli-exporter-pdf","version":"0.1.0","protocol":1,"kinds":["exporter"],"extensions":[".pdf"],"runtime":"other","idle_timeout_seconds":{"default":60,"verbs":{"export":180}},"supports":["from:pptx"],"description":"PowerPoint to PDF through OfficeCLI HTML and headless Chrome"}'
+
+fail() {
+  code=$1
+  shift
+  printf 'officecli-exporter-pdf: %s\n' "$*" >&2
+  exit "$code"
+}
+
+case ${1-} in
+  --info) printf '%s\n' "$manifest"; exit 0 ;;
+  export) shift ;;
+  *) fail 64 "usage: officecli-exporter-pdf --info | export <source> --out <target>" ;;
+esac
+
+source=
+target=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --out) [ $# -ge 2 ] || fail 64 "--out needs a path"; target=$2; shift 2 ;;
+    --options) [ $# -ge 2 ] || fail 64 "--options needs a value"; shift 2 ;;
+    -*) fail 64 "unknown option $1" ;;
+    *) [ -z "$source" ] || fail 64 "more than one source"; source=$1; shift ;;
+  esac
+done
+[ -n "$source" ] && [ -n "$target" ] || fail 64 "usage: officecli-exporter-pdf export <source> --out <target>"
+[ -f "$source" ] || fail 2 "no such file: $source"
+case $source in
+  *.pptx|*.PPTX) ;;
+  *) fail 3 "only .pptx sources are supported" ;;
+esac
+case $target in
+  /*) ;;
+  *) target=$PWD/$target ;;
+esac
+
+chrome=${OFFICECLI_PDF_CHROME-}
+if [ -z "$chrome" ]; then
+  for candidate in \
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"; do
+    if [ -x "$candidate" ]; then chrome=$candidate; break; fi
+  done
+fi
+if [ -z "$chrome" ]; then
+  for name in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge; do
+    if found=$(command -v "$name" 2>/dev/null); then chrome=$found; break; fi
+  done
+fi
+[ -n "$chrome" ] && [ -x "$chrome" ] || fail 3 "PDF export needs Google Chrome, Chromium or Edge; none was found (set OFFICECLI_PDF_CHROME)"
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/officecli-pdf.XXXXXX") || fail 1 "cannot create a temporary directory"
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+officecli view "$source" html -o "$work/deck.html" >"$work/officecli.log" 2>&1 \
+  || { cat "$work/officecli.log" >&2; fail 2 "officecli could not render $source"; }
+grep -q '</head>' "$work/deck.html" || fail 3 "officecli's HTML view has no <head>"
+
+# One page per slide at the slide's own size; the preview's sidebar, labels,
+# notes and fit-to-window scaling are hidden.
+awk '
+  !done && /<\/head>/ {
+    sub(/<\/head>/, "<style id=\"officecli-pdf-print\">\
+@page{size:var(--slide-design-w) var(--slide-design-h);margin:0}\
+html,body{background:#fff!important;height:auto!important;overflow:visible!important;display:block!important}\
+.sidebar,.file-title,.slide-label,.slide-notes,.page-counter{display:none!important}\
+.main{display:block!important;padding:0!important;overflow:visible!important}\
+.slide-container,.slide-wrapper{display:block!important;gap:0!important;break-inside:avoid}\
+.slide-container{break-after:page}\
+.slide-container:last-of-type{break-after:auto}\
+.slide{transform:none!important;box-shadow:none!important;border-radius:0!important;margin:0!important}\
+*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}\
+</style></head>")
+    done = 1
+  }
+  { print }
+' "$work/deck.html" >"$work/print.html" || fail 1 "cannot prepare the print page"
+
+# Chrome reads its own @page size only from a literal; take it from the deck.
+size=$(sed -n 's/.*--slide-design-w:\([0-9.]*pt\);--slide-design-h:\([0-9.]*pt\).*/\1 \2/p' "$work/print.html" | head -n 1)
+[ -n "$size" ] && sed "s/@page{size:var(--slide-design-w) var(--slide-design-h);/@page{size:$size;/" \
+  "$work/print.html" >"$work/print-sized.html" && mv "$work/print-sized.html" "$work/print.html"
+
+printf '{"heartbeat":true}\n' >&2
+url=file://$(printf '%s' "$work/print.html" | sed 's/%/%25/g; s/ /%20/g')
+"$chrome" --headless=new --disable-gpu --no-first-run --no-default-browser-check \
+  --disable-extensions --disable-sync --disable-background-networking --mute-audio \
+  --user-data-dir="$work/profile" --no-pdf-header-footer \
+  --run-all-compositor-stages-before-draw --virtual-time-budget=10000 \
+  --print-to-pdf="$work/out.pdf" "$url" >"$work/chrome.log" 2>&1
+status=$?
+if [ $status -ne 0 ] || [ ! -s "$work/out.pdf" ]; then
+  tail -n 20 "$work/chrome.log" >&2
+  fail 1 "Chrome did not write the PDF (exit $status)"
+fi
+head -c 5 "$work/out.pdf" | grep -q '%PDF-' || fail 1 "Chrome's output is not a PDF"
+mv -f "$work/out.pdf" "$target" 2>/dev/null || cp "$work/out.pdf" "$target" || fail 1 "cannot write $target"
+exit 0

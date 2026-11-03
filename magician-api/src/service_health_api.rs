@@ -19,6 +19,12 @@
 //! - `magician` / `magicutor_status` / `tauri_status`; the iOS pill reads
 //!   `magicutor_status`/`tauri_status == "healthy"` (`"offline"` otherwise).
 //!
+//! - `tools.ripgrep` — whether the `grep` and `glob` agent tools have a
+//!   ripgrep (`status`: `ok` / `missing`) and which one (`source`: `packaged`,
+//!   `skillshub`, `override`, `system`, `missing`; see
+//!   `runtime_core::process::resolve_ripgrep`). A missing one does not change
+//!   `status`: the service is up, but file search will refuse.
+//!
 //! Both dependency probes are short-timeout and fail-soft: a slow or down
 //! dependency yields `"offline"`, never a hung or failing health response.
 
@@ -57,6 +63,7 @@ pub async fn service_health_handler(cfg: Option<web::Data<ServiceHealthConfig>>)
     let host_gateway = HostAutomationProvider::new(host_gateway_url_from_env());
     let gateway_probe = host_gateway.gateway_probe();
     let (magicutor, gateway) = tokio::join!(magicutor_probe, gateway_probe);
+    let (_, ripgrep) = runtime_core::process::resolve_ripgrep();
 
     HttpResponse::Ok().json(json!({
         "status": "ok",
@@ -72,6 +79,12 @@ pub async fn service_health_handler(cfg: Option<web::Data<ServiceHealthConfig>>)
         "magician": "healthy",
         "magicutor_status": health_word(magicutor.ok),
         "tauri_status": health_word(gateway.available),
+        "tools": {
+            "ripgrep": {
+                "status": if ripgrep == runtime_core::process::RipgrepSource::Missing { "missing" } else { "ok" },
+                "source": ripgrep.as_str(),
+            },
+        },
     }))
 }
 
@@ -150,6 +163,12 @@ mod tests {
 
         // New service fields; magicutor is deterministically offline with no cfg.
         assert_eq!(json["magician"], "healthy");
+        let (_, ripgrep) = runtime_core::process::resolve_ripgrep();
+        assert_eq!(json["tools"]["ripgrep"]["source"], ripgrep.as_str());
+        assert!(matches!(
+            json["tools"]["ripgrep"]["status"].as_str(),
+            Some("ok" | "missing")
+        ));
         assert_eq!(json["magicutor_status"], "offline");
         // tauri depends on the ambient gateway; assert only that it is reported.
         assert!(matches!(

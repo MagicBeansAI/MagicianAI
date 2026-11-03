@@ -486,6 +486,60 @@ final class TaskParityRulesTests: XCTestCase {
         )
     }
 
+    func testAFailedToolRowCarriesTheFeedSummaryAsItsReason() {
+        let detail = snapshot(status: "failed", panel: [
+            "overview": ["status": "failed", "execution_id": "root"],
+            "run": ["activity_log": [
+                ["id": "t1", "title": "Tool", "status": "running", "created_at": 1_752_562_700_000,
+                 "metadata": ["event_type": "tool.started", "call_id": "c1", "target": "web_fetch"]],
+                ["id": "t2", "title": "Tool", "status": "failed", "created_at": 1_752_562_701_000,
+                 "summary": "HTTP 403 from example.com",
+                 "metadata": ["event_type": "tool.failed", "call_id": "c1", "target": "web_fetch",
+                              "error": "step execution failed: HTTP 403 from example.com"]]
+            ]]
+        ])
+        let row = detail.activity.first
+        XCTAssertEqual(detail.activity.count, 1)
+        XCTAssertEqual(row?.title, "web_fetch failed")
+        XCTAssertEqual(row?.body, "HTTP 403 from example.com")
+        XCTAssertEqual(row?.isFailedToolCall, true)
+    }
+
+    func testAFailedToolRowWithoutASummaryFallsBackToMetadataError() {
+        let detail = snapshot(status: "failed", panel: [
+            "overview": ["status": "failed", "execution_id": "root"],
+            "run": ["activity_log": [
+                ["id": "t2", "title": "Tool", "status": "failed", "created_at": 1_752_562_701_000,
+                 "summary": "  ",
+                 "metadata": ["event_type": "tool.failed", "call_id": "c1", "target": "shell",
+                              "error": "step execution failed: command not found: rg"]]
+            ]]
+        ])
+        XCTAssertEqual(detail.activity.first?.title, "shell failed")
+        XCTAssertEqual(detail.activity.first?.body, "command not found: rg")
+    }
+
+    func testTheFailureReasonPrefersTheSummaryAndStripsTheWrapperPrefixesLikeTheServer() {
+        XCTAssertEqual(TaskActivityFailure.reason(summary: nil, error: "timed out"), "timed out")
+        XCTAssertEqual(TaskActivityFailure.reason(summary: "why", error: "other"), "why")
+        XCTAssertEqual(TaskActivityFailure.reason(summary: nil, error: "  Step execution failed:   boom "), "boom")
+        XCTAssertNil(TaskActivityFailure.reason(summary: nil, error: nil))
+        XCTAssertNil(TaskActivityFailure.reason(summary: nil, error: "step execution failed: "))
+        XCTAssertEqual(TaskActivityFailure.reason(summary: nil, error: "compiled-pack dispatch failed: no such pack"),
+                       "no such pack")
+        XCTAssertEqual(TaskActivityFailure.reason(
+            summary: nil, error: "step execution failed: Compiled-Pack Dispatch Failed: pack timed out"
+        ), "pack timed out")
+        XCTAssertEqual(TaskActivityFailure.reason(
+            summary: nil, error: "compiled-pack dispatch failed: step execution failed: boom"
+        ), "boom")
+        XCTAssertNil(TaskActivityFailure.reason(
+            summary: nil, error: "compiled-pack dispatch failed: step execution failed:"
+        ))
+        XCTAssertEqual(TaskActivityFailure.reason(summary: nil, error: "tool failed: step execution failed: x"),
+                       "tool failed: step execution failed: x")
+    }
+
     func testTimelineModeDefaultsToGrouped() {
         XCTAssertEqual(TaskTimelineMode(rawValue: "grouped"), .grouped)
         XCTAssertEqual(TaskTimelineMode(rawValue: "bogus") ?? .grouped, .grouped)

@@ -5,14 +5,21 @@ All notable changes to the Magician Desktop project will be documented in this f
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-_Current development version: `0.3.28`._
+_Current development version: `0.3.30`._
 
 ---
 
 ## [Unreleased]
 
+- The native backend package carries the pinned ripgrep (`rg.bin`; `rg.exe` is copied on Windows installs), and macOS native setup installs ripgrep as a host prerequisite.
+
+### 2026-10-31 — 0.3.30
+
+- Desktop voice talks in its own Desktop thread (`desktop-general`, created on first use), and each Orb conversation starts a new chat there instead of taking over the chat open in #general; a saved `general` moves over once.
+
 ### 2026-10-30 — 0.3.29
 
+- Tauri 2.12 with tauri-plugin-updater 2.14.1 and `@tauri-apps/api`/`cli` 2.12.4; the Windows updater's archive reader moves to zip 9 (RUSTSEC-2026-0367/0368/0369).
 - Setup checks a connected Google account's Cloud project roles and offers **Grant access**.
 - Setup's pairing panel checks a connected Google account's Cloud project roles and offers **Grant access** (or the commands to run) and **Check again**.
 

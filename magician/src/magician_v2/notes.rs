@@ -5788,6 +5788,8 @@ mod tests {
                 outputs: vec![primary.clone(), image],
                 default_task_agent_output_id: None,
                 primary_user_output_id: Some(primary.output_id),
+                primary_deliverable_output_id: None,
+                latest_delivered_output_ids: Vec::new(),
                 updated_at: Some("2026-08-01T10:17:00Z".to_string()),
             },
         }

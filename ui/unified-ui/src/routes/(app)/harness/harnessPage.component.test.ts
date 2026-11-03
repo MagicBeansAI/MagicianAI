@@ -41,6 +41,7 @@ const mockAnomalies = [
 describe('Harness Page component (harnessPage.component.test.ts)', () => {
 	it('renders masthead, back-link to crew, company loop console, and anomaly KPIs', async () => {
 		installFetchMock([
+			{ method: 'GET', match: '/api/magician/v2/agents', handle: () => jsonResponse({ agents: [] }) },
 			{
 				method: 'GET',
 				match: '/api/magician/v2/harness/anomalies',
@@ -61,12 +62,8 @@ describe('Harness Page component (harnessPage.component.test.ts)', () => {
 		expect(screen.getByText('Scheduled team routines')).toBeInTheDocument();
 		expect(screen.getByText('Start team sequence')).toBeInTheDocument();
 
-		// Check 5-stage stepper
-		expect(screen.getByText('CMO')).toBeInTheDocument();
-		expect(screen.getByText('CRO')).toBeInTheDocument();
-		expect(screen.getByText('CPO')).toBeInTheDocument();
-		expect(screen.getByText('CTO')).toBeInTheDocument();
-		expect(screen.getByText('CEO')).toBeInTheDocument();
+		// The stepper lists harness agents' live focus areas; the roster here has none.
+		expect(await screen.findByText(/No team routines are configured/)).toBeInTheDocument();
 
 		// Check KPI cards
 		expect(screen.getByText('Total Anomalies')).toBeInTheDocument();

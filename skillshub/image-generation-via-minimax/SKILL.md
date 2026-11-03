@@ -1,6 +1,6 @@
 ---
 name: image-generation-via-minimax
-version: 0.2.2
+version: 0.2.3
 description: Generate still images via MiniMax `image-01` (Hailuo). Primarily used as a **fallback** when
   `image-generation` returns a safety/quota decline on a copyright-clean prompt — different lineage, different
   moderation calibration. Also useful when the agent wants a stylistic alternative to Gemini's Nano Banana
@@ -36,6 +36,7 @@ metadata:
       # without it loses these calls with the CLI's own message rather than
       # losing the skill.
       - node
+      - python3
     install_hint:
       docs: ships with the runtime — set the MiniMax API secret in the vault before activating. The `mmx`
         CLI is vendored via `skillshub/image-generation-via-minimax/package.json` (npm workspace), installed
@@ -55,6 +56,7 @@ metadata:
         - minimax-image
         - mmx
         - node
+        - python3
         entrypoint: minimax-image
       runtime:
         protocol: cli

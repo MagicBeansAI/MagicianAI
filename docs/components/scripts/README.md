@@ -951,12 +951,19 @@ stale.
 
 - `scripts/package-release.sh` (`make package-release`) — native backend artifact:
   `magician`, `magicutor`, `magic-supervisor`, `decision-engine` (`.bin` /
-  `.exe`), `tool-runtime-config.yaml`, non-clobbering seeds, the transitive script
+  `.exe`), the pinned ripgrep as `rg.bin` / `rg.exe` (the `@vscode/ripgrep`
+  copy from `skillshub/node_modules` for the target; when that is absent, as
+  on a clean CI checkout or a cross-target package,
+  `scripts/fetch-pinned-ripgrep.sh` downloads the tarball
+  `skillshub/package-lock.json` pins and checks its sha512 integrity;
+  `MAGICIAN_PACKAGE_RG` names another binary. A real package refuses without
+  it, a fixture may omit it),
+  `tool-runtime-config.yaml`, non-clobbering seeds, the transitive script
   closure, `MANIFEST.yaml` and `SHA256SUMS`. It packages only existing reviewed
   binaries (`MAGICIAN_PACKAGE_RELEASE_DIR` selects a target dir without
   relabeling). `make stage-desktop-native-backend` stages the unpacked tree for
   Tauri; `verify-desktop-native-backend.sh` rejects checksum, version, commit,
-  target and signing drift, and `verify-desktop-native-bundle.sh` repeats it
+  target and signing drift, and a non-fixture package without its ripgrep, and `verify-desktop-native-bundle.sh` repeats it
   inside the finished macOS app, AppImage or NSIS installer.
 - `scripts/package-installer.{sh,ps1}` verify `SHA256SUMS` and the exact target
   before copying (Intel Macs are refused: Apple Silicon on macOS 14+ only);
@@ -1516,7 +1523,21 @@ with a corresponding `--*-thinking` option (default `auto`). Explicit choices
 are validated against `/chat/models?engine=magician` before instance workspaces
 are created. Retired profile flags are not accepted. `--resume` skips instances that
 already have a judged record in the output directory's `results.jsonl`, so a
-long serial run killed by a server restart continues where it stopped. Memory product correctness uses
+long serial run killed by a server restart continues where it stopped.
+Before asking, the settle step also waits until the instance scope's memory
+index has documents and has applied every journaled write (`manifest.json`
+with a non-zero `document_count`, no entries in `changes.json`; `--index-wait-timeout`, default 600 s); until
+then retrieval is lexical only or misses the latest sessions. The record keeps
+the two verdicts apart: `settle_found` (the content probe became searchable)
+and `index_status` (`ready`, `timeout`, `rebuild_required` when the
+maintainer paused the scope, or `unchecked`), summarised as
+`settle_found_rate` and `index_ready_rate` (reports from 2026-11-01 folded the
+manifest check into `settle_found`). The index is checked
+only for a loopback `--base-url`, under `MAGICIAN_ROOT_DIR`, then
+`MAGICIAN_STORAGE_PATH`, else `~/MagicianNotes`. With no principal or no visible root the wait is skipped
+with a warning. The question is sent
+with a fixed framing that asks for answers from memory, with explicit
+computation for counts, dates and ordering. Memory product correctness uses
 `make test-memory-recall`; completed fixes are recorded in the
 archived recall plan.
 The full paired performance run remains spend-gated under the

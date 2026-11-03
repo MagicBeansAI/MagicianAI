@@ -138,8 +138,13 @@ export function workThreadHref(threadId: string, params = new URLSearchParams())
  return `${WORK_ROUTE}?${next}`;
 }
 
-/** Read old routes stored in feed cards or messages without restoring retired pages. */
-export function canonicalWorkHref(href: string): string {
+/**
+ * Read old routes stored in feed cards or messages without restoring retired pages.
+ * `/t/<key>/tasks` carries a thread key — slug, former slug or id; pass
+ * `threadIdForKey` to map it to the canonical id the Work thread filter uses
+ * (without one, or when it cannot tell, the key is passed through).
+ */
+export function canonicalWorkHref(href: string, threadIdForKey?: (key: string) => string): string {
  if (!href.startsWith('/') || href.startsWith('//')) return href;
  try {
   const url = new URL(href, 'https://work.invalid');
@@ -166,7 +171,10 @@ export function canonicalWorkHref(href: string): string {
     // A path identifies the task; an obsolete/conflicting selected query
     // must not send the user to a different record.
     if (selected) params.set('selected', decodeURIComponent(selected));
-    target = thread ? workThreadHref(decodeURIComponent(thread[1]), params) : legacyTasksWorkHref(params);
+    const threadKey = thread ? decodeURIComponent(thread[1]) : null;
+    target = threadKey !== null
+     ? workThreadHref(threadIdForKey ? threadIdForKey(threadKey) : threadKey, params)
+     : legacyTasksWorkHref(params);
    }
    else if (member) target = legacyCrewWorkHref(url.searchParams, decodeURIComponent(member[1]),
     member[2] === 'rules' ? 'rules' : member[3] ? 'memory' : undefined,

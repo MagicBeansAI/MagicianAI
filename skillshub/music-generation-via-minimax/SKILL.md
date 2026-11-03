@@ -1,6 +1,6 @@
 ---
 name: music-generation-via-minimax
-version: 0.2.2
+version: 0.2.3
 description: Generate songs and instrumentals via MiniMax `music-2.6` (default), `music-2.5+`, or `music-2.5`.
   Supports vocal songs (with lyrics or auto-generated lyrics), pure instrumentals, and fine-grained control
   over genre, mood, instruments, tempo, key, and song structure.
@@ -36,6 +36,7 @@ metadata:
       # without it loses these calls with the CLI's own message rather than
       # losing the skill.
       - node
+      - python3
     install_hint:
       docs: ships with the runtime — set the MiniMax API secret in the vault before activating. The `mmx`
         CLI is vendored via skillshub's npm workspaces and runs under the Node the runtime
@@ -54,6 +55,7 @@ metadata:
         - minimax-music
         - mmx
         - node
+        - python3
         entrypoint: minimax-music
       runtime:
         protocol: cli

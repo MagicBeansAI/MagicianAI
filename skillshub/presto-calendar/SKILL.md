@@ -1,6 +1,6 @@
 ---
 name: presto-calendar
-version: 0.2.0
+version: 0.2.1
 description: Presto's OWN Google Calendar (reach.magican@gmail.com) via gws — agendas,
   list calendars, create/update events as Presto itself. Hard-pinned to the gws-presto
   profile; NO account parameter.
@@ -10,6 +10,7 @@ metadata:
       bins:
       - gws
       - calendar-adapter
+      - python3
     install_hint:
       docs: 'OAuth setup: CLOUDSDK_CONFIG={scope_capability_auth_root}/gws-presto/cloudsdk
         GOOGLE_WORKSPACE_CLI_CONFIG_DIR={scope_capability_auth_root}/gws-presto gws
@@ -26,6 +27,7 @@ metadata:
         bins:
         - gws
         - calendar-adapter
+        - python3
         entrypoint: gws
       runtime:
         protocol: cli

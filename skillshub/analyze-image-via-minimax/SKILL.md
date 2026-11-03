@@ -1,6 +1,6 @@
 ---
 name: analyze-image-via-minimax
-version: 0.2.3
+version: 0.2.4
 description: Inspect an image or rendered document page via MiniMax vision, including layout, clipping,
   overlap, margins, and visual legibility. Use for visual review; prefer document-to-markdown for document
   text and OCR for scan transcription. Reuse images already attached to the current vision-capable model.
@@ -37,6 +37,7 @@ metadata:
       # without it loses these calls with the CLI's own message rather than
       # losing the skill.
       - node
+      - python3
     install_hint:
       docs: ships with the runtime — set the MiniMax API secret in the vault before activating. The `mmx`
         CLI is vendored via `skillshub/analyze-image-via-minimax/package.json` (npm workspace), installed
@@ -49,8 +50,9 @@ metadata:
       # A PNG cannot be authored as a manifest `fixtures:` string, so the
       # package ships one instead, at `canary-fixtures/canary-image.png`;
       # `install-scope` links every package file into `<scope>/skills/<name>/`,
-      # so the path below is the installed fixture read from the governed
-      # working directory (the scope root).
+      # and the canary lane stages the same relative path under the call's
+      # task work root, the governed working directory the path below is read
+      # from.
       #
       # The image is deliberately tiny — 480x140, one line of text — because
       # this provider bills per analysed image and image tokens scale with
@@ -73,6 +75,7 @@ metadata:
         - minimax-vision
         - mmx
         - node
+        - python3
         entrypoint: minimax-vision
       runtime:
         protocol: cli

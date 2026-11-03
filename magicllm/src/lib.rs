@@ -78,7 +78,9 @@ pub use providers::{
     OpenAIChatProvider, OpenAIResponsesProvider, OpenRouterProvider, SarvamProvider, XaiProvider,
     YutoriN1Provider,
 };
-pub use router::MultiLLMRouter;
+pub use router::{
+    estimate_messages_input_tokens, MultiLLMRouter, STREAM_INPUT_TOKENS_PER_MEDIA_BLOCK,
+};
 pub use spend_gate::{
     install_spend_gate, installed_spend_gate, SpendGate, SpendSettlement,
     DEFAULT_OUTPUT_CEILING_TOKENS,

@@ -24,6 +24,8 @@ pub struct SkillActivation {
     /// `<skill-dir>/bin/` if it exists; the runner prepends this to PATH for
     /// every active skill so cross-skill bin lookup works.
     pub path_additions: Vec<PathBuf>,
+    /// The skill's folder, which `activate_skill`'s `file` reads from.
+    pub skill_dir: PathBuf,
 }
 
 /// Synthetic tool descriptor for an LLM-pickable script inside a skill's
@@ -78,6 +80,7 @@ pub fn activate_procedure_skill(manifest: &SkillManifest) -> Result<SkillActivat
         steering_message: body,
         ephemeral_tools,
         path_additions,
+        skill_dir: manifest.source_dir.clone(),
     })
 }
 

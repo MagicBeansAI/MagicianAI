@@ -671,6 +671,11 @@ class ChatViewModel: NSObject, ObservableObject {
     @Published var planReply: PlanReplyTarget?
     @Published var focusedMessageId: String?
     @Published var originalAnswerError: String?
+    /// A conversation whose transcript is still loading into an empty view:
+    /// the welcome screen must not stand in for it.
+    @Published private(set) var openingSessionId: String?
+    /// The last `loadSession` could not fetch the transcript (retry, not welcome).
+    @Published private(set) var sessionOpenFailed = false
     private var sessionLoadTask: Task<Void, Never>?
     /// Older-history paging for the open transcript: one page per scroll to
     /// the top, never during the initial open.
@@ -703,6 +708,8 @@ class ChatViewModel: NSObject, ObservableObject {
             suppressedCanonicalByTurn = [:]
             if let reply = planReply { planReply = nil; composerMode = reply.returnMode }
             sessionLoadTask?.cancel()
+            openingSessionId = nil
+            sessionOpenFailed = false
             resetOlderHistory()
             focusedMessageId = nil
             originalAnswerError = nil
@@ -3747,15 +3754,21 @@ class ChatViewModel: NSObject, ObservableObject {
         resetTurnActivityState()
         if currentSessionId != sessionId { messages = [] }
         currentSessionId = sessionId
+        openingSessionId = messages.isEmpty ? sessionId : nil
+        sessionOpenFailed = false
         resetOlderHistory()
         focusedMessageId = nil
         originalAnswerError = nil
         currentRunExecutionId = nil
         activeExecutionLookupGeneration.removeAll()
         let base = MagicianAccess.baseURL.absoluteString
-        guard let url = URL(string: "\(base)/api/magician/v2/chat/sessions/\(sessionId)") else { return }
+        guard let url = URL(string: "\(base)/api/magician/v2/chat/sessions/\(sessionId)") else {
+            openingSessionId = nil
+            return
+        }
         sessionLoadTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { if self.openingSessionId == sessionId, !Task.isCancelled { self.openingSessionId = nil } }
             do {
                 var request = URLRequest(url: url)
                 MagicianAccess.authorize(&request)
@@ -3804,6 +3817,7 @@ class ChatViewModel: NSObject, ObservableObject {
             } catch {
                 guard !Task.isCancelled, self.currentSessionId == sessionId else { return }
                 self.originalAnswerError = "Could not open this conversation. Please try again."
+                self.sessionOpenFailed = true
             }
         }
     }

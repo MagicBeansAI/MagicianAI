@@ -41,6 +41,14 @@ use super::models::{
 
 const MAX_RECENT_TOOL_OUTPUT_REFERENCES: usize = 5;
 const MAX_RECENT_TOOL_OUTPUT_IMAGES: usize = 3;
+/// Raw image bytes one chat request carries, newest first: about 16.8 MB as
+/// base64, under Gemini's 20 MB inline request and Anthropic's 32 MB request
+/// limits with room for the text. Past user turns re-attach their images on
+/// every turn, so without a request-wide cap a screenshot-heavy chat outgrows
+/// the provider's request limit and fails every turn.
+const MAX_REQUEST_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
+/// Images one chat request carries (Anthropic accepts 100).
+const MAX_REQUEST_IMAGES: usize = 50;
 
 /// Appended to a text reply the provider stopped at its output-token cap
 /// (after the provider's own larger-budget retry), so a partial answer is
@@ -48,6 +56,45 @@ const MAX_RECENT_TOOL_OUTPUT_IMAGES: usize = 3;
 pub(crate) const OUTPUT_LIMIT_CUT_OFF_NOTICE: &str =
     "_This reply was cut off: it reached the model's output limit before it finished. \
      Ask me to continue, or to answer in smaller parts._";
+
+/// Images admitted to one chat request so far; see
+/// [`ChatLlmService::apply_request_image_budget`].
+#[derive(Default)]
+struct RequestImageBudget {
+    bytes: u64,
+    images: usize,
+    /// Once one image does not fit, every older one stays out too, so the
+    /// model sees a recent run of images rather than scattered old ones.
+    exhausted: bool,
+    omitted: usize,
+}
+
+impl RequestImageBudget {
+    fn force(&mut self, bytes: u64) {
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.images = self.images.saturating_add(1);
+    }
+
+    fn admit(&mut self, bytes: u64) -> bool {
+        if !self.exhausted
+            && self.images < MAX_REQUEST_IMAGES
+            && self.bytes.saturating_add(bytes) <= MAX_REQUEST_IMAGE_BYTES
+        {
+            self.force(bytes);
+            return true;
+        }
+        self.exhausted = true;
+        self.omitted = self.omitted.saturating_add(1);
+        false
+    }
+}
+
+fn request_image_budget_note(label: Option<&str>, media_type: &str) -> String {
+    let label = label
+        .filter(|label| !label.trim().is_empty())
+        .unwrap_or("earlier image");
+    format!("[image: {label} ({media_type}); not attached, newer images fill this request]")
+}
 
 /// The reply text to keep: unchanged, or with the cut-off notice when the
 /// provider stopped it at the output cap. An empty reply stays empty so the
@@ -640,10 +687,7 @@ impl ChatLlmService {
         let budget = self
             .llm_service
             .chat_input_budget(profile, compactor.config.safety_margin_tokens)?;
-        if super::context_compaction::estimated_tokens(&built.messages)?
-            .saturating_add(super::context_compaction::estimated_tokens(tools)?)
-            <= budget
-        {
+        if Self::request_input_tokens(&built.messages, tools)? <= budget {
             return Ok(built);
         }
         let view = compactor
@@ -652,10 +696,28 @@ impl ChatLlmService {
         let built = self
             .build_request(system, view.as_ref(), context, profile)
             .await;
-        anyhow::ensure!(super::context_compaction::estimated_tokens(&built.messages)?
-            .saturating_add(super::context_compaction::estimated_tokens(tools)?) <= budget,
-            "chat context: current images, files or active turn exceed this model's input budget; original transcript retained");
+        Self::ensure_request_fits(&built.messages, tools, budget)?;
         Ok(built)
+    }
+
+    /// Input tokens the final request costs. Images and other media count at
+    /// the flat per-image rate providers bill, not their encoded bytes: a
+    /// multi-MB screenshot is ~1.6k tokens, never millions.
+    fn request_input_tokens(messages: &[RouterMessage], tools: &[LLMToolSpec]) -> Result<u64> {
+        Ok(magicllm::estimate_messages_input_tokens(messages)
+            .saturating_add(super::context_compaction::estimated_tokens(tools)?))
+    }
+
+    fn ensure_request_fits(
+        messages: &[RouterMessage],
+        tools: &[LLMToolSpec],
+        budget: u64,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            Self::request_input_tokens(messages, tools)? <= budget,
+            "chat context: current images, files or active turn exceed this model's input budget; original transcript retained"
+        );
+        Ok(())
     }
 
     async fn complete_with_context(
@@ -858,11 +920,16 @@ impl ChatLlmService {
             .chat_session_outputs_dir(&ctx.principal, &ctx.workspace, &ctx.session_id)
             .join(&image.stored_name);
         let bytes = workspace.read_path(&path).await.ok()?;
-        Some(RouterContentBlock::Image {
-            data: bytes,
-            media_type: image.mime_type.clone(),
-            caption: image.label.clone(),
-        })
+        let file = image.label.as_deref().unwrap_or(&image.stored_name);
+        Some(
+            super::prompt_image::prompt_image_block(
+                bytes,
+                &image.mime_type,
+                image.label.clone(),
+                file,
+            )
+            .await,
+        )
     }
 
     async fn render_user_content_blocks(
@@ -991,11 +1058,16 @@ impl ChatLlmService {
                         .clone()
                         .filter(|value| !value.trim().is_empty())
                         .unwrap_or_else(|| file.original_name.clone());
-                    message_content.push(RouterContentBlock::Image {
-                        data: bytes,
-                        media_type: file.mime_type.clone(),
-                        caption: Some(format!("{label} | path: {}", absolute_path.display())),
-                    });
+                    let caption = format!("{label} | path: {}", absolute_path.display());
+                    message_content.push(
+                        super::prompt_image::prompt_image_block(
+                            bytes,
+                            &file.mime_type,
+                            Some(caption),
+                            &label,
+                        )
+                        .await,
+                    );
                 }
             }
         }
@@ -1075,11 +1147,16 @@ impl ChatLlmService {
 
                 if image_blocks.len() < MAX_RECENT_TOOL_OUTPUT_IMAGES {
                     if let Ok(bytes) = workspace.read_path(&absolute_path).await {
-                        image_blocks.push(RouterContentBlock::Image {
-                            data: bytes,
-                            media_type: image.mime_type.clone(),
-                            caption: Some(format!("{label} | path: {}", absolute_path.display())),
-                        });
+                        let caption = format!("{label} | path: {}", absolute_path.display());
+                        image_blocks.push(
+                            super::prompt_image::prompt_image_block(
+                                bytes,
+                                &image.mime_type,
+                                Some(caption),
+                                &label,
+                            )
+                            .await,
+                        );
                     }
                 }
             }
@@ -1131,6 +1208,14 @@ impl ChatLlmService {
                                 "media_type": media_type,
                                 "data_base64": BASE64.encode(data),
                                 "caption": caption,
+                            }));
+                        },
+                        // The image could not be brought within the
+                        // provider's limits; the note says which and why.
+                        Some(RouterContentBlock::Text { text }) => {
+                            blocks.push(serde_json::json!({
+                                "type": "text",
+                                "text": text,
                             }));
                         },
                         _ => {
@@ -1609,6 +1694,106 @@ impl ChatLlmService {
             role: MessageRole::User,
             content,
         });
+    }
+
+    /// Hold the request's images to [`MAX_REQUEST_IMAGE_BYTES`] and
+    /// [`MAX_REQUEST_IMAGES`]. The current turn's own attachments always go
+    /// out; every other image (user turns, session files, rich tool results)
+    /// is admitted newest first until the budget runs out, and that one and
+    /// every older one becomes a text note.
+    fn apply_request_image_budget(
+        messages: &mut [RouterMessage],
+        current_turn_blocks: Option<(usize, std::ops::Range<usize>)>,
+    ) {
+        let mut budget = RequestImageBudget::default();
+        let is_current = |message_index: usize, block_index: usize| {
+            current_turn_blocks
+                .as_ref()
+                .is_some_and(|(index, range)| *index == message_index && range.contains(&block_index))
+        };
+        if let Some((index, range)) = current_turn_blocks.as_ref() {
+            if let Some(blocks) = messages
+                .get(*index)
+                .and_then(|message| message.content.get(range.clone()))
+            {
+                for block in blocks {
+                    if let RouterContentBlock::Image { data, .. } = block {
+                        budget.force(data.len() as u64);
+                    }
+                }
+            }
+        }
+        for (message_index, message) in messages.iter_mut().enumerate().rev() {
+            for (block_index, block) in message.content.iter_mut().enumerate().rev() {
+                if is_current(message_index, block_index) {
+                    continue;
+                }
+                match block {
+                    RouterContentBlock::Image {
+                        data,
+                        media_type,
+                        caption,
+                    } => {
+                        if !budget.admit(data.len() as u64) {
+                            let text = request_image_budget_note(caption.as_deref(), media_type);
+                            *block = RouterContentBlock::Text { text };
+                        }
+                    },
+                    RouterContentBlock::ToolResult { content, .. } => {
+                        Self::apply_image_budget_to_rich_tool_result(content, &mut budget);
+                    },
+                    _ => {},
+                }
+            }
+        }
+        if budget.omitted > 0 {
+            tracing::info!(
+                attached_images = budget.images,
+                attached_image_bytes = budget.bytes,
+                omitted_images = budget.omitted,
+                "chat request image budget left older images as notes"
+            );
+        }
+    }
+
+    /// The images inside a rich tool result built by
+    /// [`Self::build_tool_result_content_value`].
+    fn apply_image_budget_to_rich_tool_result(content: &mut Value, budget: &mut RequestImageBudget) {
+        let Some(blocks) = content
+            .as_object_mut()
+            .filter(|object| {
+                object
+                    .get("_magicllm_rich_tool_result")
+                    .and_then(Value::as_bool)
+                    == Some(true)
+            })
+            .and_then(|object| object.get_mut("blocks"))
+            .and_then(Value::as_array_mut)
+        else {
+            return;
+        };
+        for block in blocks.iter_mut().rev() {
+            if block.get("type").and_then(Value::as_str) != Some("image") {
+                continue;
+            }
+            let Some(encoded_len) = block
+                .get("data_base64")
+                .and_then(Value::as_str)
+                .map(str::len)
+            else {
+                continue;
+            };
+            if !budget.admit(encoded_len as u64 / 4 * 3) {
+                let text = request_image_budget_note(
+                    block.get("caption").and_then(Value::as_str),
+                    block
+                        .get("media_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("image"),
+                );
+                *block = json!({ "type": "text", "text": text });
+            }
+        }
     }
 
     fn history_entry_tool_result_call_id(entry: &ChatLlmTranscriptEntry) -> Option<&str> {
@@ -2093,6 +2278,8 @@ explicitly asks for a fresh one.]",
             )
             .await;
         let mut non_native_replay_call_ids: HashSet<&str> = HashSet::new();
+        // The current user turn's own attachments, which always go out.
+        let mut current_turn_blocks: Option<(usize, std::ops::Range<usize>)> = None;
 
         for (index, entry) in history_to_render.iter().enumerate() {
             match entry {
@@ -2111,13 +2298,25 @@ explicitly asks for a fresh one.]",
                     let mut rendered = self
                         .render_user_content_blocks(content, transcript_context, &capabilities)
                         .await;
+                    let own_blocks = rendered.len();
                     if Some(index) == last_user_history_index {
                         if let Some(extra_content) = recent_session_file_content.take() {
                             rendered.extend(extra_content);
                         }
                     }
                     if !rendered.is_empty() {
+                        // Where this turn's own blocks land: appended to a
+                        // preceding user message, or a new one.
+                        let (message_index, start) = match messages.last() {
+                            Some(last) if last.role == MessageRole::User => {
+                                (messages.len() - 1, last.content.len())
+                            },
+                            _ => (messages.len(), 0),
+                        };
                         Self::push_user_content_message(&mut messages, rendered);
+                        if Some(index) == last_user_history_index {
+                            current_turn_blocks = Some((message_index, start..start + own_blocks));
+                        }
                     }
                 },
                 ProviderHistoryEntryView::AssistantTurn {
@@ -2336,6 +2535,7 @@ explicitly asks for a fresh one.]",
         if let Some(immediate_content) = immediate_tool_output_content {
             Self::push_user_content_message(&mut messages, immediate_content);
         }
+        Self::apply_request_image_budget(&mut messages, current_turn_blocks);
 
         BuiltChatRequest {
             messages,
@@ -3647,6 +3847,305 @@ mod tests {
             [RouterContentBlock::Text { text }, RouterContentBlock::Image { .. }]
                 if text == "Make the title bigger."
         ));
+    }
+
+    /// Two attached screenshots (0.7 MB and 2.3 MB) are ~1.6k tokens each to
+    /// the provider. The pre-send budget check must not count their encoded
+    /// bytes, or every turn of that chat fails as over budget; a turn whose
+    /// text really is too big still fails with the same message.
+    #[tokio::test]
+    async fn pre_send_budget_counts_attached_images_flat_not_by_their_bytes() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp_dir.path());
+        let service = test_service(
+            LlmConfig {
+                provider: LLMProviderKind::OpenAI,
+                model: "gpt-5.6-terra".to_string(),
+                supports_vision: Some(true),
+                additional_params: Some(HashMap::from([(
+                    "openai_api_mode".to_string(),
+                    json!("responses"),
+                )])),
+                ..Default::default()
+            },
+            "openai-responses",
+        )
+        .with_workspace_layout(workspace.clone());
+
+        let session_id = "session-1".to_string();
+        let principal = "user-1".to_string();
+        let scope = "workspace-a".to_string();
+        workspace
+            .ensure_chat_session_workspace(&principal, &scope, &session_id)
+            .await
+            .expect("chat session workspace");
+        let outputs = workspace.chat_session_outputs_dir(&principal, &scope, &session_id);
+        fs::write(outputs.join("first.png"), vec![137_u8; 700_000])
+            .await
+            .expect("first image bytes");
+        fs::write(outputs.join("second.png"), vec![80_u8; 2_300_000])
+            .await
+            .expect("second image bytes");
+        let image = |name: &str| TranscriptBlock::ImageFile {
+            image: PromptImageRef {
+                stored_name: name.to_string(),
+                mime_type: "image/png".to_string(),
+                label: None,
+            },
+        };
+        let history = vec![ChatLlmTranscriptEntry::UserTurn {
+            content: vec![
+                TranscriptBlock::Text {
+                    text: "What differs between these two screens?".to_string(),
+                },
+                image("first.png"),
+                image("second.png"),
+            ],
+        }];
+        let request = service
+            .build_request(
+                "system",
+                &history,
+                Some(&ChatTranscriptContext {
+                    session_id,
+                    principal,
+                    workspace: scope,
+                    chat_turn_id: None,
+                    user_message_id: None,
+                    trace_context: None,
+                    provider_attempt_counter: None,
+                }),
+                Some("openai-responses"),
+            )
+            .await;
+        let images = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter(|block| matches!(block, RouterContentBlock::Image { .. }))
+            .count();
+        assert_eq!(images, 2, "both screenshots reach the request");
+
+        // A 1.05M-token window less its output reserve and safety margin.
+        let budget = 918_000;
+        assert!(
+            super::super::context_compaction::estimated_tokens(&request.messages)
+                .expect("serialized estimate")
+                > budget,
+            "the serialized bytes alone overflow the budget"
+        );
+        let tokens =
+            ChatLlmService::request_input_tokens(&request.messages, &[]).expect("estimate");
+        assert!(
+            (2 * 1_600..2 * 1_600 + 1_000).contains(&tokens),
+            "two flat image charges and a little text, got {tokens}"
+        );
+        ChatLlmService::ensure_request_fits(&request.messages, &[], budget)
+            .expect("two screenshots fit the budget");
+
+        let oversized = vec![RouterMessage {
+            role: MessageRole::User,
+            content: vec![RouterContentBlock::Text {
+                text: "word ".repeat(400_000),
+            }],
+        }];
+        let error = ChatLlmService::ensure_request_fits(&oversized, &[], 900_000)
+            .expect_err("a ~1M-token text turn does not fit");
+        assert_eq!(
+            error.to_string(),
+            "chat context: current images, files or active turn exceed this model's input budget; original transcript retained"
+        );
+    }
+
+    /// Twenty past screenshot turns of 2 MB each: only the newest that fit the
+    /// request's image budget go out, older ones become notes, and the
+    /// current turn's image always goes out, even when it alone is over.
+    #[test]
+    fn request_image_budget_attaches_the_newest_images_and_the_current_turn() {
+        let shot = |index: usize, bytes: usize| RouterMessage {
+            role: MessageRole::User,
+            content: vec![
+                RouterContentBlock::Text {
+                    text: format!("turn {index}"),
+                },
+                RouterContentBlock::Image {
+                    data: vec![0_u8; bytes],
+                    media_type: "image/png".to_string(),
+                    caption: Some(format!("shot {index}")),
+                },
+            ],
+        };
+        let conversation = |current_bytes: usize| {
+            let mut messages = vec![RouterMessage::system("system")];
+            for index in 0..20 {
+                let bytes = if index == 19 { current_bytes } else { 2_000_000 };
+                messages.push(shot(index, bytes));
+                if index < 19 {
+                    messages.push(RouterMessage {
+                        role: MessageRole::Assistant,
+                        content: vec![RouterContentBlock::Text {
+                            text: "seen".to_string(),
+                        }],
+                    });
+                }
+            }
+            messages
+        };
+        let attached = |messages: &[RouterMessage]| {
+            messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    RouterContentBlock::Image { caption, .. } => caption.clone(),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let notes = |messages: &[RouterMessage]| {
+            messages
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter(|block| {
+                    matches!(block, RouterContentBlock::Text { text }
+                        if text.starts_with("[image: shot ") && text.contains("not attached"))
+                })
+                .count()
+        };
+
+        let mut messages = conversation(2_000_000);
+        let current = messages.len() - 1;
+        ChatLlmService::apply_request_image_budget(&mut messages, Some((current, 0..2)));
+        // 12 MiB holds the current image and the five newest before it.
+        assert_eq!(
+            attached(&messages),
+            ["shot 14", "shot 15", "shot 16", "shot 17", "shot 18", "shot 19"]
+        );
+        assert_eq!(notes(&messages), 14);
+
+        let mut messages = conversation(13 * 1024 * 1024);
+        let current = messages.len() - 1;
+        ChatLlmService::apply_request_image_budget(&mut messages, Some((current, 0..2)));
+        assert_eq!(attached(&messages), ["shot 19"], "the current turn always goes out");
+        assert_eq!(notes(&messages), 19);
+
+        // Rich tool-result images share the same budget.
+        let mut rich = json!({
+            "_magicllm_rich_tool_result": true,
+            "blocks": [
+                { "type": "image", "media_type": "image/png", "data_base64": "A".repeat(9_000_000), "caption": "old" },
+                { "type": "image", "media_type": "image/png", "data_base64": "A".repeat(9_000_000), "caption": "new" },
+            ],
+        });
+        let mut budget = RequestImageBudget::default();
+        ChatLlmService::apply_image_budget_to_rich_tool_result(&mut rich, &mut budget);
+        assert_eq!(rich["blocks"][1]["type"], "image");
+        assert_eq!(rich["blocks"][0]["type"], "text");
+        assert_eq!(budget.omitted, 1);
+    }
+
+    /// A stored image past the 1568 px long side is attached as a scaled
+    /// copy; a small one is attached byte for byte; the stored files stay as
+    /// they were uploaded.
+    #[tokio::test]
+    async fn oversized_prompt_images_are_attached_scaled_and_stored_files_are_untouched() {
+        let temp_dir = tempdir().expect("tempdir");
+        let workspace = ArtifactV2Workspace::new(temp_dir.path());
+        let service = test_service(
+            LlmConfig {
+                provider: LLMProviderKind::OpenAI,
+                model: "gpt-5.6-terra".to_string(),
+                supports_vision: Some(true),
+                additional_params: Some(HashMap::from([(
+                    "openai_api_mode".to_string(),
+                    json!("responses"),
+                )])),
+                ..Default::default()
+            },
+            "openai-responses",
+        )
+        .with_workspace_layout(workspace.clone());
+
+        let session_id = "session-1".to_string();
+        let principal = "user-1".to_string();
+        let scope = "workspace-a".to_string();
+        workspace
+            .ensure_chat_session_workspace(&principal, &scope, &session_id)
+            .await
+            .expect("chat session workspace");
+        let png = |width: u32, height: u32| {
+            let image = image::RgbImage::from_pixel(width, height, image::Rgb([20, 90, 200]));
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgb8(image)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .expect("encode");
+            out
+        };
+        let outputs = workspace.chat_session_outputs_dir(&principal, &scope, &session_id);
+        let panorama = png(9_000, 300);
+        let small = png(640, 480);
+        fs::write(outputs.join("panorama.png"), &panorama)
+            .await
+            .expect("panorama bytes");
+        fs::write(outputs.join("small.png"), &small)
+            .await
+            .expect("small bytes");
+        let image = |name: &str| TranscriptBlock::ImageFile {
+            image: PromptImageRef {
+                stored_name: name.to_string(),
+                mime_type: "image/png".to_string(),
+                label: None,
+            },
+        };
+        let history = vec![ChatLlmTranscriptEntry::UserTurn {
+            content: vec![
+                TranscriptBlock::Text {
+                    text: "Compare these.".to_string(),
+                },
+                image("panorama.png"),
+                image("small.png"),
+            ],
+        }];
+        let request = service
+            .build_request(
+                "system",
+                &history,
+                Some(&ChatTranscriptContext {
+                    session_id,
+                    principal,
+                    workspace: scope,
+                    chat_turn_id: None,
+                    user_message_id: None,
+                    trace_context: None,
+                    provider_attempt_counter: None,
+                }),
+                Some("openai-responses"),
+            )
+            .await;
+        let attached = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                RouterContentBlock::Image { data, .. } => Some(data.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(attached.len(), 2, "both images are attached");
+        let scaled = image::load_from_memory(&attached[0]).expect("scaled copy decodes");
+        assert_eq!(
+            scaled.width(),
+            1568,
+            "scaled to {}x{}",
+            scaled.width(),
+            scaled.height()
+        );
+        assert!(attached[0].len() <= super::super::prompt_image::MAX_PROMPT_IMAGE_BYTES);
+        assert_eq!(attached[1], small, "a small image is attached unchanged");
+        assert_eq!(
+            fs::read(outputs.join("panorama.png")).await.expect("stored"),
+            panorama,
+            "the stored file is untouched"
+        );
     }
 
     #[tokio::test]

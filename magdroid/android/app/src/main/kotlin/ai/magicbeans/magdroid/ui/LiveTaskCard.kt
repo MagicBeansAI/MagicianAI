@@ -2,6 +2,8 @@ package ai.magicbeans.magdroid.ui
 
 import ai.magicbeans.magdroid.access.MagicianAccess
 import ai.magicbeans.magdroid.chat.ArtifactKind
+import ai.magicbeans.magdroid.chat.CardTimeText
+import ai.magicbeans.magdroid.chat.CardTimes
 import ai.magicbeans.magdroid.chat.ContentBlockRecord
 import ai.magicbeans.magdroid.chat.LiveTaskActivity
 import ai.magicbeans.magdroid.chat.LiveTaskCardAction
@@ -294,13 +296,15 @@ internal fun LiveTaskCard(
         }
         lastPhase = phase
     }
+    // The card's one clock: each second while the elapsed time ticks, else a
+    // slow beat that keeps "Updated 2 min. ago" current. Paused in the background.
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(state.ticks) {
-        while (state.ticks && isActive) {
-            nowMillis = System.currentTimeMillis()
-            delay(1_000)
-        }
+    LaunchedEffect(state.ticks, appActive) {
         nowMillis = System.currentTimeMillis()
+        while (appActive && isActive) {
+            delay(if (state.ticks) 1_000 else CardTimeText.RELATIVE_TICK_MILLIS)
+            nowMillis = System.currentTimeMillis()
+        }
     }
 
     fun inspect() {
@@ -397,6 +401,12 @@ internal fun LiveTaskCard(
                 },
             )
             MetaRow(state, nowMillis, state.taskId)
+            CardTimesLine(
+                CardTimes.forTask(current, feed.storeCreatedAtMs, feed.storeUpdatedAtMs),
+                nowMillis,
+                startLabel = "Created",
+                modifier = Modifier.padding(start = CARD_TEXT_INSET),
+            )
             }
             LiveTaskCardRules.line(
                 phase = phase,

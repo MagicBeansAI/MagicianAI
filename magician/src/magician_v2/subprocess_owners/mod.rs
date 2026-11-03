@@ -15,6 +15,7 @@ pub use envelope::{
     active_skill_working_lease, env_is_closed, forbidden_child_env_names,
     install_skill_working_envelope, install_skill_working_envelope_from_exec, load_envelope,
     materialize_input, publish_accepted_output, scavenge_lease, set_active_skill_working_lease,
+    skill_working_lease_path,
     InputManifestEntry, OutputSlot, PublicationReceipt, ResultManifestEntry, ScratchCleanupPolicy,
     ScratchLeaseSpec, SecretDelivery, SecretRequest, SubprocessStorageEnvelope, ENVELOPE_FILE_NAME,
     ENVELOPE_VERSION,

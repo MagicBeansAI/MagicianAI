@@ -70,6 +70,13 @@
      "fn": "load",
      "why": "Inspect model usage by conversation",
      "line": 36
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/chat/composerCommands.ts",
+     "type": null,
+     "fn": "resolveSlashInput",
+     "line": 255,
+     "why": "The composer's / picker: /engine, /run-engine, /voice-mode"
     }
    ],
    "configKeys": [
@@ -120,6 +127,14 @@
      "say": "iPhone and Android use the same model catalog with themed native controls, labeled thinking steps and stable scrolling, while token budgets remain internal."
     },
     {
+     "file": "ui/unified-ui/src/lib/magician/chat/composerCommands.ts",
+     "type": null,
+     "fn": "resolveSlashInput",
+     "line": 255,
+     "title": "Pick them from the composer with /",
+     "say": "Typing / in the composer offers /engine, /run-engine and /voice-mode. They use the same choices and APIs as the engine dropdown, Settings and the voice switch, and the command never reaches the model. iPhone and Android keep the same rows and wording."
+    },
+    {
      "file": "magicllm/src/providers/minimax.rs",
      "type": "MinimaxProvider",
      "fn": null,
@@ -158,7 +173,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "send_message_stream_handler",
-     "line": 5319,
+     "line": 5352,
      "why": "An accepted turn keeps running"
     },
     {
@@ -172,7 +187,7 @@
      "file": "ui/unified-ui/src/lib/magician/chat/turnState.ts",
      "type": null,
      "fn": "recordChatTurnStateFromResponse",
-     "line": 75,
+     "line": 84,
      "why": "Recover steps and the reply"
     },
     {
@@ -200,7 +215,7 @@
      "file": "ui/unified-ui/src/lib/shell/ChatHistoryRail.svelte",
      "fn": "pollActivity",
      "type": null,
-     "line": 108,
+     "line": 128,
      "why": "See which chats are working"
     },
     {
@@ -209,6 +224,34 @@
      "type": null,
      "line": 29,
      "why": "Owned, bounded activity snapshots without reading chat transcripts"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "settle_interrupted_chat_turns",
+     "line": 22674,
+     "why": "Turns a restart cut off are settled from the journal"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "chat_turn_left_running_by_a_dead_process",
+     "line": 22657,
+     "why": "Tells a live turn from one a dead process left running"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "runtime_draining_tool_result",
+     "line": 2856,
+     "why": "No new tool work starts while Magician shuts down"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/ChatHistoryRail.svelte",
+     "type": null,
+     "fn": "showThreadSessions",
+     "line": 261,
+     "why": "Tapping a thread lists that thread's sessions"
     }
    ],
    "configKeys": [],
@@ -227,7 +270,7 @@
      "file": "magician-api/src/chat_api.rs",
      "type": null,
      "fn": "send_message_stream_handler",
-     "line": 5319,
+     "line": 5352,
      "title": "An accepted turn keeps running",
      "say": "Web and phone clients ask accepted turns to continue after a disconnect, so changing pages or losing the network does not silently press Stop.",
      "evidence": "magician-api/src/chat_api.rs:5177"
@@ -245,7 +288,7 @@
      "file": "ui/unified-ui/src/lib/magician/chat/turnState.ts",
      "type": null,
      "fn": "recordChatTurnStateFromResponse",
-     "line": 75,
+     "line": 84,
      "title": "Recover steps and the reply",
      "say": "On reconnect, the app loads the server’s turn state, replays its recorded steps and attaches the saved reply to the same turn.",
      "evidence": "ui/unified-ui/src/lib/magician/chat/turnState.ts:75"
@@ -260,6 +303,30 @@
      "evidence": "magician/src/magician_v2/chat/turn_state.rs:35"
     },
     {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "settle_interrupted_chat_turns",
+     "line": 22674,
+     "title": "A restart cannot leave a turn \"running\"",
+     "say": "On boot, the turn journal is scanned. A turn whose process died is settled instead of looking live, so Stop clears it. A task the chat started posts its result back to the chat after the restart."
+    },
+    {
+     "file": "magician/src/magician_v2/chat/service.rs",
+     "type": null,
+     "fn": "runtime_draining_tool_result",
+     "line": 2856,
+     "title": "Nothing new starts while shutting down",
+     "say": "During shutdown, a tool call gets a plain \"runtime draining\" result rather than starting work that the restart would cut off."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/shell/ChatHistoryRail.svelte",
+     "type": null,
+     "fn": "showThreadSessions",
+     "line": 261,
+     "title": "A thread tap lists its sessions",
+     "say": "Tapping a thread in History filters the Sessions list to that thread, on web, iPhone and Android, until you clear it or switch scope."
+    },
+    {
      "file": "ui/unified-ui/src/lib/magician/chat/composerDraft.ts",
      "type": null,
      "fn": null,
@@ -271,7 +338,7 @@
      "file": "ui/unified-ui/src/lib/shell/ChatHistoryRail.svelte",
      "fn": "pollActivity",
      "type": null,
-     "line": 108,
+     "line": 128,
      "title": "See which chats are working",
      "say": "History marks live turns and linked planning or running tasks as Working. Activity refreshes only while history is visible in the foreground; selection and archive state stay separate."
     }
@@ -354,14 +421,14 @@
      "file": "magician/src/magician_v2/decision_screenshot.rs",
      "type": null,
      "fn": "fit_blocking",
-     "line": 48,
+     "line": 51,
      "why": "Scales oversized captures to the 1568 px long-side limit"
     },
     {
      "file": "magician/src/magician_v2/chat/decision_rail.rs",
      "type": null,
      "fn": "screenshot",
-     "line": 447,
+     "line": 449,
      "why": "Chat rail attaches the newest tool result's screenshot"
     },
     {
@@ -375,7 +442,7 @@
      "file": "decision-engine-contract/src/asset.rs",
      "type": null,
      "fn": "validate_assets",
-     "line": 129,
+     "line": 131,
      "why": "Checks referenced PNG/JPEG assets before dispatch"
     },
     {
@@ -416,7 +483,7 @@
      "file": "magician/src/magician_v2/decision_screenshot.rs",
      "type": null,
      "fn": "fit_blocking",
-     "line": 48,
+     "line": 51,
      "title": "Scale it to fit",
      "say": "Real captures are often too big. A Retina browser page can be more than four thousand pixels wide, so the host scales it down to the model’s limit instead of dropping it."
     },
@@ -424,7 +491,7 @@
      "file": "magician/src/magician_v2/chat/decision_rail.rs",
      "type": null,
      "fn": "screenshot",
-     "line": 447,
+     "line": 449,
      "title": "Chat sees it too",
      "say": "Chat’s rail does the same with the newest tool result’s image, never with one from an earlier call, because a click may have changed the screen since."
     },
@@ -432,7 +499,7 @@
      "file": "decision-engine-contract/src/asset.rs",
      "type": null,
      "fn": "validate_assets",
-     "line": 129,
+     "line": 131,
      "title": "Validate before dispatch",
      "say": "Each referenced image must be a PNG or JPEG within the declared dimensions and byte limit. The engine refuses anything else rather than resizing it."
     },
@@ -474,14 +541,14 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "start_task_planning",
-     "line": 12256,
+     "line": 12379,
      "why": "Durable plan record, background planning"
     },
     {
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "build_and_execute_pipeline",
-     "line": 7472,
+     "line": 7604,
      "why": "Builds and runs the planning pipeline"
     },
     {
@@ -544,7 +611,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "execute_strategy_with_retry",
-     "line": 10158,
+     "line": 10290,
      "why": "Retries and falls back between strategies"
     },
     {
@@ -624,7 +691,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "start_task_planning",
-     "line": 12256,
+     "line": 12379,
      "title": "Plan mode begins",
      "say": "When a task is sent in Plan mode, the task store writes a durable plan record and a recovery receipt, then schedules planning in the background so a restart can pick it up again."
     },
@@ -632,7 +699,7 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "build_and_execute_pipeline",
-     "line": 7472,
+     "line": 7604,
      "title": "A pipeline of specialists",
      "say": "The orchestrator reloads the run's saved planning artifacts and starts a pipeline of seven system agents, from intent classifier to planner, that share one artifact store."
     },
@@ -698,35 +765,35 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "FilesystemTaskUserFinalizer",
      "fn": "finalize",
-     "line": 1931,
+     "line": 2028,
      "why": "Synthesize, verify, repair, then publish"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": "FilesystemArtifactV2BundleBuilder",
      "fn": "build_task_user_output_bundle",
-     "line": 423,
+     "line": 579,
      "why": "Bounded evidence bundle, results first"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/execution_artifacts.rs",
      "type": "FilesystemExecutionArtifactIndexStore",
      "fn": "list_artifacts",
-     "line": 1229,
+     "line": 1240,
      "why": "Index of a run's artifacts"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": "PromptManagerTaskUserOutputSynthesizer",
      "fn": "synthesize",
-     "line": 431,
+     "line": 587,
      "why": "Writes the user-facing deliverable"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": null,
      "fn": "synthesize_bundle_raw_with_repair",
-     "line": 2401,
+     "line": 2575,
      "why": "Evidence-preservation policy on every prompt"
     },
     {
@@ -768,7 +835,7 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": null,
      "fn": "repair_task_user_output_grounding",
-     "line": 3552,
+     "line": 3726,
      "why": "One bounded grounding repair"
     },
     {
@@ -782,28 +849,28 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": null,
      "fn": "task_user_unverified_answer_document",
-     "line": 3327,
+     "line": 3501,
      "why": "Adds Not fully verified caveat"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/answer_verification.rs",
      "type": null,
      "fn": "check_owner_text",
-     "line": 5266,
+     "line": 5272,
      "why": "Same check for chat, notifications"
     },
     {
      "file": "magician/src/magician_v2/chat/service.rs",
      "type": null,
      "fn": "checked_chat_reply",
-     "line": 27038,
+     "line": 27453,
      "why": "Chat reply checked against tool results"
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "terminal_precision_review_inner",
-     "line": 25646,
+     "line": 25761,
      "why": "Agent's final draft reviewed per claim"
     },
     {
@@ -831,7 +898,7 @@
      "file": "magician/src/magician_v2/execution/multi_llm_agent_adapter.rs",
      "fn": "recovered_answer_from_error",
      "type": null,
-     "line": 307,
+     "line": 309,
      "why": "Keep runtime status out of the answer"
     }
    ],
@@ -853,7 +920,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "FilesystemTaskUserFinalizer",
      "fn": "finalize",
-     "line": 1931,
+     "line": 2028,
      "title": "The run finishes",
      "say": "When a task's run ends, the finalizer builds an evidence bundle, has a model write the answer, and checks it before anything is published to you."
     },
@@ -861,7 +928,7 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": "FilesystemArtifactV2BundleBuilder",
      "fn": "build_task_user_output_bundle",
-     "line": 423,
+     "line": 579,
      "title": "Gather the evidence",
      "say": "The answer draws on the whole run, including delegated results, recorded file changes and Magician’s own records, with real tool evidence ahead of call noise."
     },
@@ -869,7 +936,7 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": "PromptManagerTaskUserOutputSynthesizer",
      "fn": "synthesize",
-     "line": 431,
+     "line": 587,
      "title": "Write the answer",
      "say": "The synthesis model may compress and format the evidence, but a fixed policy forbids it from strengthening claims, adding advice, or reporting a failure that a later success already closed."
     },
@@ -901,7 +968,7 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": null,
      "fn": "repair_task_user_output_grounding",
-     "line": 3552,
+     "line": 3726,
      "title": "One bounded repair",
      "say": "If a core claim fails, the synthesizer gets one chance to remove or qualify it, and the repaired answer is checked again from scratch."
     },
@@ -909,7 +976,7 @@
      "file": "magician/src/magician_v2/artifact_v2/synthesis.rs",
      "type": null,
      "fn": "task_user_unverified_answer_document",
-     "line": 3327,
+     "line": 3501,
      "title": "Honest when unsure",
      "say": "When checks cannot confirm every claim, the answer stays readable and its verification note keeps the specific reason available from an info control."
     },
@@ -943,7 +1010,7 @@
      "file": "magician/src/magician_v2/execution/multi_llm_agent_adapter.rs",
      "fn": "recovered_answer_from_error",
      "type": null,
-     "line": 307,
+     "line": 309,
      "title": "Keep runtime status out of the answer",
      "say": "Usable prose can be recovered from a rejected model response. Internal completed-and-blocked status lists stay separate from the answer built from evidence."
     }
@@ -2403,7 +2470,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "run_town_square_migrate",
-     "line": 4876,
+     "line": 4873,
      "why": "Operator CLI for migration"
     }
    ],
@@ -2885,35 +2952,35 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "handle",
-     "line": 455,
+     "line": 495,
      "why": "Single entry for every coding turn"
     },
     {
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "resolve_run_coding_profile",
-     "line": 4263,
+     "line": 4723,
      "why": "Profile for the chain's engine"
     },
     {
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "adapter_spec_for_engine",
-     "line": 547,
+     "line": 599,
      "why": "Refuses engines that are not ready"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/factory.rs",
      "type": null,
      "fn": "construct_coding_adapter",
-     "line": 334,
+     "line": 333,
      "why": "Engine and options must agree"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": "CodingEngineAdapter",
      "fn": null,
-     "line": 2686,
+     "line": 2750,
      "why": "The one trait every engine implements"
     },
     {
@@ -2934,14 +3001,14 @@
      "file": "magician/src/magician_v2/execution/coding_engine/codex.rs",
      "type": "CodexJsonlSession",
      "fn": "steer_active_turn",
-     "line": 897,
+     "line": 893,
      "why": "Codex app-server mid-turn steer"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/grok.rs",
      "type": "GrokJsonlSession",
      "fn": "open_or_resume_session",
-     "line": 549,
+     "line": 564,
      "why": "Grok ACP session load or new"
     },
     {
@@ -3068,7 +3135,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "handle",
-     "line": 455,
+     "line": 495,
      "title": "One handler for all",
      "say": "Every coding turn enters one handler. It settles the project, the engine the chain started with, the workspace and the budgets before any engine is touched."
     },
@@ -3084,7 +3151,7 @@
      "file": "magician/src/magician_v2/execution/coding_engine/factory.rs",
      "type": null,
      "fn": "construct_coding_adapter",
-     "line": 334,
+     "line": 333,
      "title": "Build the adapter",
      "say": "A small factory turns the chosen engine into its adapter. Engine and options must match, so a Codex request can never quietly run on Pi."
     },
@@ -3218,7 +3285,7 @@
      "file": "magician/src/magician_v2/mobile_push.rs",
      "type": "MobilePushDispatcher",
      "fn": "deliver_coding_runs",
-     "line": 1244,
+     "line": 1245,
      "why": "Live Activity and Android data push"
     },
     {
@@ -3239,7 +3306,7 @@
      "file": "desktop/src-tauri/src/orb_window.rs",
      "type": null,
      "fn": "notch_show_runs",
-     "line": 3997,
+     "line": 4000,
      "why": "Tapping a run dot opens the runs panel"
     },
     {
@@ -3331,7 +3398,7 @@
      "file": "magician/src/magician_v2/mobile_push.rs",
      "type": "MobilePushDispatcher",
      "fn": "deliver_coding_runs",
-     "line": 1244,
+     "line": 1245,
      "title": "Lock-screen updates",
      "say": "An iPhone gets a Live Activity update, or a push that starts one, and Android gets a data message for its ongoing notification. A device whose send failed is retried with backoff."
     }
@@ -3356,7 +3423,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "resolve_trusted_run_workspace",
-     "line": 4040,
+     "line": 4491,
      "why": "Chain keeps the mode it started"
     },
     {
@@ -3377,7 +3444,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "acquire_trusted_run_permit",
-     "line": 819,
+     "line": 977,
      "why": "Caps trusted turns running at once"
     },
     {
@@ -3473,7 +3540,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "resolve_trusted_run_workspace",
-     "line": 4040,
+     "line": 4491,
      "title": "Choose an isolated branch",
      "say": "Choose Isolated branch under Work location to run a chain in its own git clone. Original folder works directly in the existing checkout. Each chain keeps its admitted location when project defaults change."
     },
@@ -3489,7 +3556,7 @@
      "file": "magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs",
      "type": null,
      "fn": "acquire_trusted_run_permit",
-     "line": 819,
+     "line": 977,
      "title": "Waiting for a slot",
      "say": "Only a configured number of trusted turns run at once, four by default. A turn beyond that waits in line and reports that it is queued."
     },
@@ -3547,21 +3614,21 @@
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": null,
      "fn": "sync_persistent_workspace",
-     "line": 3129,
+     "line": 3193,
      "why": "Syncs the shadow copy from repo"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": null,
      "fn": "compute_shadow_workspace_patch",
-     "line": 2981,
+     "line": 3045,
      "why": "Diffs shadow against real repo"
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": null,
      "fn": "attach_staged_coding_proposal",
-     "line": 2860,
+     "line": 2924,
      "why": "Every engine's result gets staged"
     },
     {
@@ -3589,7 +3656,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27747,
+     "line": 27958,
      "why": "Owner applies, picks files, rejects"
     },
     {
@@ -3665,7 +3732,7 @@
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": null,
      "fn": "sync_persistent_workspace",
-     "line": 3129,
+     "line": 3193,
      "title": "A sandbox copy",
      "say": "For a project that is not trusted, the engine works in a shadow copy of the repo, synced from the real one before each turn, while the real repo stays read-only to it."
     },
@@ -3673,7 +3740,7 @@
      "file": "magician/src/magician_v2/execution/coding_engine/mod.rs",
      "type": null,
      "fn": "attach_staged_coding_proposal",
-     "line": 2860,
+     "line": 2924,
      "title": "Work becomes a diff",
      "say": "When the turn ends, whichever engine ran it, Magician diffs the shadow copy against the real repo and stores the result as a proposal waiting for approval."
     },
@@ -3681,7 +3748,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27747,
+     "line": 27958,
      "title": "The owner decides",
      "say": "The proposal shows up as a diff to review. The owner applies all of it, picks some files, or rejects it, and a proposal that changed after review is refused."
     },
@@ -3942,7 +4009,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "execute_action_inner",
-     "line": 54305,
+     "line": 54977,
      "why": "Outward acts pass the gates here"
     },
     {
@@ -4038,7 +4105,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "execute_action_inner",
-     "line": 54305,
+     "line": 54977,
      "title": "An agent sends",
      "say": "When an agent's action is classified as outward, the executor runs the recipient gates before anything leaves, for captured sends as well as live ones."
     },
@@ -4282,14 +4349,14 @@
      "file": "ui/unified-ui/src/routes/(app)/observe/+page.svelte",
      "type": null,
      "fn": "saveAmbient",
-     "line": 711,
+     "line": 712,
      "why": "Consent switch and site denylist"
     },
     {
      "file": "ui/unified-ui/src/routes/(app)/observe/+page.svelte",
      "type": null,
      "fn": "pairBrowser",
-     "line": 730,
+     "line": 731,
      "why": "Pairs the browser extension"
     },
     {
@@ -4411,7 +4478,7 @@
      "file": "ui/unified-ui/src/routes/(app)/observe/+page.svelte",
      "type": null,
      "fn": "saveAmbient",
-     "line": 711,
+     "line": 712,
      "title": "Owner opts in",
      "say": "On the Observe page, the owner switches tab observation on and lists sites that must never be captured."
     },
@@ -5294,7 +5361,7 @@
      "file": "magician/src/magician_v2/execution/compiled_providers.rs",
      "type": null,
      "fn": "default_compiled_handler_registry",
-     "line": 602,
+     "line": 605,
      "why": "Registers both media tools"
     }
    ],
@@ -5553,14 +5620,14 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "build_tts_providers",
-     "line": 2656,
+     "line": 2653,
      "why": "Voice chain built from config"
     },
     {
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "build_recording_stt_providers",
-     "line": 3200,
+     "line": 3197,
      "why": "Transcription chain from config"
     },
     {
@@ -5683,7 +5750,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "build_recording_stt_providers",
-     "line": 3200,
+     "line": 3197,
      "title": "Engines from config",
      "say": "At startup, the transcription engines named in the config are built into an ordered chain. When the Mac's own speech recognition is available, boot puts it first and keeps these as fallbacks."
     },
@@ -5971,7 +6038,7 @@
      "file": "magician/src/magician_v2/agents/memory_lifecycle.rs",
      "type": null,
      "fn": "apply_review",
-     "line": 819,
+     "line": 821,
      "why": "Validates model-proposed relationships"
     },
     {
@@ -6006,7 +6073,7 @@
      "file": "magician-vector-index/src/memory_temperature.rs",
      "type": null,
      "fn": "apply_memory_temperature_utility_review",
-     "line": 1489,
+     "line": 1490,
      "why": "Utility labels adjust temperature"
     },
     {
@@ -6020,14 +6087,14 @@
      "file": "magician-api/src/analytics_api.rs",
      "type": null,
      "fn": "memory_temperature_status_handler",
-     "line": 3471,
+     "line": 3476,
      "why": "Temperature status endpoint"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_agent_memory_consolidation_health_handler",
-     "line": 27274,
+     "line": 27485,
      "why": "Per-agent consolidation health endpoint"
     },
     {
@@ -6048,21 +6115,21 @@
      "file": "magician/src/magician_v2/agents/user_memory_bounds/archive.rs",
      "type": null,
      "fn": "append_batch",
-     "line": 94,
+     "line": 90,
      "why": "Archive first, restorable by record"
     },
     {
      "file": "magician/src/magician_v2/agents/user_memory_lanes.rs",
      "type": null,
      "fn": "upsert_rows",
-     "line": 139,
+     "line": 142,
      "why": "Activity logs in their own lane files"
     },
     {
      "file": "magician/src/magician_v2/agents/user_memory_bounds/dedupe.rs",
      "type": null,
      "fn": "report",
-     "line": 204,
+     "line": 206,
      "why": "Finds records saying one thing twice"
     },
     {
@@ -6109,7 +6176,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "run_memory_consolidation_sweep",
-     "line": 4761,
+     "line": 4814,
      "title": "A five-minute sweep",
      "say": "Every five minutes a background sweep visits each agent, replays any orphaned clarification answers, runs due batch rules, then runs retention. A disabled agent with nothing pending is skipped until a revisit window passes."
     },
@@ -6133,7 +6200,7 @@
      "file": "magician/src/magician_v2/agents/memory_lifecycle/runtime.rs",
      "type": null,
      "fn": "pass",
-     "line": 475,
+     "line": 477,
      "title": "Reconcile owner claims",
      "say": "A bounded reviewer, at most six per hour, compares a new claim with existing ones and labels it duplicate, reinforce, coexist, supersede, or a concrete question for the owner."
     },
@@ -6199,21 +6266,21 @@
      "file": "magician/src/magician_v2/agents/scheduler.rs",
      "type": "AgentScheduler",
      "fn": "collect_due_cron_triggers",
-     "line": 360,
+     "line": 358,
      "why": "Consumes due fires, bumps sequence"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "spawn_agent_supervisor_tasks",
-     "line": 5513,
+     "line": 5564,
      "why": "Starts scheduler, expiry, wake loops"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "dispatch_scheduled_trigger",
-     "line": 4018,
+     "line": 4069,
      "why": "Turns a due fire into run"
     },
     {
@@ -6234,21 +6301,21 @@
      "file": "magician/src/magician_v2/agents/runtime.rs",
      "type": "AgentRuntime",
      "fn": "trigger_goal_awaitable_in_scope",
-     "line": 2401,
+     "line": 2430,
      "why": "Runs one goal cycle"
     },
     {
      "file": "magician/src/magician_v2/agents/runtime.rs",
      "type": "AgentRuntime",
      "fn": "decide_circuit_action",
-     "line": 2185,
+     "line": 2214,
      "why": "Circuit breaker after repeated failures"
     },
     {
      "file": "magician/src/magician_v2/agents/runtime.rs",
      "type": "AgentRuntime",
      "fn": "start_wake_up_watcher",
-     "line": 3964,
+     "line": 3995,
      "why": "Legacy in-process wake watcher"
     },
     {
@@ -6283,7 +6350,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "create_agent_definition_handler",
-     "line": 26903,
+     "line": 27114,
      "why": "POST /agents handler"
     },
     {
@@ -6331,7 +6398,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "run_scheduler_tick",
-     "line": 4494,
+     "line": 4547,
      "title": "Five-second tick",
      "say": "Every five seconds the supervisor walks a batch of workspaces, collects cron fires that are due, and dispatches them within a budget; fires over budget are requeued, never dropped."
     },
@@ -6339,7 +6406,7 @@
      "file": "magician/src/magician_v2/agents/scheduler.rs",
      "type": null,
      "fn": "compute_next_run_at",
-     "line": 805,
+     "line": 803,
      "title": "Cron in your timezone",
      "say": "The next fire time is computed from a five-field cron expression in the entry's own timezone, falling back to UTC when the timezone is invalid, and impossible schedules simply never fire."
     },
@@ -6363,7 +6430,7 @@
      "file": "magician/src/magician_v2/agents/runtime.rs",
      "type": "AgentRuntime",
      "fn": "resume_scheduler_entry",
-     "line": 2663,
+     "line": 2692,
      "title": "Resume on wake",
      "say": "When a scheduled wake comes due, the runtime finds the agent and goal behind it and resumes that cycle in the right workspace."
     },
@@ -6759,7 +6826,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/state.rs",
      "type": "LoopState",
      "fn": null,
-     "line": 616,
+     "line": 617,
      "why": "The run as a value"
     },
     {
@@ -6780,7 +6847,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs",
      "type": null,
      "fn": "advance_once",
-     "line": 1275,
+     "line": 1300,
      "why": "Claim, one phase, commit"
     },
     {
@@ -6822,14 +6889,14 @@
      "file": "magician/src/magician_v2/orchestrator/v2_orchestrator.rs",
      "type": null,
      "fn": "steer_execution",
-     "line": 22109,
+     "line": 22375,
      "why": "Queues an owner redirect"
     },
     {
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "steer_active_execution_handler",
-     "line": 30043,
+     "line": 30256,
      "why": "Steer endpoint"
     },
     {
@@ -6843,7 +6910,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/reconciler.rs",
      "type": "LoopReconciler",
      "fn": "reconcile_at",
-     "line": 1899,
+     "line": 1922,
      "why": "Retires provably stuck parks"
     },
     {
@@ -6864,7 +6931,7 @@
      "file": "magician/src/magician_v2/execution/agentic/decision.rs",
      "type": null,
      "fn": "verbatim_window",
-     "line": 886,
+     "line": 885,
      "why": "Keep long-run context bounded"
     },
     {
@@ -6873,6 +6940,13 @@
      "type": null,
      "line": 1,
      "why": "Settle ambiguous interruptions safely"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": "settled_cycle_task_status",
+     "line": 288,
+     "why": "A cycle waiting on its children leaves the task running"
     }
    ],
    "configKeys": [],
@@ -6899,7 +6973,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/driver_worker.rs",
      "type": null,
      "fn": "advance_once",
-     "line": 1275,
+     "line": 1300,
      "title": "One phase per claim",
      "say": "A worker claims the run under a lease, loads its committed state, advances exactly one phase and commits, so a different process can carry on where the last one stopped."
     },
@@ -6947,15 +7021,23 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/reconciler.rs",
      "type": "LoopReconciler",
      "fn": "reconcile_at",
-     "line": 1899,
+     "line": 1922,
      "title": "Clear stuck parks",
      "say": "Every thirty minutes a reconciler looks for runs parked past their deadline or waiting on children that have all finished, proves it, and retires them so nothing waits forever."
+    },
+    {
+     "file": "magician/src/magician_v2/agents/runtime.rs",
+     "type": null,
+     "fn": "settled_cycle_task_status",
+     "line": 288,
+     "title": "A parked coordinator waits for its children",
+     "say": "A task that hands work to another agent right after you answer its question stays running while that agent works, and resumes when it finishes. It no longer fails hours later."
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/decision.rs",
      "type": null,
      "fn": "verbatim_window",
-     "line": 886,
+     "line": 885,
      "title": "Keep long-run context bounded",
      "say": "Long runs retain a bounded recent conversation and an index of older results. Resumed decisions use the same window, with references for reading older evidence.",
      "evidence": "magician/src/magician_v2/execution/agentic/decision.rs:748"
@@ -7003,14 +7085,14 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "open_verification_gate",
-     "line": 32625,
+     "line": 33031,
      "why": "Opens gate before terminal step"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "drive_verification_gate",
-     "line": 32881,
+     "line": 33287,
      "why": "Runs passes until gate settles"
     },
     {
@@ -7073,7 +7155,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "spawn_verification_reconciler",
-     "line": 33607,
+     "line": 34013,
      "why": "Re-offers unsettled gates periodically"
     }
    ],
@@ -7103,7 +7185,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "open_verification_gate",
-     "line": 32625,
+     "line": 33031,
      "title": "Open a gate",
      "say": "The task service opens a verification gate for the candidate. Under enforce the task stays visibly verifying; under observe, the shipped default, it completes as usual while evidence is still recorded."
     },
@@ -7151,7 +7233,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "spawn_verification_reconciler",
-     "line": 33607,
+     "line": 34013,
      "title": "Survive restarts",
      "say": "A reconciler re-offers unsettled gates every minute by default, so a gate interrupted by a restart still reaches a verdict."
     }
@@ -7169,7 +7251,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_execute",
-     "line": 3102,
+     "line": 3138,
      "why": "Pre-fire gate for each step"
     },
     {
@@ -7190,7 +7272,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "check_control_decision_loop_pressure",
-     "line": 4904,
+     "line": 4924,
      "why": "Catches repeated control decisions"
     },
     {
@@ -7239,7 +7321,7 @@
      "file": "magician-api/src/budgets_api.rs",
      "type": null,
      "fn": "task_budget_post_handler",
-     "line": 1162,
+     "line": 1220,
      "why": "Owner widens a running task"
     },
     {
@@ -7253,7 +7335,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_observation_screenshot_handler",
-     "line": 30091,
+     "line": 30304,
      "why": "Serves what the agent saw"
     },
     {
@@ -7306,7 +7388,7 @@
      "file": "magician/src/magician_v2/execution/agentic/run_loop/phases/apply.rs",
      "type": null,
      "fn": "gate_execute",
-     "line": 3102,
+     "line": 3138,
      "title": "Gate every step",
      "say": "Before a step fires, the apply phase checks it against the run's loop history and its approval rules, so a repetitive or risky action is caught before anything happens."
     },
@@ -7346,7 +7428,7 @@
      "file": "magician-api/src/budgets_api.rs",
      "type": null,
      "fn": "task_budget_post_handler",
-     "line": 1162,
+     "line": 1220,
      "title": "Owner raises the limit",
      "say": "The owner can add spend, tokens, iterations or time with the budget command. At a run limit, an approval card offers an extension and continues the same run with its progress and usage retained."
     },
@@ -7404,7 +7486,7 @@
      "file": "magician/src/magician_v2/execution/agentic/native_catalog.rs",
      "type": null,
      "fn": "build_execution_native_catalog",
-     "line": 1146,
+     "line": 1165,
      "why": "Tools the model actually sees"
     },
     {
@@ -7453,7 +7535,7 @@
      "file": "magician/src/magician_v2/execution/compiled_providers.rs",
      "type": null,
      "fn": "default_compiled_handler_registry",
-     "line": 602,
+     "line": 605,
      "why": "Built-in Rust tool handlers"
     },
     {
@@ -7481,7 +7563,7 @@
      "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs",
      "type": null,
      "fn": "dispatch_governed_runtime",
-     "line": 373,
+     "line": 398,
      "why": "Authorised, audited skill runtime"
     },
     {
@@ -7502,8 +7584,29 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_agent_effective_tools_handler",
-     "line": 26951,
+     "line": 27162,
      "why": "Previews an agent's effective tools"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/tasks/taskTimeline.ts",
+     "type": null,
+     "fn": "activityBody",
+     "line": 408,
+     "why": "A failed tool row leads with the cause"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/grep.rs",
+     "type": null,
+     "fn": "ripgrep",
+     "line": 89,
+     "why": "grep and glob run Magician's pinned ripgrep"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/grep.rs",
+     "type": null,
+     "fn": "ripgrep_missing",
+     "line": 64,
+     "why": "A missing ripgrep is reported, not hidden"
     }
    ],
    "configKeys": [],
@@ -7527,7 +7630,7 @@
      "file": "magician/src/magician_v2/execution/agentic/native_catalog.rs",
      "type": null,
      "fn": "build_execution_native_catalog",
-     "line": 1146,
+     "line": 1165,
      "title": "Build the tool list",
      "say": "The native catalog turns that policy into the tools the model is offered: control tools such as yield and ask the user, delegation tools when there are targets, and skill capability tools."
     },
@@ -7567,7 +7670,7 @@
      "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs",
      "type": null,
      "fn": "dispatch_governed_runtime",
-     "line": 373,
+     "line": 398,
      "title": "Governed runtime",
      "say": "The governed runtime selects and checks the credential profile and records an audit entry before running, and once chosen it never falls back to the legacy dispatcher."
     },
@@ -7578,6 +7681,22 @@
      "line": 114,
      "title": "Scoped local bridges",
      "say": "Some skills call back into Magician itself. The work-modules bridge mints a per-call, host-only token for that and revokes it as soon as the call ends."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/tasks/taskTimeline.ts",
+     "type": null,
+     "fn": "activityBody",
+     "line": 408,
+     "title": "A failed call says why",
+     "say": "The task panel on web, iPhone and Android shows the reason a tool call failed, two lines with Show more, instead of a bare \"failed\"."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_handlers/grep.rs",
+     "type": null,
+     "fn": "ripgrep",
+     "line": 89,
+     "title": "Search tools bring their own ripgrep",
+     "say": "grep and glob run the ripgrep Magician pins, and say so when there is none, rather than depending on what happens to be installed."
     }
    ]
   },
@@ -7600,7 +7719,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "project_autonomous_action_result",
-     "line": 30220,
+     "line": 30759,
      "why": "Task runs project each result"
     },
     {
@@ -7642,14 +7761,14 @@
      "file": "magician/src/magician_v2/execution/agentic/native_catalog.rs",
      "type": null,
      "fn": "build_read_result_tool",
-     "line": 932,
+     "line": 951,
      "why": "Model pages results by reference"
     },
     {
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "read_autonomous_tool_result",
-     "line": 55824,
+     "line": 56496,
      "why": "Serves read result calls"
     },
     {
@@ -7699,7 +7818,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "project_autonomous_action_result",
-     "line": 30220,
+     "line": 30759,
      "title": "A tool returns",
      "say": "After a tool runs in a task, its redacted result goes to one shared lifecycle that chat and voice also use, owned by the task, the chat or the voice session."
     },
@@ -7723,7 +7842,7 @@
      "file": "magician/src/magician_v2/execution/agentic/native_catalog.rs",
      "type": null,
      "fn": "build_read_result_tool",
-     "line": 932,
+     "line": 951,
      "title": "Read more on demand",
      "say": "The model gets a read result tool that pages through the stored result by reference, cursor and field paths, up to a thousand records at a time."
     },
@@ -7765,7 +7884,7 @@
      "file": "magic-supervisor/src/main.rs",
      "type": null,
      "fn": "main",
-     "line": 1963,
+     "line": 1969,
      "why": "Supervisor or client command entry"
     },
     {
@@ -7828,7 +7947,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "run",
-     "line": 1791,
+     "line": 1788,
      "why": "Boot order: postures, storage, listener"
     },
     {
@@ -7842,7 +7961,7 @@
      "file": "magician/src/magician_v2/runtime/startup.rs",
      "type": null,
      "fn": "wait_for_http",
-     "line": 60,
+     "line": 81,
      "why": "Background work waits for readiness"
     },
     {
@@ -7856,7 +7975,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "run_http_server",
-     "line": 2164,
+     "line": 2161,
      "why": "Assembles routes, drains on shutdown"
     },
     {
@@ -7864,7 +7983,7 @@
      "type": "Supervision",
      "fn": null,
      "why": "Watch the desktop without fighting Quit",
-     "line": 753
+     "line": 764
     }
    ],
    "configKeys": [
@@ -7884,7 +8003,7 @@
      "file": "magic-supervisor/src/main.rs",
      "type": null,
      "fn": "main",
-     "line": 1963,
+     "line": 1969,
      "title": "Supervisor wakes up",
      "say": "The supervisor starts with the operating system signals already wired, so a stop during boot still shuts every child down cleanly."
     },
@@ -7916,7 +8035,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "run",
-     "line": 1791,
+     "line": 1788,
      "title": "Boot in order",
      "say": "Before any store opens, it publishes pricing, budgets and the outward capture posture, installs storage, purges deleted workspaces, and opens a bootstrap listener so the UI can load early."
     },
@@ -7950,7 +8069,7 @@
      "fn": null,
      "title": "Watch the desktop without fighting Quit",
      "say": "The supervisor can relaunch the desktop app after a crash. A deliberate Quit is respected, and repeated crashes draw on a bounded restart budget.",
-     "line": 753
+     "line": 764
     }
    ]
   },
@@ -8050,7 +8169,7 @@
      "file": "magician/src/magician_v2/progress_channel_seam/chat_channel.rs",
      "type": "ChatChannel",
      "fn": "deliver",
-     "line": 465,
+     "line": 462,
      "why": "Taxonomy decides chat rendering"
     },
     {
@@ -8147,7 +8266,7 @@
      "file": "magician/src/magician_v2/progress_channel_seam/chat_channel.rs",
      "type": "ChatChannel",
      "fn": "deliver",
-     "line": 465,
+     "line": 462,
      "title": "Taxonomy picks rendering",
      "say": "The shared event taxonomy decides what each surface shows, so chat skips internal streaming noise while the operator stream keeps everything."
     },
@@ -8181,7 +8300,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "install_process_storage_runtime",
-     "line": 1875,
+     "line": 1872,
      "why": "Installs runtime, takes scope lease"
     },
     {
@@ -8237,7 +8356,7 @@
      "file": "magician/src/magician_v2/ui_threads/store.rs",
      "type": "UiThreadStore",
      "fn": "compact_scope",
-     "line": 841,
+     "line": 852,
      "why": "Thread list database compaction"
     },
     {
@@ -8322,7 +8441,7 @@
      "file": "magician-bin/src/main.rs",
      "type": null,
      "fn": "install_process_storage_runtime",
-     "line": 1875,
+     "line": 1872,
      "title": "Install storage first",
      "say": "Before any store opens, the boot checks that no newer build has claimed this data, opens the local storage runtime, and takes the lease on the default workspace."
     },
@@ -8423,7 +8542,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "admit_live_agent_loop",
-     "line": 43806,
+     "line": 44419,
      "why": "Executor asks before running"
     },
     {
@@ -8437,7 +8556,7 @@
      "file": "magician/src/magician_v2/runtime/startup.rs",
      "type": "StartupBarrier",
      "fn": "admit_backfill",
-     "line": 77,
+     "line": 98,
      "why": "Heavy first passes run singly"
     },
     {
@@ -8465,7 +8584,7 @@
      "file": "magician/src/magician_v2/ui_threads/store.rs",
      "type": "UiThreadStore",
      "fn": "open_workspace",
-     "line": 102,
+     "line": 128,
      "why": "Thread databases use idle cache"
     },
     {
@@ -8517,7 +8636,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "admit_live_agent_loop",
-     "line": 43806,
+     "line": 44419,
      "title": "Ask to run",
      "say": "Every top-level agent run asks the governor for a slot before it starts. Nested work inside an admitted run does not count twice."
     },
@@ -8541,7 +8660,7 @@
      "file": "magician/src/magician_v2/runtime/startup.rs",
      "type": "StartupBarrier",
      "fn": "admit_backfill",
-     "line": 77,
+     "line": 98,
      "title": "No startup stampede",
      "say": "Heavy first passes, like reconciling subscriptions or materializing the feed, wait until the server is ready and then run one at a time instead of all at once."
     },
@@ -8803,56 +8922,56 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "execute_bash_action",
-     "line": 2652,
+     "line": 2726,
      "why": "Decides boxed, refused or god mode"
     },
     {
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "build_bash_command",
-     "line": 2757,
+     "line": 2928,
      "why": "Spawns sh inside the box"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": "Boxed",
      "fn": "wrap",
-     "line": 421,
+     "line": 426,
      "why": "Wraps command in sandbox-exec or bwrap"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": null,
      "fn": "available",
-     "line": 352,
+     "line": 357,
      "why": "Probes the OS launcher once"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": "Plan",
      "fn": "current",
-     "line": 1118,
+     "line": 1182,
      "why": "Writable roots, secrets, network plan"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": null,
      "fn": "macos_profile",
-     "line": 1388,
+     "line": 1496,
      "why": "Builds the macOS SBPL profile"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": null,
      "fn": "bwrap_args",
-     "line": 1812,
+     "line": 1999,
      "why": "Linux bubblewrap equivalent"
     },
     {
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": null,
      "fn": "proxy_env",
-     "line": 1336,
+     "line": 1444,
      "why": "Points child at egress proxy"
     },
     {
@@ -8866,14 +8985,14 @@
      "file": "magician/src/magician_v2/execution/egress_proxy.rs",
      "type": null,
      "fn": "serve",
-     "line": 220,
+     "line": 232,
      "why": "Handles CONNECT and plain HTTP"
     },
     {
      "file": "magician/src/magician_v2/execution/egress_proxy.rs",
      "type": null,
      "fn": "connect_checked",
-     "line": 193,
+     "line": 205,
      "why": "Dials only vetted addresses"
     },
     {
@@ -8908,7 +9027,7 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "http_destination_reach",
-     "line": 2071,
+     "line": 2134,
      "why": "HTTP tool policy and god mode"
     }
    ],
@@ -8926,7 +9045,7 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "execute_bash_action",
-     "line": 2652,
+     "line": 2726,
      "title": "A shell command arrives",
      "say": "An agent asks to run a shell command. The string checks run first, then the runtime decides whether the command goes into the operating system box, or to god mode for the owner's approval."
     },
@@ -8934,7 +9053,7 @@
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": "Boxed",
      "fn": "wrap",
-     "line": 421,
+     "line": 426,
      "title": "Wrap in a box",
      "say": "Outside coding runs, the command is wrapped in sandbox exec on a Mac or bubblewrap on Linux, so the kernel enforces the rules however the command is phrased."
     },
@@ -8942,7 +9061,7 @@
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": "Plan",
      "fn": "current",
-     "line": 1118,
+     "line": 1182,
      "title": "Plan what is allowed",
      "say": "The plan lets the command write only under its working folders, temp and tool caches. SSH keys, cloud credentials, the runtime env files and the vault stay unreadable."
     },
@@ -8950,7 +9069,7 @@
      "file": "magician/src/magician_v2/execution/shell_box.rs",
      "type": null,
      "fn": "macos_profile",
-     "line": 1388,
+     "line": 1496,
      "title": "No nested agents",
      "say": "The profile also refuses to start other agent command line tools like claude or codex, which would carry their own credentials past every Magician gate. Network is allowed only to the proxy port."
     },
@@ -8958,7 +9077,7 @@
      "file": "magician/src/magician_v2/execution/egress_proxy.rs",
      "type": null,
      "fn": "serve",
-     "line": 220,
+     "line": 232,
      "title": "Through the egress proxy",
      "say": "In public mode the child's proxy variables point at a localhost proxy. It reads each CONNECT or plain HTTP request and refuses with a clear reason when the destination is blocked."
     },
@@ -8974,7 +9093,7 @@
      "file": "magician/src/magician_v2/execution/native_executors.rs",
      "type": null,
      "fn": "http_destination_reach",
-     "line": 2071,
+     "line": 2134,
      "title": "Same rule for HTTP",
      "say": "The built in HTTP tool follows the same policy through a filtering resolver, redirects included. In god mode a blocked host becomes an approval card instead of a failure."
     }
@@ -8992,7 +9111,7 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "start_skill_oauth_handler",
-     "line": 2200,
+     "line": 2254,
      "why": "Setup starts a skill sign-in"
     },
     {
@@ -9140,7 +9259,7 @@
      "file": "magician-api/src/skills_api.rs",
      "type": null,
      "fn": "start_skill_oauth_handler",
-     "line": 2200,
+     "line": 2254,
      "title": "Start a sign-in",
      "say": "The owner connects an MCP skill, like Metabase or a grocery store. Setup asks the engine to begin sign-in for that skill's exact server and issuer."
     },
@@ -9419,7 +9538,7 @@
      "file": "ui/unified-ui/src/routes/(app)/observe/+page.svelte",
      "type": null,
      "fn": "toggleVerificationCodes",
-     "line": 131,
+     "line": 132,
      "why": "Owner grants code purpose"
     },
     {
@@ -9526,7 +9645,7 @@
      "file": "ui/unified-ui/src/routes/(app)/observe/+page.svelte",
      "type": null,
      "fn": "toggleVerificationCodes",
-     "line": 131,
+     "line": 132,
      "title": "Grant one inbox",
      "say": "The owner ticks a separate box on one observed account. Observing an inbox alone never grants the right to read login codes from it."
     },
@@ -9669,21 +9788,21 @@
      "file": "magician-api/src/resource_authority_api.rs",
      "type": null,
      "fn": "configure_resource_authority_routes",
-     "line": 378,
+     "line": 381,
      "why": "Ceilings, tokens, ledger routes"
     },
     {
      "file": "magician-api/src/resource_authority_api.rs",
      "type": null,
      "fn": "freeze_handler",
-     "line": 1439,
+     "line": 1442,
      "why": "Emergency stop on all spend"
     },
     {
      "file": "magician-api/src/resource_authority_api.rs",
      "type": null,
      "fn": "revoke_token_handler",
-     "line": 940,
+     "line": 943,
      "why": "Revoke one spend token"
     },
     {
@@ -9798,7 +9917,7 @@
      "file": "magician-api/src/resource_authority_api.rs",
      "type": null,
      "fn": "freeze_handler",
-     "line": 1439,
+     "line": 1442,
      "title": "Pull the brake",
      "say": "Settings brings model spending and action limits together. The owner can change ceilings, add to the current window, revoke tokens or freeze action spending."
     },
@@ -10175,7 +10294,7 @@
      "type": null,
      "fn": "prepare_browser_choice",
      "why": "Choose the paired browser",
-     "line": 690
+     "line": 701
     },
     {
      "file": "magician/src/magician_v2/execution/primitive_dispatch/browser/mod.rs",
@@ -10230,7 +10349,7 @@
      "fn": "prepare_browser_choice",
      "title": "Choose the paired browser",
      "say": "Several extension browsers can be paired at once. An attended run lets the owner choose which signed-in browser should handle that work.",
-     "line": 690
+     "line": 701
     },
     {
      "file": "magician/src/magician_v2/execution/primitive_dispatch/browser/mod.rs",
@@ -10300,7 +10419,7 @@
      "file": "magician/src/magician_v2/chat/context_compaction.rs",
      "type": "ChatContextCompactor",
      "fn": null,
-     "line": 372,
+     "line": 390,
      "why": "Folds old history in the background and again in-turn if needed"
     },
     {
@@ -10338,7 +10457,7 @@
      "file": "magician/src/magician_v2/chat/context_compaction.rs",
      "type": "ChatContextCompactor",
      "fn": null,
-     "line": 372,
+     "line": 390,
      "title": "Summarize, don’t replace",
      "say": "A summarizer call maintains a factual handoff of the old turns, sized to the routed model’s own input window. Long tool output is cut to its head and tail for the summary; the full text stays in the transcript."
     },
@@ -10357,6 +10476,140 @@
      "line": 130,
      "title": "Recall what was folded",
      "say": "When the model needs a detail the summary dropped, a read-only history search looks it up in the complete transcript of the current session."
+    }
+   ]
+  },
+  {
+   "id": "delivered-files",
+   "name": "Files arrive with the answer",
+   "group": "What it does",
+   "oneLine": "Files an agent produces are linked from the answer by a served address, and host paths are never shown.",
+   "maturity": "shipped",
+   "maturityEvidence": "delivered_links.rs builds the served links and rewrites host filesystem paths in prose and HTML; covered by unit tests in the same module. Released in 0.7.150 (root CHANGELOG).",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": "DeliveredFileLink",
+     "fn": null,
+     "line": 35,
+     "why": "One delivered file: title and served link"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": null,
+     "fn": "delivered_file_links",
+     "line": 62,
+     "why": "Builds the links for a finished run"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": null,
+     "fn": "rewrite_host_paths_for_user",
+     "line": null,
+     "why": "Replaces host paths with links in the reply"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": {
+    "description": "The reply carries a \"Delivered files\" section with one link per file, titled by the file.",
+    "path": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": "DeliveredFileLink",
+     "fn": null,
+     "line": 35,
+     "title": "A file has a title and a served link",
+     "say": "A run records each file it produced with a title and the address it is served from."
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": null,
+     "fn": "delivered_file_links",
+     "line": 62,
+     "title": "Collect what the run delivered",
+     "say": "When a delegated task finishes, its delivered files are gathered so the answer can link every one."
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/delivered_links.rs",
+     "type": null,
+     "fn": "rewrite_host_paths_for_user",
+     "line": null,
+     "title": "No host paths in the reply",
+     "say": "A path on this machine or a file link in the reply text is rewritten to the served link, or dropped, so you never get an address that only works on the host."
+    }
+   ]
+  },
+  {
+   "id": "deck-and-design-skills",
+   "name": "Decks and design",
+   "group": "What it does",
+   "oneLine": "Agents build PowerPoint decks and export them to PDF, make animated single-file HTML slides, and follow a design procedure for interfaces.",
+   "maturity": "shipped",
+   "maturityEvidence": "The office-powerpoint skill (PDF export through officecli-exporter-pdf), frontend-slides and impeccable (both skill_type: procedure) ship in skillshub/ and are installed in both scopes; granted to creative-mind, presentation-maker and the frontend engineers. Deck production requires owner approval (presentation_maker_evals.rs). Released in 0.7.150 and 0.7.151 (root CHANGELOG).",
+   "locations": [
+    {
+     "file": "skillshub/office-powerpoint/bin/officecli-exporter-pdf",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Exports a PowerPoint deck to PDF, one page per slide"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/activation.rs",
+     "type": null,
+     "fn": "activate_procedure_skill",
+     "line": 56,
+     "why": "Frontend Slides and Impeccable load as procedure skills"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/presentation_maker_evals.rs",
+     "type": null,
+     "fn": "deck_production_requires_owner_approval",
+     "line": 49,
+     "why": "Every deck action pauses for the owner's approval"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": {
+    "description": "Ask Muse or the deck maker for a deck: you get a PowerPoint file, a PDF, or an HTML presentation, delivered with the answer.",
+    "path": "ui/unified-ui/src/lib/magician/chat/ChatPanel.svelte"
+   },
+   "tour": [
+    {
+     "file": "skillshub/office-powerpoint/bin/officecli-exporter-pdf",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "PowerPoint, then PDF",
+     "say": "The deck skill builds and checks a PowerPoint file, and can export it to PDF, one page per slide, through OfficeCLI's PDF exporter."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/activation.rs",
+     "type": null,
+     "fn": "activate_procedure_skill",
+     "line": 56,
+     "title": "Animated HTML slides",
+     "say": "The Frontend Slides procedure picks a visual style, then writes one self-contained HTML file with animation, or converts content you provide."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/activation.rs",
+     "type": null,
+     "fn": "activate_procedure_skill",
+     "line": 56,
+     "title": "A design procedure for interfaces",
+     "say": "Designers and frontend engineers can call Impeccable to shape, critique, audit and polish interfaces, typography, layout and accessibility."
+    },
+    {
+     "file": "magician/src/magician_v2/agents/presentation_maker_evals.rs",
+     "type": null,
+     "fn": "deck_production_requires_owner_approval",
+     "line": 49,
+     "title": "Decks still ask first",
+     "say": "Building, editing or exporting a deck with the deck skill pauses for your approval, so a PDF or a file never appears unasked."
     }
    ]
   }

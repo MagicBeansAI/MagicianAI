@@ -2478,7 +2478,8 @@ visibility until the first click.
   (`MAGICRUN_TEST_THREADS` override), while product Rust tests retain their
   independent four-thread default
 - `make test-skill-runtime` checks shared CLI/scope wiring, installer readiness
-  failures and offline WhatsApp MCP compatibility without provider calls.
+  failures, the PowerPoint PDF exporter plugin (stubbed) and offline WhatsApp
+  MCP compatibility without provider calls.
   `make test-magesp-conversations` checks ESP conversation callbacks on the host.
 - [Project Versions](project-versions.md) — the `magician` version contract,
   every Rust crate version, and versioned product surfaces

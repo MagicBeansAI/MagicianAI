@@ -973,17 +973,76 @@ inferred inline media types. `MAX_SELECTED_ARTIFACTS = 30`
 (`artifact_v2/synthesis.rs`). Promoted media files become
 `audience=user`, `role=user_media` refs on `FinalizedOutputs.media_outputs`.
 
-**Delivered files.** A file the run wrote (`tool_output_file`) and named as
-delivered — in its outcome summary, its verified `task_deliverable` /
-`partial_findings` / `summary_note` notes, or a completed micro-goal of its own
-durable task state — is attached to the answer, never replacing it: the newest
-write of each name, whole-name match ignoring case, digest-checked copy to
-`outputs/delivered/<execution>/<name>`, at most eight, images/audio/video left
-to `user_media`, the published answer's own bytes not attached twice. They are
-`audience=user`, `role=user_attachment` refs on
-`FinalizedOutputs.delivered_file_outputs`, committed with the primary output
-(media is registered after it): the terminal chat card is built from that
-commit and lists them under their own names, newest first, up to eight files.
+**Delivered files.** Three sources, in this order, are attached to the
+answer, never replacing it:
+
+1. files the run declared in `yield.deliverables` (see `YIELD_DECISION.md`),
+   whatever the summary says;
+2. a file the run wrote (`tool_output_file`) and named as delivered — in its
+   outcome summary, its verified `task_deliverable` / `partial_findings` /
+   `summary_note` notes, or a completed micro-goal of its own durable task
+   state;
+3. only when 1 and 2 found nothing (a run out of budget never yields), a
+   regular file in the task `workdir/` (no symlinks, hidden and dependency
+   dirs skipped, repository checkouts — `.git`/`.hg`/`.svn` — skipped
+   entirely, bounded walk, at most `MAX_DELIVERED_FILE_BYTES`) modified since
+   the execution started whose name or absolute path the same delivery text
+   gives.
+
+Capture also records a tool result's own top-level `path` / `file` /
+`artifact` / `workspace_path` as a `tool_output_file` for calls that write
+(`export_result`, shell, capabilities named write/save/export) when it is a
+regular file inside this task's workdir or execution outputs and the result
+is not a read (no `content`/`text`/`data` field); `workspace_path` resolves
+against the result's `workspace_root`.
+
+The newest write of each name, whole-name match ignoring case, digest-checked
+copy to `outputs/delivered/<execution>/<name>`, at most eight,
+images/audio/video left to `user_media`, the published answer's own bytes not
+attached twice. They are `audience=user`, `role=user_attachment` refs on
+`FinalizedOutputs.delivered_file_outputs`, promoted before task-level
+synthesis and committed with the primary output (media is registered after
+it): the terminal chat card is built from that commit and lists them under
+their own names, up to eight files, the primary deliverable first. The first
+declared file is the primary deliverable:
+`FinalizedOutputs.primary_deliverable_output_id` →
+`TaskRefs.primary_deliverable_output_id` (serde-defaulted; cleared by the next
+root answer that declares none). `TaskRefs.latest_delivered_output_ids` names
+the latest answer's files; earlier runs' attachments stay in `outputs` but
+are not linked or listed with a newer answer. The task outputs endpoint reports it as
+`primary_deliverable_output_id` plus `primary: true` and a `download_url` on
+the entry; chat `session_output` file blocks (`ContentBlockRecord::File`)
+carry `primary: true` for it, and the chat projection always includes it.
+
+**No host paths reach the owner.** `artifact_v2::delivered_links` is the one
+rule for user-facing text: an absolute path or `file://` link into the task
+directory whose file name is a delivered file becomes a link to its served URL
+(`/api/magician/v3/tasks/{task_id}/outputs/delivered/<execution>/<name>`) —
+matched on the whole path (workdir source, execution copy or promoted copy),
+never on the file name alone; any other path into the task and every other
+`file://` target is demoted to its file name (an image link to its alt
+text). Only prose is rewritten: fenced code blocks are left as written, an
+inline code span that is exactly one such path is replaced as a unit, and any
+other code span is left alone. The task-user synthesizer's bundle carries `delivered_files` (name, title,
+size, media type, served `url`, `primary`, and for a primary text
+deliverable a ~4 KB `head_excerpt` plus its markdown `outline`) with the
+instruction to name and link the primary deliverable without repeating its
+contents or host paths; the grounding corpus holds the delivered-file facts
+as Magician-recorded evidence (the excerpt as agent-written text), so the
+claim check never strips those names or links. The finalizer then applies
+the rule by format as the safety net: markdown/plain answers (plus a
+`**Files**` list of delivered files the answer does not already link), HTML
+answers (`href`/`src` values and text nodes; `<pre>`, `<code>`, `<script>`,
+`<style>`, `<textarea>` and comments untouched; a dead link's attribute is
+dropped), and JSON answers (string values only, keys and structure kept). A
+verified-file answer (`OutputBody::File`) is published byte for byte — its
+digest is re-checked on publication and byte preservation is its contract —
+so only Magician's own text about it (chat summary, "Done.") is rewritten; the
+chat channel applies it, with the latest answer's files only, to the terminal `TaskStatusUpdate` summary and the
+"Done." message (which also lists the files). The delegate's
+`chat.delegate.output_ready` payload, `get_task_details` and the awaited
+`create_task` result carry `delivered_files: [{output_id, name, url, size,
+primary, media_type}]`.
 
 **Delegation resume.** Task-backed direct runs resume automatically after
 delegated children finish (`WaitingChildren` → synthesized child summary

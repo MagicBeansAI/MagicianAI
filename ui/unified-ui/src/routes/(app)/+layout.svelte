@@ -3,6 +3,7 @@
   import { browser } from '$app/environment';
   import { goto, beforeNavigate } from '$app/navigation';
   import { page } from '$app/stores';
+  import { isEditableTarget, isInExclusiveKeyboardScope } from '$lib/shared/keyboardTargets';
   import WorkSpecialistFrame from '$lib/work/WorkSpecialistFrame.svelte';
   import { isWorkSpecialistPath, carryWorkSpecialistContext } from '$lib/work/specialistRoutes';
   import { canonicalWorkHref, workReturnHref } from '$lib/work/routes';
@@ -169,6 +170,12 @@
       clearLeader();
       return;
     }
+    // A modal text prompt (e.g. the "New thread" name dialog) owns every key,
+    // modifier chords included.
+    if (isInExclusiveKeyboardScope(event.target)) {
+      clearLeader();
+      return;
+    }
     const attentionOwnsFocus =
       get(focusedOverlay)?.id === OVERLAY_IDS.attentionCenter
       || get(focusedOverlay)?.id === OVERLAY_IDS.attentionPrompt
@@ -246,7 +253,7 @@
     // Don't fire leader shortcuts when modifier keys are held, when
     // typing in a form field, or while the palette is open.
     if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (isFormFocused()) return;
+    if (isFormFocused() || isEditableTarget(event.target)) return;
     if (get(commandPaletteOpen)) return;
 
     const key = event.key.toLowerCase();

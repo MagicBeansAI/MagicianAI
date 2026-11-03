@@ -192,7 +192,9 @@ provider-name branch.
 - **Host-bootstrap profiles** are ordered prerequisites, each naming the binaries
   that prove readiness and one bounded installer (`homebrew` or a reviewed
   Homebrew formula). macOS managed-container: Homebrew plus host Python (private
-  credential custody); native-services adds Node.js/npm and `uv`. Linux container
+  credential custody); native-services adds Node.js/npm, `uv` and ripgrep (for
+  installs from before the package shipped its own `rg.bin`, and for `rg` run
+  from PATH). Linux container
   declares host Python as a manual prerequisite (hard stop with distro-neutral
   guidance). The crate only parses and validates; Desktop detects and installs
   after showing the plan for consent.

@@ -1,5 +1,9 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
+	import { threadStore } from '$lib/stores/threadStore';
+	import { findThreadByKey } from '$lib/threads/threadKeys';
 	import WorkFrame from './WorkFrame.svelte';
 	import TasksWorkspace from '$lib/magician/tasks/TasksWorkspace.svelte';
 	import InternalTasksWorkspace from '$lib/internalTasks/InternalTasksWorkspace.svelte';
@@ -22,7 +26,22 @@
 	$: if (view !== 'all' || kind !== 'tasks') creating = false;
 	$: selectionKey = workSelectionKey($page.url.searchParams, kind);
 	$: returnHref = workReturnHref($page.url.searchParams.get('from'));
-	$: threadContextId = view === 'all' && kind === 'tasks' ? $page.url.searchParams.get('thread')?.trim().toLowerCase() || null : null;
+	// `?thread=` should be the thread's id, but a link may carry its slug or a
+	// former slug. Filter by the canonical id: a loaded thread maps at once, an
+	// unknown key is looked up once, and the URL is then rewritten to the id.
+	$: threadContextKey = view === 'all' && kind === 'tasks' ? $page.url.searchParams.get('thread')?.trim().toLowerCase() || null : null;
+	$: threadContextId = threadContextKey ? findThreadByKey($threadStore.threads, threadContextKey)?.id ?? threadContextKey : null;
+	const lookedUpThreadKeys = new Set<string>();
+	$: if (browser && threadContextKey && threadContextId === threadContextKey && !lookedUpThreadKeys.has(threadContextKey)
+		&& !$threadStore.threads.some((thread) => thread.id === threadContextKey)) {
+		lookedUpThreadKeys.add(threadContextKey);
+		void threadStore.resolveThreadKey(threadContextKey);
+	}
+	$: if (browser && threadContextKey && threadContextId && threadContextId !== threadContextKey) {
+		const next = new URL($page.url);
+		next.searchParams.set('thread', threadContextId);
+		void goto(`${next.pathname}${next.search}${next.hash}`, { replaceState: true, noScroll: true, keepFocus: true });
+	}
 	$: createHref = threadContextId ? workThreadHref(threadContextId, new URLSearchParams({ compose: '1' })) : '/work?compose=1';
 </script>
 

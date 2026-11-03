@@ -360,13 +360,14 @@ function parseAutonomousConfig(value: unknown): AutonomousConfig | undefined {
             const scheduleOverride = readString(faRec, 'schedule');
             const program = readString(faRec, 'program');
             const scope = readStringArray(faRec, 'scope');
-            if (!name || !description) return [];
+            // The server schedules a focus area whose description is empty.
+            if (!name) return [];
             const validPriority = (priority === 'high' || priority === 'medium' || priority === 'low')
                 ? priority as FocusAreaPriority
                 : 'medium';
             return [{
                 name,
-                description,
+                description: description ?? '',
                 priority: validPriority,
                 schedule: scheduleOverride,
                 program,

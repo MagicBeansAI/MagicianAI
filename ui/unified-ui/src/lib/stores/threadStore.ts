@@ -2,6 +2,7 @@ import { browser } from '$app/environment';
 import { get, writable } from 'svelte/store';
 
 import type { UiThreadDetail, UiThreadRecord } from '$lib/threads/types';
+import { findThreadByKey, isReservedThreadKey } from '$lib/threads/threadKeys';
 import { getCurrentScopeCredentialRevision, scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 import { LONG_FETCH_TIMEOUT_MS, timedFetch } from '$lib/shared/fetch';
 
@@ -106,6 +107,12 @@ function createThreadStore() {
 		}
 	}
 
+	/**
+	 * Load the thread a key names — its id, current slug or a former slug; the
+	 * server resolves it and answers with the canonical record (`id` + `slug`).
+	 * `ensure` creates a thread for a key nothing answers to, with that key as
+	 * its id, except a reserved route word (`new`), which never becomes one.
+	 */
 	async function loadThread(id: string, ensure = false): Promise<UiThreadDetail | null> {
 		if (!browser) return null;
 		const token = nextThreadLoadToken();
@@ -127,7 +134,7 @@ function createThreadStore() {
 			if (isStaleThreadLoad(token.generation, token.scopeKey)) {
 				return null;
 			}
-			if (!ensure) {
+			if (!ensure || isReservedThreadKey(id)) {
 				update((state) => ({ ...state, error: normalizeError(error) }));
 				return null;
 			}
@@ -137,6 +144,37 @@ function createThreadStore() {
 		}
 	}
 
+	/**
+	 * The thread a key (id, slug or former slug) names, for callers that only
+	 * need its canonical id: a loaded thread answers at once, otherwise one
+	 * `GET /ui-threads/{key}` whose record is merged into `threads`. Never
+	 * creates, never touches `activeThread` or `error`; `null` when nothing
+	 * answers.
+	 */
+	async function resolveThreadKey(key: string): Promise<UiThreadRecord | null> {
+		if (!browser) return null;
+		const known = findThreadByKey(get({ subscribe }).threads, key);
+		if (known) return known;
+		const normalized = key.trim().toLowerCase();
+		if (!normalized || isReservedThreadKey(normalized)) return null;
+		const token = nextThreadLoadToken();
+		try {
+			const payload = await requestJson<{ thread: UiThreadDetail }>(
+				`/api/magician/v2/ui-threads/${encodeURIComponent(normalized)}`
+			);
+			if (isStaleThreadLoad(token.generation, token.scopeKey)) return null;
+			update((state) => ({ ...state, threads: mergeThreadRecord(state.threads, payload.thread) }));
+			return payload.thread;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Create a thread named `name`. Without `explicitId` the server derives a
+	 * fresh unique id (and slug) from the name and never renames an existing
+	 * thread; navigate to the returned record's slug.
+	 */
 	async function createThread(name: string, explicitId?: string): Promise<UiThreadRecord | null> {
 		if (!browser) return null;
 		const token = nextThreadLoadToken();
@@ -309,6 +347,7 @@ function createThreadStore() {
 			return loadThread(id, true);
 		},
 		createThread,
+		resolveThreadKey,
 		updateThread,
 		deleteThread,
 		reorderThreads,
@@ -327,6 +366,7 @@ function mergeThreadRecord(
 		principal: record.principal,
 		workspace: record.workspace,
 		id: record.id,
+		slug: record.slug,
 		name: record.name,
 		archived: record.archived,
 		sort_order: record.sort_order,
@@ -334,7 +374,9 @@ function mergeThreadRecord(
 		memory_updated_at: record.memory_updated_at,
 		created_at: record.created_at,
 		updated_at: record.updated_at,
-		history_lane: record.history_lane
+		history_lane: record.history_lane,
+		display_mode: record.display_mode,
+		plan_mode: record.plan_mode
 	});
 	return next.sort((left, right) => {
 		if (left.id === 'general') return -1;

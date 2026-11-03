@@ -6,6 +6,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
+	import { threadHref } from '$lib/threads/threadLinks';
 	import type { ActiveMeetingSession } from '$lib/stores/meetingsStore';
 	import { putSeed, buildMeetingSeedContent } from '$lib/stores/vibeSeedStore';
 
@@ -232,7 +233,7 @@
 				title="Start a VibeDev build seeded with this meeting's transcript"
 				on:click={buildFromMeeting}
 			>✦ Build what we agreed</button>
-			<button class="btn" on:click={() => goto(`/t/${encodeURIComponent(threadId)}`)}>
+			<button class="btn" on:click={() => goto(threadHref(threadId))}>
 				Open in chat
 			</button>
 			<button

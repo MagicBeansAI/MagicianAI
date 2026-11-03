@@ -1,6 +1,6 @@
 ---
 name: "news-search-via-tavily"
-version: 0.2.3
+version: 0.2.4
 description: "Time-sensitive web/news search via Tavily AI. This is a provider adapter used by the `content_search` controller and a direct diagnostic tool when Tavily itself is explicitly requested. Not for ordinary stable factual Q&A or long autonomous reports (`deep-research-with-openai`)."
 metadata:
   magician:
@@ -90,7 +90,7 @@ metadata:
           commodity: tavily_credit
           encoding: microunits
     requires:
-      bins: ["tavily-search"]
+      bins: ["tavily-search", "python3"]
       env: ["TAVILY_API_KEY"]
     install_hint:
       docs: "requires env: TAVILY_API_KEY — set in vault before activating"
@@ -128,7 +128,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [tavily-search]
+        bins: [tavily-search, python3]
+        entrypoint: tavily-search
       runtime:
         protocol: cli
         command_prefix: []

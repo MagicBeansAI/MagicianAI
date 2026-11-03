@@ -654,6 +654,7 @@ class ChatRepository internal constructor(
         val decoded = runCatching {
             chatJson.decodeFromString(UiThreadListResponse.serializer(), response.bodyAsText())
         }.getOrElse { throw ChatError("Thread history response was invalid.") }
+        ThreadDirectory.remember(decoded.threads)
         return HistoryPage(decoded.threads, decoded.total, decoded.limit, decoded.offset)
     }
 
@@ -684,9 +685,11 @@ class ChatRepository internal constructor(
             setBody(buildJsonObject { put("name", name.trim()) }.toString())
         }
         if (!response.status.isSuccess()) throw failure(response.status, response.bodyAsText())
-        return runCatching {
-            chatJson.decodeFromString(UiThreadRecord.serializer(), response.bodyAsText())
-        }.getOrElse { throw ChatError("Magician created a thread with an invalid response.") }
+        // A bare record or a `{thread: …}` envelope; the server derives id and slug.
+        val thread = runCatching { ThreadDirectory.threadRecordOf(chatJson.parseToJsonElement(response.bodyAsText())) }
+            .getOrNull() ?: throw ChatError("Magician created a thread with an invalid response.")
+        ThreadDirectory.remember(listOf(thread))
+        return thread
     }
 
     suspend fun setThreadArchived(threadId: String, archived: Boolean) {

@@ -293,12 +293,12 @@ impl PiCodingEngineAdapter {
             args.push("--extension".to_string());
             args.push(path.display().to_string());
         }
-        // P1 — layer the executing agent's persona onto Pi's system prompt
-        // (`--append-system-prompt <path>`, repeatable; Pi reads each as a file and
-        // appends it, PRESERVING its built-in coding base prompt — unlike
-        // `--system-prompt`). The handler writes these files outside the shadow
-        // tree so they never enter the diff.
-        for path in &request.pi.append_system_prompt {
+        // P1 — layer the executing agent's persona and active playbook onto Pi's
+        // system prompt (`--append-system-prompt <path>`, repeatable; Pi reads each
+        // as a file and appends it, PRESERVING its built-in coding base prompt —
+        // unlike `--system-prompt`). The handler writes these files outside the
+        // shadow tree so they never enter the diff.
+        for path in &request.append_system_prompt {
             args.push("--append-system-prompt".to_string());
             args.push(path.display().to_string());
         }
@@ -1662,7 +1662,7 @@ mod tests {
         let adapter = PiCodingEngineAdapter::default();
         let mut req = request();
         req.pi.extension_paths = vec![PathBuf::from("/tmp/citizen.js")];
-        req.pi.append_system_prompt = vec![PathBuf::from("/tmp/persona.md")];
+        req.append_system_prompt = vec![PathBuf::from("/tmp/persona.md")];
         let args = adapter.command_args(&req);
         assert_eq!(
             args,

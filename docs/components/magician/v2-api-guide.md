@@ -121,6 +121,27 @@ Shared backend for the web client and channel bots: [Consumer Channels](../../co
 | `POST /chat/sessions/{id}/transcript` | Display-only line (`system`); never dispatches; archived `400`. |
 | `DELETE /chat/sessions/{id}/run` | Cancel an in-flight turn. |
 
+`ui_thread_id` on `GET /chat/active`, `POST /chat/new` and `GET /chat/sessions` may be a thread's slug or a former slug (see UI threads below): the server maps a key that names a live thread to its canonical id, so sessions are always filed under the id. A key that names no live thread passes through unchanged (a first reference still creates that thread id).
+
+## UI threads
+
+Chat threads (`/t/<key>` on the web). A thread has a permanent `id` (sessions, tasks and memory reference it; it never changes) and a `slug`, the URL key that follows its name. Records (`UiThreadRecord`) carry both: `{ principal, workspace, id, slug, name, archived, sort_order, memory_summary, memory_updated_at, created_at, updated_at, history_lane, display_mode, plan_mode }`. A client that sees no `slug` (older server) uses `id`.
+
+**Key resolution.** `{key}` below is an id, the current slug, or a former slug (alias), tried in that order against live threads; the response carries the canonical `id` and current `slug`. Clients should keep the `id` for every later call and build links from the `slug`.
+
+**Slug rules.** Unique per scope: never another thread's id (deleted ones included), live slug or alias. A collision appends `-2`, `-3`…. A name that slugs to nothing falls back to the id. `new` is reserved (the web "name a new thread" route): no thread is ever created with id or slug `new`. `general` keeps slug `general` through any rename.
+
+| Route | Description |
+| --- | --- |
+| `GET /ui-threads` | List (`threads`, `total`, `limit`, `offset`); `history_lane`, `archived=exclude\|include\|only`, `q`, `limit`, `offset` page it. |
+| `POST /ui-threads` | Create. `{ "name": "...", "id"?: "..." }`. Without `id` (or blank) the server derives a fresh unique id from the name, slug = id, and never renames an existing thread — the path for "New thread". An explicit `id` keeps create-or-rename semantics; `id: "new"` is treated as no id. → `UiThreadRecord`. |
+| `GET /ui-threads/{key}` | `{ thread: UiThreadDetail }` (record + `memory_text`); `404` when the key names no live thread. |
+| `PATCH /ui-threads/{key}` | `{ name?, archived?, memory_text?, display_mode?: "chat"\|"dev", plan_mode? }` → `{ thread }`. A new `name` moves the slug to the unique slug of that name and keeps the previous slug as an alias, so old links keep resolving; the id never changes. A key that names no stored thread is taken as an id, so `archived` still archives or restores the sessions of a thread that exists only through them. |
+| `DELETE /ui-threads/{key}` | `{ deleted: true, id }` with the canonical id; `#general` cannot be deleted. A deleted thread's id, slug and aliases stop resolving. |
+| `POST /ui-threads/reorder` | `{ ordered_ids: [id, …] }` (ids, not slugs) → list. |
+
+Storage: `ui_threads.duckdb` holds `ui_threads.slug` and `ui_thread_slug_aliases (principal, workspace, slug → thread_id)`. Opening a scope backfills a missing slug from the id, except a row whose id is reserved (`new`, made by the old web path), which gets a unique slug from its name.
+
 ## Meetings
 
 A passive listen and an agent join of one meeting share a dated `meeting-*` thread. Bearer scope. Rails and WhatsApp: [meetings.md](meetings.md).

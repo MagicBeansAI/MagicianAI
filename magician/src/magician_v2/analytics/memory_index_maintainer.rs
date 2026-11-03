@@ -102,6 +102,32 @@ struct DirtyMemoryIndexState {
     last_dirty_at: Instant,
     reasons: BTreeSet<String>,
     next_retry_at_unix_ms: Option<u64>,
+    /// Whether the scope has a usable index, resolved lazily by
+    /// [`rebuild_due_dirty_scopes`] (the dirty-event channel is sync and has
+    /// no storage access). A scope with no usable index serves every
+    /// retrieval from the lexical fast stage alone, so the ordinary max-wait
+    /// ceiling — which a long burst of writes can run out — spends that whole
+    /// window serving degraded recall. Cold starts cap the wait at a short
+    /// grace instead (see [`dirty_memory_index_state_is_due`]).
+    cold_start: ColdStart,
+}
+
+/// Whether a dirty scope has a usable derived index (a manifest with at least
+/// one document; see [`scope_has_memory_index`]). `Unknown` until the next
+/// maintainer tick resolves it: when the entry is created, and again after
+/// each failed or deferred attempt, since another path may have built the
+/// first index meanwhile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColdStart {
+    Unknown,
+    Yes,
+    No,
+}
+
+impl ColdStart {
+    fn from_missing_index(missing: bool) -> Self {
+        if missing { Self::Yes } else { Self::No }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +182,10 @@ struct MemoryIndexRebuildCooldown {
     failure_count: u32,
     next_retry_at_unix_ms: u64,
     last_error: String,
+    /// The failure hit a scope with no usable index yet, so it backs off on
+    /// the short cold-start schedule ([`memory_index_rebuild_backoff_for`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cold_start: bool,
 }
 
 impl MemoryIndexRebuildCooldown {
@@ -164,7 +194,7 @@ impl MemoryIndexRebuildCooldown {
     }
 
     fn backoff(&self) -> Duration {
-        memory_index_rebuild_backoff(self.failure_count)
+        memory_index_rebuild_backoff_for(self.failure_count, self.cold_start)
     }
 
     fn remaining_ms(&self, now_unix_ms: u64) -> u64 {
@@ -841,11 +871,20 @@ async fn record_memory_index_rebuild_failure(
         .await
         .map(|cooldown| cooldown.failure_count.saturating_add(1))
         .unwrap_or(1);
-    let backoff = memory_index_rebuild_backoff(failure_count);
+    // A scope with no usable index serves every retrieval from the lexical
+    // stage until a build succeeds, so its failures retry within minutes, not
+    // after the 15-minute ordinary cooldown. Every caller (dirty, startup and
+    // periodic reconcile) lands here, so the short schedule holds wherever
+    // the first build fails.
+    let cold_start = derived_memory_index_may_be_empty_or_uninitialized(storage)
+        .await
+        .unwrap_or(false);
+    let backoff = memory_index_rebuild_backoff_for(failure_count, cold_start);
     let cooldown = MemoryIndexRebuildCooldown {
         failure_count,
         next_retry_at_unix_ms: unix_epoch_millis_after(backoff),
         last_error: truncate_memory_index_rebuild_error(error),
+        cold_start,
     };
     // Keep the in-process retry even when persistence is unavailable. Dropping
     // the dirty scope here would leave a known failed source update stranded
@@ -1062,11 +1101,20 @@ fn raise_memory_index_rebuild_notice(
     }
 }
 
-fn memory_index_rebuild_backoff(failure_count: u32) -> Duration {
+/// Doubling backoff per consecutive failure, capped at one hour. A cold start
+/// (no usable index) starts at the cold-start grace instead of 15 minutes, so
+/// a transient first-build failure is retried within minutes, while one that
+/// keeps failing still backs off to the same cap as a warm scope.
+fn memory_index_rebuild_backoff_for(failure_count: u32, cold_start: bool) -> Duration {
+    let initial = if cold_start {
+        MEMORY_INDEX_COLD_START_GRACE
+    } else {
+        MEMORY_INDEX_REBUILD_RETRY_INITIAL
+    };
     let exponent = failure_count.saturating_sub(1).min(63);
     let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
     Duration::from_secs(
-        MEMORY_INDEX_REBUILD_RETRY_INITIAL
+        initial
             .as_secs()
             .saturating_mul(multiplier)
             .min(MEMORY_INDEX_REBUILD_RETRY_MAX.as_secs()),
@@ -1934,14 +1982,7 @@ async fn derived_memory_index_may_be_empty_or_uninitialized(
         },
         Err(error) => return Err(error.into()),
     };
-    let Ok(manifest) =
-        serde_json::from_slice::<magician_vector_index::memory_index::MemoryIndexManifest>(&bytes)
-    else {
-        // A malformed manifest is not an empty-scope signal. The normal audit
-        // path must surface it rather than silently discarding repair state.
-        return Ok(false);
-    };
-    Ok(manifest.document_count == 0)
+    Ok(manifest_bytes_describe_empty_index(&bytes))
 }
 
 async fn rebuild_due_dirty_scopes(
@@ -1958,6 +1999,21 @@ async fn rebuild_due_dirty_scopes(
     let now_unix_ms = unix_epoch_millis_now();
     let debounce = non_zero_or_default(debounce, Duration::from_secs(15));
     let max_wait = bounded_dirty_memory_index_max_wait(debounce);
+    // Cold-start is resolved here rather than at event time: the dirty event
+    // channel is sync and has no storage access. It is one manifest read (only
+    // `document_count` is parsed) per newly dirty or just-retried scope, not
+    // per tick — negligible against a rebuild.
+    for (scope, state) in pending_dirty.iter_mut() {
+        if let ColdStart::Unknown = state.cold_start {
+            let cold = !scope_has_memory_index(
+                workspace_layout,
+                &scope.principal,
+                &scope.workspace,
+            )
+            .await;
+            state.cold_start = ColdStart::from_missing_index(cold);
+        }
+    }
     let due = pending_dirty
         .iter()
         .filter_map(|(scope, state)| {
@@ -1987,6 +2043,9 @@ async fn rebuild_due_dirty_scopes(
             DirtyScopeRebuildOutcome::RetryAt(next_retry_at_unix_ms) => {
                 if let Some(state) = pending_dirty.get_mut(&scope) {
                     state.next_retry_at_unix_ms = Some(next_retry_at_unix_ms);
+                    // Another path (startup or periodic reconcile) may build
+                    // the first index while this entry waits; re-resolve.
+                    state.cold_start = ColdStart::Unknown;
                 }
             },
         }
@@ -2006,6 +2065,10 @@ fn dirty_memory_index_state_is_due(
     quiet_debounce: Duration,
     max_wait: Duration,
 ) -> bool {
+    // The retry time holds for cold starts too: a failed first build is
+    // retried on the short cold-start backoff that
+    // `record_memory_index_rebuild_failure` persists, and `rebuild_dirty_scope`
+    // would skip the scope until that persisted time anyway.
     if state
         .next_retry_at_unix_ms
         .is_some_and(|next_retry_at_unix_ms| next_retry_at_unix_ms > now_unix_ms)
@@ -2018,8 +2081,23 @@ fn dirty_memory_index_state_is_due(
     let dirty_for = now
         .checked_duration_since(state.first_dirty_at)
         .unwrap_or_default();
+    // Every retrieval until the first build is fallback, so a cold start keeps
+    // the quiet-period debounce but caps the wait at the grace, converging
+    // even while writes keep the scope from ever going quiet.
+    let max_wait = if matches!(state.cold_start, ColdStart::Yes) {
+        max_wait.min(MEMORY_INDEX_COLD_START_GRACE)
+    } else {
+        max_wait
+    };
     quiet_for >= quiet_debounce || dirty_for >= max_wait
 }
+
+/// How long a scope with no index manifest may stay dirty before the first
+/// build is due, even without a quiet period. Long enough to coalesce the
+/// write burst of a few turns; short enough that a user who pastes a large
+/// document and keeps chatting gets hybrid retrieval within a couple of
+/// maintainer ticks instead of after the debounce ceiling.
+const MEMORY_INDEX_COLD_START_GRACE: Duration = Duration::from_secs(60);
 
 async fn rebuild_dirty_scope(
     workspace_layout: &ArtifactV2Workspace,
@@ -2295,6 +2373,43 @@ async fn scope_has_memory_root(
         .unwrap_or(false)
 }
 
+/// Whether the scope has a usable derived memory index: a manifest that
+/// indexes at least one document. A scope without one serves every retrieval
+/// from the lexical fast stage alone, which is the condition
+/// [`DirtyMemoryIndexState::cold_start`] fast-tracks. Same test as
+/// [`derived_memory_index_may_be_empty_or_uninitialized`], read from the
+/// layout because the dirty tick holds no `AgentStorage`; the path mirrors
+/// `AgentStorage::memory_index_manifest_path` (`<memory root>/index/manifest.json`).
+async fn scope_has_memory_index(
+    workspace_layout: &ArtifactV2Workspace,
+    principal: &str,
+    workspace: &str,
+) -> bool {
+    let manifest = workspace_layout
+        .memory_root(principal, workspace)
+        .join("index")
+        .join("manifest.json");
+    match fs::read(manifest).await {
+        Ok(bytes) => !manifest_bytes_describe_empty_index(&bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        // Unreadable is not evidence of a cold start; keep the ordinary path.
+        Err(_) => true,
+    }
+}
+
+/// A manifest that parses and indexes no documents. A malformed manifest is
+/// not an empty-scope signal: the normal audit path must surface it. Reads
+/// only the top-level `document_count` of `MemoryIndexManifest`: a live
+/// manifest runs to megabytes of source hashes, and the dirty tick and every
+/// failure record ask this.
+fn manifest_bytes_describe_empty_index(bytes: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct DocumentCount {
+        document_count: usize,
+    }
+    serde_json::from_slice::<DocumentCount>(bytes).is_ok_and(|manifest| manifest.document_count == 0)
+}
+
 /// Number of items actually embedded for a completed memory-index write.
 ///
 /// Prefers the LanceDB write report's `embedded_rows` (chunks whose vectors
@@ -2519,6 +2634,7 @@ fn record_dirty_event(
             last_dirty_at: now,
             reasons: BTreeSet::from([event.reason]),
             next_retry_at_unix_ms: None,
+            cold_start: ColdStart::Unknown,
         });
 }
 
@@ -2725,21 +2841,66 @@ mod tests {
     #[test]
     fn memory_index_rebuild_backoff_is_exponential_and_capped() {
         assert_eq!(
-            memory_index_rebuild_backoff(1),
+            memory_index_rebuild_backoff_for(1, false),
             MEMORY_INDEX_REBUILD_RETRY_INITIAL
         );
         assert_eq!(
-            memory_index_rebuild_backoff(2),
+            memory_index_rebuild_backoff_for(2, false),
             Duration::from_secs(30 * 60)
         );
         assert_eq!(
-            memory_index_rebuild_backoff(3),
+            memory_index_rebuild_backoff_for(3, false),
             MEMORY_INDEX_REBUILD_RETRY_MAX
         );
         assert_eq!(
-            memory_index_rebuild_backoff(u32::MAX),
+            memory_index_rebuild_backoff_for(u32::MAX, false),
             MEMORY_INDEX_REBUILD_RETRY_MAX
         );
+    }
+
+    #[test]
+    fn cold_start_rebuild_backoff_starts_at_grace_and_keeps_the_hourly_cap() {
+        assert_eq!(
+            memory_index_rebuild_backoff_for(1, true),
+            MEMORY_INDEX_COLD_START_GRACE
+        );
+        assert_eq!(
+            memory_index_rebuild_backoff_for(2, true),
+            Duration::from_secs(2 * 60)
+        );
+        assert_eq!(
+            memory_index_rebuild_backoff_for(5, true),
+            Duration::from_secs(16 * 60)
+        );
+        assert_eq!(
+            memory_index_rebuild_backoff_for(u32::MAX, true),
+            MEMORY_INDEX_REBUILD_RETRY_MAX
+        );
+    }
+
+    #[tokio::test]
+    async fn first_build_failure_on_scope_without_index_persists_short_cooldown() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage = AgentStorage::new(temp.path().join("memory"));
+        let scope = DirtyMemoryIndexScope {
+            principal: "principal".to_string(),
+            workspace: "workspace".to_string(),
+        };
+        let before = unix_epoch_millis_now();
+        let cooldown = record_memory_index_rebuild_failure(&storage, &scope, "embedding failed")
+            .await
+            .expect("cooldown");
+        assert!(cooldown.cold_start);
+        assert_eq!(cooldown.backoff(), MEMORY_INDEX_COLD_START_GRACE);
+        let remaining = cooldown.remaining_ms(before);
+        assert!(
+            remaining <= MEMORY_INDEX_COLD_START_GRACE.as_millis() as u64 + 1_000,
+            "cold-start retry waits about the grace, not 15 minutes: {remaining} ms"
+        );
+        let restored = load_memory_index_rebuild_cooldown(&storage, &scope)
+            .await
+            .expect("persisted cooldown");
+        assert!(restored.cold_start);
     }
 
     #[test]
@@ -2783,6 +2944,7 @@ mod tests {
                 last_dirty_at: now - quiet_for,
                 reasons: BTreeSet::from(["test".to_string()]),
                 next_retry_at_unix_ms,
+                cold_start: ColdStart::No,
             };
             assert_eq!(
                 dirty_memory_index_state_is_due(
@@ -2796,6 +2958,92 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn cold_start_scope_is_due_on_short_grace_without_quiet() {
+        let now = Instant::now();
+        let debounce = Duration::from_secs(15);
+        let max_wait = bounded_dirty_memory_index_max_wait(debounce);
+        // Still inside the grace: not due, burst coalescing.
+        let within_grace = DirtyMemoryIndexState {
+            first_dirty_at: now - Duration::from_secs(30),
+            last_dirty_at: now,
+            reasons: BTreeSet::from(["test".to_string()]),
+            next_retry_at_unix_ms: None,
+            cold_start: ColdStart::Yes,
+        };
+        assert!(!dirty_memory_index_state_is_due(
+            &within_grace,
+            now,
+            unix_epoch_millis_now(),
+            debounce,
+            max_wait,
+        ));
+        // Continuously dirty past the grace: due, even with zero quiet time —
+        // the exact shape of a long paste or benchmark ingest that never
+        // lets the debounce fire.
+        let past_grace = DirtyMemoryIndexState {
+            first_dirty_at: now - MEMORY_INDEX_COLD_START_GRACE - Duration::from_secs(1),
+            last_dirty_at: now,
+            reasons: BTreeSet::from(["test".to_string()]),
+            next_retry_at_unix_ms: None,
+            cold_start: ColdStart::Yes,
+        };
+        assert!(dirty_memory_index_state_is_due(
+            &past_grace,
+            now,
+            unix_epoch_millis_now(),
+            debounce,
+            max_wait,
+        ));
+        // A warm scope keeps the ordinary debounce contract.
+        let warm = DirtyMemoryIndexState {
+            first_dirty_at: now - Duration::from_secs(300),
+            last_dirty_at: now,
+            reasons: BTreeSet::from(["test".to_string()]),
+            next_retry_at_unix_ms: None,
+            cold_start: ColdStart::No,
+        };
+        assert!(!dirty_memory_index_state_is_due(
+            &warm,
+            now,
+            unix_epoch_millis_now(),
+            debounce,
+            max_wait,
+        ));
+        // One write, then quiet: the ordinary debounce still fires, so a cold
+        // start never waits longer than a warm scope would.
+        let quiet_after_one_write = DirtyMemoryIndexState {
+            first_dirty_at: now - debounce - Duration::from_secs(1),
+            last_dirty_at: now - debounce - Duration::from_secs(1),
+            reasons: BTreeSet::from(["test".to_string()]),
+            next_retry_at_unix_ms: None,
+            cold_start: ColdStart::Yes,
+        };
+        assert!(dirty_memory_index_state_is_due(
+            &quiet_after_one_write,
+            now,
+            unix_epoch_millis_now(),
+            debounce,
+            max_wait,
+        ));
+        // A failed first build waits out its (short, persisted) retry time
+        // instead of being re-selected every tick.
+        let retry_pending = DirtyMemoryIndexState {
+            first_dirty_at: now - MEMORY_INDEX_COLD_START_GRACE - Duration::from_secs(1),
+            last_dirty_at: now - debounce - Duration::from_secs(1),
+            reasons: BTreeSet::from(["test".to_string()]),
+            next_retry_at_unix_ms: Some(unix_epoch_millis_now().saturating_add(30_000)),
+            cold_start: ColdStart::Yes,
+        };
+        assert!(!dirty_memory_index_state_is_due(
+            &retry_pending,
+            now,
+            unix_epoch_millis_now(),
+            debounce,
+            max_wait,
+        ));
     }
 
     #[test]
@@ -2981,6 +3229,7 @@ mod tests {
             last_error:
                 "runtime memory index reconciliation requires explicit rebuild: missing_manifest"
                     .to_string(),
+            cold_start: false,
         };
         assert!(persist_memory_index_rebuild_cooldown(&storage, &scope, &cooldown).await);
         record_memory_index_change(&storage, MemoryIndexChange::UserKnowledge)
@@ -3136,6 +3385,7 @@ mod tests {
             failure_count: 290,
             next_retry_at_unix_ms: unix_epoch_millis_now().saturating_add(60_000),
             last_error: "requires explicit rebuild: schema_version_changed".to_string(),
+            cold_start: false,
         };
         assert!(persist_memory_index_rebuild_cooldown(&storage, &scope, &cooldown).await);
 
@@ -3205,6 +3455,7 @@ mod tests {
             failure_count: 2,
             next_retry_at_unix_ms: now_unix_ms.saturating_add(10_000),
             last_error: "Ollama embedding request timed out".to_string(),
+            cold_start: false,
         };
 
         assert!(

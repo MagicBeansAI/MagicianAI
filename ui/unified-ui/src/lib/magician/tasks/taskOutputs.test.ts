@@ -355,13 +355,94 @@ describe('fetchTaskOutputFiles — deliverables, the other outputs, and the side
 
 		const files = (await fetchTaskOutputFiles('task_alpha', 'me', 'default')) ?? [];
 
+		// The summary drops behind the file the run delivered, and reads Summary.
 		expect(files.filter((file) => file.deliverable !== false).map((file) => file.name)).toEqual([
-			'out_task_user_1.md',
-			'chart.png'
+			'chart.png',
+			'out_task_user_1.md'
 		]);
+		expect(files.find((file) => file.name === 'out_task_user_1.md')?.label).toBe('Summary');
 		expect(files.filter((file) => file.deliverable === false).map((file) => file.name)).toEqual([
 			'out_task_agent_1.md',
 			'out_task_continuation_1.json'
+		]);
+	});
+
+	it('leads with the primary deliverable, then the other delivered files, then the summary', async () => {
+		serve({
+			outputs: {
+				task_id: 'task_alpha',
+				primary_user_output_id: 'out_task_user_task_alpha_exec_1',
+				primary_deliverable_output_id: 'deliv_report',
+				outputs: [
+					{
+						output_id: 'out_task_user_task_alpha_exec_1',
+						audience: 'user',
+						role: 'primary_task_user',
+						relative_path: 'outputs/out_task_user_task_alpha_exec_1.md',
+						media_type: 'text/markdown',
+						deliverable: true
+					},
+					{
+						output_id: 'out_task_continuation_task_alpha_exec_1',
+						audience: 'agent',
+						role: 'continuation_context',
+						relative_path: 'outputs/out_task_continuation_task_alpha_exec_1.json',
+						deliverable: false
+					},
+					{
+						output_id: 'deliv_notes',
+						audience: 'user',
+						role: 'user_attachment',
+						relative_path: 'outputs/delivered/exec_1/notes.md',
+						media_type: 'text/markdown',
+						deliverable: true,
+						download_url: '/api/magician/v3/tasks/task_alpha/outputs/delivered/exec_1/notes.md'
+					},
+					{
+						output_id: 'deliv_report',
+						audience: 'user',
+						role: 'user_attachment',
+						relative_path: 'outputs/delivered/exec_1/Q3 report.pdf',
+						media_type: 'application/pdf',
+						size_bytes: 2048,
+						deliverable: true,
+						primary: true,
+						download_url: '/api/magician/v3/tasks/task_alpha/outputs/delivered/exec_1/Q3%20report.pdf'
+					}
+				]
+			}
+		});
+
+		const files = (await fetchTaskOutputFiles('task_alpha', 'me', 'default')) ?? [];
+
+		expect(
+			files.map((file) => [file.name, file.label ?? null, file.primary === true, file.deliverable !== false])
+		).toEqual([
+			['Q3 report.pdf', null, true, true],
+			// The continuation keeps its slot: only deliverables move.
+			['out_task_continuation_task_alpha_exec_1.json', null, false, false],
+			['notes.md', null, false, true],
+			['out_task_user_task_alpha_exec_1.md', 'Summary', false, true]
+		]);
+		expect(files[0].sizeBytes).toBe(2048);
+		expect(files[3].reportSource).toBe(true);
+	});
+
+	it('takes the primary from the top-level id when a row does not say so', async () => {
+		serve({
+			outputs: {
+				primary_deliverable_output_id: 'b',
+				outputs: [
+					{ output_id: 'a', audience: 'user', role: 'user_attachment', relative_path: 'outputs/delivered/e/a.csv' },
+					{ output_id: 'b', audience: 'user', role: 'user_attachment', relative_path: 'outputs/delivered/e/b.csv' }
+				]
+			}
+		});
+
+		const files = (await fetchTaskOutputFiles('task_alpha', 'me', 'default')) ?? [];
+		expect(files.map((file) => [file.name, file.primary === true])).toEqual([
+			['b.csv', true],
+			['a.csv', false]
 		]);
 	});
 });

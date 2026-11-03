@@ -237,6 +237,241 @@ final class NetworkingViewModelTests: XCTestCase {
         XCTAssertEqual(requestedOffsets, ["0", "15"])
     }
 
+    // MARK: Thread tap filters Sessions
+
+    func testThreadSessionsFilterSendsThreadAndNoLane() throws {
+        var queries: [[URLQueryItem]] = []
+        MockURLProtocol.handler = { request in
+            XCTAssertTrue(request.url!.path.hasSuffix("chat/sessions"))
+            queries.append(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            var session = self.sessionJSON(id: "plans-session", updated: 9, lane: "automated")
+            session["ui_thread_id"] = "plans"
+            return (response(for: request), jsonData([
+                "sessions": [session], "total": 1, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.activeTab = "threads"
+        let plans = try threadRecord("plans")
+
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+
+        XCTAssertEqual(queries.count, 1)
+        let query = try XCTUnwrap(queries.last)
+        XCTAssertEqual(query.first(where: { $0.name == "ui_thread_id" })?.value, "plans")
+        XCTAssertNil(query.first(where: { $0.name == "history_lane" }))
+        XCTAssertEqual(query.first(where: { $0.name == "limit" })?.value, "15")
+        XCTAssertEqual(query.first(where: { $0.name == "offset" })?.value, "0")
+        XCTAssertEqual(sut.activeTab, "sessions")
+        XCTAssertEqual(sut.searchText, "")
+        XCTAssertEqual(sut.sessionThreadFilter?.id, "plans")
+        XCTAssertEqual(sut.sessions.map(\.id), ["plans-session"])
+    }
+
+    func testShowingThreadSessionsClearsSearchAndPage() throws {
+        var paths: [String] = []
+        var offsets: [String] = []
+        MockURLProtocol.handler = { request in
+            let path = request.url!.path
+            paths.append(path)
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            offsets.append(query.first(where: { $0.name == "offset" })?.value ?? "")
+            if path.hasSuffix("history/search") {
+                return (response(for: request), jsonData([
+                    "items": [], "total": 30, "limit": 15, "offset": 0
+                ]))
+            }
+            return (response(for: request), jsonData([
+                "sessions": [self.sessionJSON(id: "plans-session", updated: 9)],
+                "total": 1, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        sut.activeTab = "threads"
+        sut.searchText = "plans"
+        waitForHistoryLoad(sut) { sut.submitSearch() }
+        waitForHistoryLoad(sut) { sut.loadNextPage() }
+        XCTAssertTrue(sut.isSearchActive)
+        XCTAssertEqual(sut.offset, 15)
+
+        let plans = try threadRecord("plans")
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+
+        XCTAssertTrue(try XCTUnwrap(paths.last).hasSuffix("chat/sessions"))
+        XCTAssertEqual(offsets.last, "0")
+        XCTAssertFalse(sut.isSearchActive)
+        XCTAssertEqual(sut.searchText, "")
+        XCTAssertEqual(sut.offset, 0)
+        XCTAssertEqual(sut.activeTab, "sessions")
+    }
+
+    func testClearingThreadFilterRestoresTheLane() throws {
+        var queries: [[URLQueryItem]] = []
+        MockURLProtocol.handler = { request in
+            queries.append(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? [])
+            return (response(for: request), jsonData([
+                "sessions": [], "total": 0, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let plans = try threadRecord("plans")
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+
+        waitForHistoryLoad(sut) { sut.clearSessionThreadFilter() }
+
+        XCTAssertEqual(queries.count, 2)
+        let query = try XCTUnwrap(queries.last)
+        XCTAssertEqual(query.first(where: { $0.name == "history_lane" })?.value, "personal")
+        XCTAssertNil(query.first(where: { $0.name == "ui_thread_id" }))
+        XCTAssertNil(sut.sessionThreadFilter)
+    }
+
+    func testSecondThreadTapReplacesTheFilter() throws {
+        var requestedThreads: [String?] = []
+        MockURLProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            requestedThreads.append(query.first(where: { $0.name == "ui_thread_id" })?.value)
+            return (response(for: request), jsonData([
+                "sessions": [], "total": 0, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let plans = try threadRecord("plans")
+        let travel = try threadRecord("travel")
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+
+        waitForHistoryLoad(sut) { sut.showSessions(of: travel) }
+
+        XCTAssertEqual(requestedThreads, ["plans", "travel"])
+        XCTAssertEqual(sut.sessionThreadFilter?.id, "travel")
+    }
+
+    func testNewSessionWhileFilteredIsCreatedInTheFilteredThread() throws {
+        var createQuery: [URLQueryItem] = []
+        var refreshQuery: [URLQueryItem] = []
+        var created = false
+        let refreshed = expectation(description: "filtered page re-read after create")
+        MockURLProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            if request.httpMethod == "POST" {
+                XCTAssertTrue(request.url!.path.hasSuffix("chat/new"))
+                createQuery = query
+                created = true
+                var session = self.sessionJSON(id: "new-plans-session", updated: 9, lane: "automated")
+                session["ui_thread_id"] = "plans"
+                return (response(for: request), jsonData(["session": session]))
+            }
+            if created {
+                refreshQuery = query
+                refreshed.fulfill()
+            }
+            return (response(for: request), jsonData([
+                "sessions": [], "total": 0, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let plans = try threadRecord("plans", lane: "automated")
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+        sut.historyLane = .automated
+        XCTAssertTrue(sut.showsNewItemButton)
+        sut.historyLane = .personal
+
+        let opened = expectation(description: "session created")
+        sut.newPanelSession { sessionId in
+            XCTAssertEqual(sessionId, "new-plans-session")
+            opened.fulfill()
+        }
+        wait(for: [opened, refreshed], timeout: 2)
+
+        XCTAssertEqual(createQuery.first(where: { $0.name == "ui_thread_id" })?.value, "plans")
+        XCTAssertEqual(createQuery.first(where: { $0.name == "history_lane" })?.value, "automated")
+        XCTAssertEqual(refreshQuery.first(where: { $0.name == "ui_thread_id" })?.value, "plans")
+        XCTAssertNil(refreshQuery.first(where: { $0.name == "history_lane" }))
+        XCTAssertEqual(sut.historyLane, .personal)
+        XCTAssertEqual(sut.sessionThreadFilter?.id, "plans")
+    }
+
+    func testDeletingTheFilteredThreadClearsTheFilter() throws {
+        var lastSessionsQuery: [URLQueryItem] = []
+        MockURLProtocol.handler = { request in
+            if request.httpMethod == "DELETE" {
+                XCTAssertTrue(request.url!.path.hasSuffix("ui-threads/plans"))
+                return (response(for: request, status: 204), Data())
+            }
+            lastSessionsQuery = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            return (response(for: request), jsonData([
+                "sessions": [], "total": 0, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let plans = try threadRecord("plans")
+        waitForHistoryLoad(sut) { sut.showSessions(of: plans) }
+
+        waitForHistoryLoad(sut) { sut.deleteThread("plans") }
+
+        XCTAssertNil(sut.sessionThreadFilter)
+        XCTAssertNil(lastSessionsQuery.first(where: { $0.name == "ui_thread_id" }))
+        XCTAssertEqual(lastSessionsQuery.first(where: { $0.name == "history_lane" })?.value, "personal")
+    }
+
+    func testTappingASessionWhileAThreadOpensKeepsTheTappedSession() throws {
+        MockURLProtocol.handler = { request in
+            var session = self.sessionJSON(id: "travel-session", updated: 9)
+            session["ui_thread_id"] = "travel"
+            return (response(for: request), jsonData([
+                "sessions": [session], "total": 1, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let travel = try threadRecord("travel")
+        let finished = expectation(description: "late thread open dropped")
+        var openedSessionId: String? = "unset"
+
+        sut.openThread(travel) { sessionId in
+            openedSessionId = sessionId
+            finished.fulfill()
+        }
+        sut.selectSession("tapped-session")
+        wait(for: [finished], timeout: 2)
+
+        XCTAssertNil(openedSessionId)
+        XCTAssertEqual(sut.activeSessionId, "tapped-session")
+    }
+
+    func testGeneralThreadFilters() throws {
+        var requestedThread: String?
+        var requestedLane: String?
+        MockURLProtocol.handler = { request in
+            let query = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            requestedThread = query.first(where: { $0.name == "ui_thread_id" })?.value
+            requestedLane = query.first(where: { $0.name == "history_lane" })?.value
+            return (response(for: request), jsonData([
+                "sessions": [self.sessionJSON(id: "general-session", updated: 9, isDefault: true)],
+                "total": 1, "limit": 15, "offset": 0
+            ]))
+        }
+        let sut = ThreadViewModel(networkSession: mockSession())
+        let general = try threadRecord("general")
+
+        waitForHistoryLoad(sut) { sut.showSessions(of: general) }
+
+        XCTAssertEqual(requestedThread, "general")
+        XCTAssertNil(requestedLane)
+        XCTAssertEqual(sut.sessionThreadFilter?.id, "general")
+    }
+
+    private func threadRecord(_ id: String, lane: String = "personal") throws -> UiThreadRecord {
+        try JSONDecoder().decode(UiThreadRecord.self, from: jsonData(threadJSON(id: id, sort: 1, lane: lane)))
+    }
+
+    /// Runs `action` and waits until the history page it started has loaded.
+    private func waitForHistoryLoad(_ sut: ThreadViewModel, _ action: () -> Void) {
+        let loaded = expectation(description: "history page loaded")
+        sut.$isLoading.dropFirst().filter { !$0 }.prefix(1).sink { _ in loaded.fulfill() }.store(in: &cancellables)
+        action()
+        wait(for: [loaded], timeout: 2)
+    }
+
     func testHistorySearchIgnoresSelectedLaneAndTabAndReturnsMixedTaggedResults() {
         var seenQueries: [[URLQueryItem]] = []
         MockURLProtocol.handler = { request in

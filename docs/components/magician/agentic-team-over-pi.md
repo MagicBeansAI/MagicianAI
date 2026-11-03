@@ -17,13 +17,23 @@ dispatch from data the driving agent already has.
 
 ## Persona projection
 
-A coding run layers the **executing agent's** persona onto Pi through a
-spawn-time `--append-system-prompt`. It adds to Pi's built-in coding base
-prompt; it does not replace it.
+A coding run layers the **executing agent's** persona onto whichever coding
+engine runs it. It adds to the engine's built-in coding base prompt; it does
+not replace it.
 
 - `CodingEngineRequest.append_system_prompt: Vec<PathBuf>`
-  (`coding_engine/mod.rs`) carries one or more append-prompt files; `pi.rs`
-  `command_args` emits `--append-system-prompt <path>` per entry.
+  (`coding_engine/mod.rs`) carries one or more append-prompt files (persona,
+  then playbook) for every engine. Each adapter delivers them its own way:
+
+  | Engine | Channel | Resumed session |
+  |---|---|---|
+  | Pi | `--append-system-prompt <path>` per file (`pi.rs` `command_args`) | sent again on every spawn |
+  | Claude Code | `--append-system-prompt <text>`; text over 96 KiB goes through `--append-system-prompt-file` (one file, joined beside its sources when there are several) | sent on every launch: the system prompt is not session history |
+  | Codex app-server | `developerInstructions` on `thread/start` (keeps Codex's base instructions) | not resent: the thread holds them from its start |
+  | Grok ACP, Agy | no system-prompt channel: a fenced `STANDING INSTRUCTIONS` block ahead of a new session's first prompt | not resent: the block is in the session's first prompt; a resume that falls back to a fresh session gets it again |
+
+  A file that cannot be read is skipped with a `coding_engine` warning naming
+  the engine.
 - `run_coding_task` renders the persona framing the agent runs under
   (autonomous controls off) to a file **outside the shadow tree** (the
   `pi-extensions` dir the citizen extension uses, keyed by the per-repo
@@ -41,14 +51,13 @@ asked for, else `personal-assistant`). A VibeDev **build** run, gated by
 (which excludes `plan`/Discuss runs), is stamped server-side to the configured
 lead at task creation, so swapping the lead is a one-line YAML edit.
 
-## Skill projection (dormant by default)
+## Skill projection
 
 `run_coding_task` reads the executing agent's `active_procedure_skill` memory
-tier (read-only) and folds the playbook body into a second
-`--append-system-prompt` file, after the persona. **Dormant today:** no IC
-engineer's `tools:` allowlist holds a procedure skill, so the helper returns
-`None` and the Pi argv is unchanged. Granting and activating a procedure skill
-makes it carry content with no coding-engine change.
+tier (read-only) and folds the playbook body, and the files it links to
+(within a 256 KiB budget), into a second append-prompt file after the persona,
+delivered to every engine as above. With no active procedure skill the helper
+returns `None` and the engine's launch is unchanged.
 
 ## Per-grant citizen tool scoping
 
@@ -109,7 +118,7 @@ magician's loop and contribute through `contribute_to_project`.
 ## Key files
 
 - `magician/src/magician_v2/execution/coding_engine/mod.rs`: `CodingEngineRequest.append_system_prompt`.
-- `magician/src/magician_v2/execution/coding_engine/pi.rs`: emits `--append-system-prompt`.
+- `magician/src/magician_v2/execution/coding_engine/pi.rs`, `claude.rs`, `codex.rs`, `grok.rs`, `agy.rs`: deliver `append_system_prompt` per the table above.
 - `magician/src/magician_v2/execution/coding_engine/citizen.rs`: `CitizenGrant.allowed_tools`.
 - `magician/src/magician_v2/execution/compiled_handlers/run_coding_task.rs`: persona/skill append + grant mint.
 - `magician/src/magician_v2/execution/compiled_handlers/contribute_to_project.rs`: the contribute handler.

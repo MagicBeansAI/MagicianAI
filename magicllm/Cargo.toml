@@ -1,6 +1,6 @@
 [package]
 name = "magicllm"
-version = "0.2.55"
+version = "0.2.56"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Shared multi-provider LLM abstraction for Magician platform services"

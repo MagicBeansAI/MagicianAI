@@ -1,0 +1,29 @@
+name: test_skill
+description: Run a skillshub skill's offline tests after the owner approves, and return pass/fail with output.
+version: "1.0.0"
+guide: |
+  Tool name: `test_skill`
+
+  Finds the skill's tests — its own `skillshub/<name>/tests/` folder and
+  `skillshub/scripts/tests/test_<name>.py` (dashes as underscores) — asks the
+  owner to approve running them (they execute code from the checkout), then
+  runs each with `python3 -m unittest discover` from the repo root.
+  Returns `{ skill, status: passed | failed | denied | no_tests, results: [{
+  suite, ok, exit_code, timed_out, output_tail }] }`. On a failure read
+  `output_tail`, fix the skill, and run it again.
+parameters:
+  - name: name
+    required: true
+    param_type: string
+    description: The skill's folder name under skillshub/ (for example `impeccable`).
+implementation:
+  type: compiled
+  provider_name: test_skill
+execution:
+  requires_browser_session: false
+  default_timeout_secs: 1800
+  categories:
+    - coding
+    - filesystem
+  composition_category: action
+  sandbox: none

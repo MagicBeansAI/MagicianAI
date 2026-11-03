@@ -1,6 +1,6 @@
 ---
 name: find-details-by-username
-version: 0.2.0
+version: 0.2.1
 description: 'Toolskill wrapping Maigret as findDetailsByUsername: collect public OSINT
 
   leads for a username across social networks, developer sites, forums, and
@@ -25,6 +25,8 @@ metadata:
     requires:
       bins:
       - find-details-by-username
+      - python3
+      - maigret
     install_hint:
       docs: 'Requires Python 3.10+. Installed into skillshub/.venv by
 
@@ -42,6 +44,9 @@ metadata:
       requires:
         bins:
         - find-details-by-username
+        - python3
+        - maigret
+        entrypoint: find-details-by-username
       runtime:
         protocol: cli
         command_prefix: []

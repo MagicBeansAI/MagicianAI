@@ -9,6 +9,7 @@ import {
 	buildThreadTaskHref,
 	isRunExpanded,
 	isTerminalTaskStatus,
+	taskCardTimes,
 	taskExecutionLabel,
 	taskRunCollapsedLine,
 	taskStatusReason,
@@ -149,5 +150,64 @@ describe('taskStatusReason', () => {
 	it('is undefined for a missing or blank summary', () => {
 		expect(taskStatusReason({})).toBeUndefined();
 		expect(taskStatusReason({ summary: '  \n ' })).toBeUndefined();
+	});
+});
+
+describe('taskCardTimes', () => {
+	const T0 = 1_760_000_000_000;
+	function at(createdAt: number, id = `m-${createdAt}`): ChatMessage {
+		return { ...message(), id, created_at: createdAt };
+	}
+	function runOf(...updates: ChatMessage[]): ChatRenderTaskExecutionGroup {
+		const latest = updates[updates.length - 1];
+		return { id: 'run-1', message: latest, messageIds: updates.map((u) => u.id), updates };
+	}
+
+	it('spans the card\'s own updates when the task store does not have the task', () => {
+		const first = at(T0);
+		const latest = at(T0 + 90_000);
+		expect(taskCardTimes(latest, [runOf(first, latest)])).toEqual({
+			createdAt: T0,
+			updatedAt: T0 + 90_000
+		});
+	});
+
+	it('reads epoch-second update times as seconds', () => {
+		expect(taskCardTimes(at(T0 / 1000))).toEqual({ createdAt: T0, updatedAt: T0 });
+	});
+
+	it('takes the record\'s creation time and its last progress when later than the card', () => {
+		const update = at(T0);
+		expect(
+			taskCardTimes(update, [runOf(update)], {
+				createdAt: new Date(T0 - 3_600_000).toISOString(),
+				lastProgressAt: T0 + 120_000
+			})
+		).toEqual({ createdAt: T0 - 3_600_000, updatedAt: T0 + 120_000 });
+	});
+
+	it('keeps a later card update over the record\'s progress, and ignores its updatedAt', () => {
+		expect(taskCardTimes(at(T0 + 300_000), [], { lastProgressAt: T0 + 60_000 }).updatedAt).toBe(
+			T0 + 300_000
+		);
+		// updatedAt moves on heartbeats and local edits (and is "now" when the
+		// wire had none): an idle task must not read "Updated now".
+		const record = { updatedAt: new Date(T0 + 3_600_000).toISOString() };
+		expect(taskCardTimes(at(T0), [], record).updatedAt).toBe(T0);
+	});
+
+	it('never dates the task as created after its card\'s first update', () => {
+		// The store stamps a record that came without created_at as created "now".
+		const update = at(T0);
+		expect(
+			taskCardTimes(update, [], { createdAt: new Date(T0 + 86_400_000).toISOString() }).createdAt
+		).toBe(T0);
+	});
+
+	it('leaves a time out when nothing gives it', () => {
+		expect(taskCardTimes(at(0), [], { createdAt: 'not a date' })).toEqual({
+			createdAt: undefined,
+			updatedAt: undefined
+		});
 	});
 });

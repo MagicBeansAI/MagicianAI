@@ -1168,10 +1168,21 @@
         long_form: {output_tokens: 65536, timeout_secs: 600, answer_reserve_tokens: 4096}
         bounded: {output_tokens: 16384, timeout_secs: 300, answer_reserve_tokens: 2048}
         background_context_32768: {output_tokens: 8192, timeout_secs: 300, thinking: low, answer_reserve_tokens: 1024, context_window_tokens: 32768}
+        # Chat that touches remote-allowed app data runs on workload/app_processing/chat_cloud with
+        # this larger window: the chat prompt plus tools needs about 90K, more than the 32K window.
+        # App WORKFLOWS stay on workload/app_processing/cloud (32K): a workflow reserves its whole
+        # window on every LLM call against a per-run input ceiling that is cumulative, so widening
+        # the shared workflow profile shrinks every app's usable call budget. Local-only data stays
+        # on the 32K local route.
+        background_context_131072: {output_tokens: 8192, timeout_secs: 300, thinking: low, answer_reserve_tokens: 1024, context_window_tokens: 131072}
       assignments:
         workload/memory_episode_quality/baseline: {model: openai/gpt-6-luna, thinking: medium, policy: background, metadata: {tool_choice: {type: none}, verbosity: low}, fallback: operation/evidence_review}
         workload/app_processing/local: {model: ollama-generation-2/selected-generation, thinking: none, policy: local, metadata: {tool_choice: auto}, temperature: 0.1}
         workload/app_processing/cloud: {model: openai/gpt-6-luna, thinking: none, reasoning: false, policy: background_context_32768, metadata: {tool_choice: {type: any}}}
+        # Chat-only twin of /cloud: same model, a 131K window, and tool_choice auto. The /cloud profile
+        # is locked to tool_choice `any` for app workflows, which makes a plain-text chat answer
+        # impossible and keeps a governed chat turn calling tools until it is cancelled.
+        workload/app_processing/chat_cloud: {model: openai/gpt-6-luna, thinking: none, reasoning: false, policy: background_context_131072, metadata: {tool_choice: auto}}
         workload/memory_distillation/retry: {model: openai/gpt-6.1-sol, thinking: high, policy: long_form, metadata: {tool_choice: {type: none}, verbosity: low}}
         operation/agentic_decision: {model: openai/gpt-6.1-sol, thinking: high, policy: long_form, metadata: {tool_choice: {type: any}, cost_per_observation: 0.03, verbosity: low}, modality: vision}
         operation/agentic_decision_retry: {model: openai/gpt-6.1-sol, thinking: high, metadata: {tool_choice: {type: any}, cost_per_observation: 0.05}, modality: vision}
@@ -1237,7 +1248,7 @@
         group: Chat
       app_data_processing:
         default: workload/app_processing/local
-        when_cloud: workload/app_processing/cloud
+        when_cloud: workload/app_processing/chat_cloud
         description: Processes app-owned data through the admitted app LLM boundary.
         group: Apps
       brainstorm_facilitation:

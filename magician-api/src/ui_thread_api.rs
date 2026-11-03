@@ -256,23 +256,36 @@ impl UiThreadApi {
             Ok(scope) => scope,
             Err(response) => return Ok(response),
         };
-        let thread_id = match body.id {
-            Some(id) => normalize_thread_id(&id),
-            None => normalize_thread_id(&slugify_thread_name(&body.name)),
-        };
-        let thread_id = match thread_id {
-            Ok(id) => id,
-            Err(error) => {
-                return Ok(HttpResponse::BadRequest().json(serde_json::json!({
-                    "error": format!("{error}")
-                })));
+        // No id (or a blank one): the server derives a fresh, unique id from
+        // the name and never renames an existing thread. An explicit id keeps
+        // its create-or-rename meaning, except a reserved route word (`new`),
+        // which the service turns into a fresh id from the name.
+        let requested_id = body
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let created = match requested_id {
+            None => {
+                self.service
+                    .create_thread_from_name(&principal, &workspace, &body.name)
+                    .await
+            },
+            Some(id) => {
+                let thread_id = match normalize_thread_id(id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                            "error": format!("{error}")
+                        })));
+                    },
+                };
+                self.service
+                    .create_thread(&principal, &workspace, &thread_id, Some(&body.name))
+                    .await
             },
         };
-        match self
-            .service
-            .create_thread(&principal, &workspace, &thread_id, Some(&body.name))
-            .await
-        {
+        match created {
             Ok(thread) => Ok(HttpResponse::Ok().json(thread)),
             Err(error) => Ok(HttpResponse::BadRequest().json(serde_json::json!({
                 "error": format!("{error}")
@@ -325,10 +338,28 @@ impl UiThreadApi {
             Ok(scope) => scope,
             Err(response) => return Ok(response),
         };
-        match self.service.delete_thread(&principal, &workspace, id).await {
+        // Report the canonical id even when the path named a slug or alias.
+        let canonical_id = match self
+            .service
+            .resolve_thread_key(&principal, &workspace, id)
+            .await
+        {
+            Ok(Some(record)) => record.id,
+            Ok(None) => id.to_string(),
+            Err(error) => {
+                return Ok(HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": format!("{error}")
+                })));
+            },
+        };
+        match self
+            .service
+            .delete_thread(&principal, &workspace, &canonical_id)
+            .await
+        {
             Ok(true) => Ok(HttpResponse::Ok().json(serde_json::json!({
                 "deleted": true,
-                "id": id,
+                "id": canonical_id,
             }))),
             Ok(false) => Ok(HttpResponse::NotFound().json(serde_json::json!({
                 "error": "thread not found"
@@ -368,17 +399,6 @@ impl UiThreadApi {
             }))),
         }
     }
-}
-
-fn slugify_thread_name(value: &str) -> String {
-    value
-        .trim()
-        .to_lowercase()
-        .replace(|ch: char| !ch.is_ascii_alphanumeric(), "-")
-        .split('-')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -666,6 +686,7 @@ mod history_search_tests {
             principal: "anonymous".to_string(),
             workspace: "default".to_string(),
             id: id.to_string(),
+            slug: id.to_string(),
             name: name.to_string(),
             archived: false,
             sort_order: 0,

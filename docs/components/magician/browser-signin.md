@@ -21,7 +21,9 @@ alias is its own credential binding; `/launch` accepts that optional
 `endpoint_alias`, validated against the manifest (omitted = the default
 alias). Connect and governed runs build the binding with the same helper
 (`magician_v2::mcp_oauth_binding`), so a run reads exactly the login Connect
-saved. Clients label connected rows **Reconnect** and re-check on
+saved; a `${NAME}` endpoint or issuer resolves from the scope's own skill
+`config/.env` on both sides (`skills::scope_env`), and a scope that has not set
+it gets no row. Clients label connected rows **Reconnect** and re-check on
 focus/resume. Callback completion is reconciled after the pending card is
 published; logout and definitive rejection clear stale connection receipts.
 

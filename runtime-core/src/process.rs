@@ -24,6 +24,11 @@ use std::path::{Path, PathBuf};
 /// the ordinary not-found error instead of forking to repeat the search in
 /// the child. Only when there is nothing to search (no PATH at all, or one
 /// with no non-empty dir) is the bare name returned unchanged.
+///
+/// On Windows a PATH entry matches the way `cmd.exe` searches: the name as
+/// given when it already has an extension, then the name plus each `PATHEXT`
+/// extension (`.COM;.EXE;.BAT;.CMD` when unset), so `git` finds `git.exe` and
+/// an npm shim like `npx` finds `npx.cmd`. Elsewhere the name is joined as is.
 pub fn resolve_program(program: &OsStr, path_env: Option<&OsStr>) -> PathBuf {
     let unchanged = || PathBuf::from(program);
     if program.is_empty() || names_a_path(program) {
@@ -43,9 +48,48 @@ pub fn resolve_program(program: &OsStr, path_env: Option<&OsStr>) -> PathBuf {
         return unchanged();
     };
     dirs.iter()
-        .map(|dir| dir.join(program))
-        .find(|candidate| is_executable_file(candidate))
+        .find_map(|dir| executable_in(dir, program))
         .unwrap_or_else(|| first_dir.join(program))
+}
+
+#[cfg(not(windows))]
+fn executable_in(dir: &Path, program: &OsStr) -> Option<PathBuf> {
+    let candidate = dir.join(program);
+    is_executable_file(&candidate).then_some(candidate)
+}
+
+#[cfg(windows)]
+fn executable_in(dir: &Path, program: &OsStr) -> Option<PathBuf> {
+    let as_given = dir.join(program);
+    if Path::new(program).extension().is_some() && is_executable_file(&as_given) {
+        return Some(as_given);
+    }
+    windows_path_extensions().into_iter().find_map(|extension| {
+        let mut name = program.to_os_string();
+        name.push(extension);
+        let candidate = dir.join(name);
+        is_executable_file(&candidate).then_some(candidate)
+    })
+}
+
+/// The executable extensions Windows tries for a bare name, from `PATHEXT`.
+#[cfg(windows)]
+fn windows_path_extensions() -> Vec<std::ffi::OsString> {
+    let extensions: Vec<std::ffi::OsString> = std::env::var("PATHEXT")
+        .unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|extension| extension.starts_with('.') && extension.len() > 1)
+        .map(std::ffi::OsString::from)
+        .collect();
+    if extensions.is_empty() {
+        [".COM", ".EXE", ".BAT", ".CMD"]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect()
+    } else {
+        extensions
+    }
 }
 
 /// [`resolve_program`] for callers holding `str` values.
@@ -175,6 +219,159 @@ fn pick_git(
     }
 }
 
+/// Names the ripgrep binary the `grep` and `glob` tools run, overriding the
+/// lookup in [`resolve_ripgrep`].
+pub const RIPGREP_PROGRAM_ENV: &str = "MAGICIAN_RG";
+
+/// The ripgrep a release package ships beside `magician.bin` (the package
+/// installer copies, signs and checksums every `*.bin`).
+pub const PACKAGED_RIPGREP_NAME: &str = if cfg!(windows) { "rg.exe" } else { "rg.bin" };
+
+/// ripgrep's own file name in the pinned copies' fixed paths (the PATH lookup
+/// goes through [`resolve_program`], which adds Windows extensions itself).
+const RIPGREP_EXECUTABLE: &str = if cfg!(windows) { "rg.exe" } else { "rg" };
+
+/// Homebrew's `rg` (Apple silicon, then Intel), tried when PATH has none.
+const HOMEBREW_RIPGREP: &[&str] = if cfg!(target_os = "macos") {
+    &["/opt/homebrew/bin/rg", "/usr/local/bin/rg"]
+} else {
+    &[]
+};
+
+/// Where the `grep` and `glob` tools' ripgrep came from, for the startup log
+/// and `/health`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RipgrepSource {
+    /// `MAGICIAN_RG`.
+    Override,
+    /// [`PACKAGED_RIPGREP_NAME`] beside the running binary or in its folder.
+    Packaged,
+    /// The copy the `rg` skill pins in `skillshub/package-lock.json`.
+    Skillshub,
+    /// The host's `rg` on PATH, a version Magician did not choose.
+    System,
+    /// None of the above, or an override that names no executable.
+    Missing,
+}
+
+impl RipgrepSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Override => "override",
+            Self::Packaged => "packaged",
+            Self::Skillshub => "skillshub",
+            Self::System => "system",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+/// The ripgrep the `grep` and `glob` tools run.
+///
+/// `MAGICIAN_RG` wins (and is `Missing` when it names no executable, rather
+/// than quietly falling through). Then the pinned copies, so every install
+/// runs the same version: the packaged `rg.bin` beside the running binary or
+/// in its working folder (repo root, `~/.magician`, `/app`), then the `rg`
+/// skill's npm copy under skillshub. The host's `rg` on PATH comes last. Always
+/// an absolute path when one exists, so a spawn that touches `PATH` stays on
+/// `posix_spawn`.
+pub fn resolve_ripgrep() -> (PathBuf, RipgrepSource) {
+    let override_path = std::env::var_os(RIPGREP_PROGRAM_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let mut dirs = Vec::new();
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        dirs.push(dir);
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        dirs.push(dir);
+    }
+    let skillshub = std::env::var_os("MAGICIAN_SKILLSHUB_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|dir| dir.join("skillshub"))
+        });
+    let mut system = resolve_program(OsStr::new("rg"), None);
+    if !is_executable_file(&system) {
+        // A service started by launchd or the desktop app can carry a PATH
+        // without Homebrew; a brew-installed rg is still the host's rg.
+        if let Some(brew) = HOMEBREW_RIPGREP
+            .iter()
+            .map(PathBuf::from)
+            .find(|candidate| is_executable_file(candidate))
+        {
+            system = brew;
+        }
+    }
+    pick_ripgrep(override_path, &dirs, skillshub.as_deref(), system)
+}
+
+fn pick_ripgrep(
+    override_path: Option<PathBuf>,
+    package_dirs: &[PathBuf],
+    skillshub: Option<&Path>,
+    system: PathBuf,
+) -> (PathBuf, RipgrepSource) {
+    if let Some(path) = override_path {
+        let source = if is_executable_file(&path) {
+            RipgrepSource::Override
+        } else {
+            RipgrepSource::Missing
+        };
+        return (path, source);
+    }
+    if let Some(path) = package_dirs
+        .iter()
+        .map(|dir| dir.join(PACKAGED_RIPGREP_NAME))
+        .find(|candidate| is_executable_file(candidate))
+    {
+        return (path, RipgrepSource::Packaged);
+    }
+    let pinned = skillshub.and_then(|hub| {
+        [
+            hub.join("rg/bin").join(RIPGREP_EXECUTABLE),
+            hub.join(format!(
+                "node_modules/@vscode/ripgrep-{}/bin/{RIPGREP_EXECUTABLE}",
+                npm_platform()
+            )),
+        ]
+        .into_iter()
+        .find(|candidate| is_executable_file(candidate))
+    });
+    if let Some(path) = pinned {
+        return (
+            std::fs::canonicalize(&path).unwrap_or(path),
+            RipgrepSource::Skillshub,
+        );
+    }
+    if is_executable_file(&system) {
+        return (system, RipgrepSource::System);
+    }
+    (system, RipgrepSource::Missing)
+}
+
+/// The `<os>-<arch>` suffix `@vscode/ripgrep` names its per-platform packages
+/// with (`ripgrep-darwin-arm64`, `ripgrep-linux-x64`, `ripgrep-win32-x64`).
+fn npm_platform() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "win32",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    format!("{os}-{arch}")
+}
+
 /// Where macOS keeps the developer tools the `/usr/bin/git` shim forwards to,
 /// read without running `xcode-select` (the shim itself would offer a
 /// install dialog).
@@ -193,7 +390,7 @@ fn macos_developer_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::fs;
@@ -372,6 +569,54 @@ mod tests {
     }
 
     #[test]
+    fn the_packaged_ripgrep_comes_before_skillshub_and_the_host() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let package = temp.path().join("prefix");
+        fs::create_dir_all(&package).expect("mkdir");
+        let packaged = write_file(&package, PACKAGED_RIPGREP_NAME, 0o755);
+        let hub = temp.path().join("skillshub");
+        fs::create_dir_all(hub.join("rg/bin")).expect("mkdir");
+        write_file(&hub.join("rg/bin"), RIPGREP_EXECUTABLE, 0o755);
+        let system = write_file(temp.path(), "rg", 0o755);
+        let empty = temp.path().join("empty");
+        let (path, source) = pick_ripgrep(None, &[empty, package], Some(&hub), system);
+        assert_eq!((path, source), (packaged, RipgrepSource::Packaged));
+    }
+
+    #[test]
+    fn the_skillshub_ripgrep_comes_before_the_host_one() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hub = temp.path().join("skillshub");
+        let npm = hub.join(format!("node_modules/@vscode/ripgrep-{}/bin", npm_platform()));
+        fs::create_dir_all(&npm).expect("mkdir");
+        let pinned = write_file(&npm, RIPGREP_EXECUTABLE, 0o755);
+        let system = write_file(temp.path(), "rg", 0o755);
+        let (path, source) = pick_ripgrep(None, &[], Some(&hub), system);
+        assert_eq!(source, RipgrepSource::Skillshub);
+        assert_eq!(path, fs::canonicalize(pinned).expect("canonical"));
+    }
+
+    #[test]
+    fn the_host_ripgrep_is_the_last_resort_and_nothing_is_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let system = write_file(temp.path(), "rg", 0o755);
+        let (path, source) = pick_ripgrep(None, &[], None, system.clone());
+        assert_eq!((path, source), (system, RipgrepSource::System));
+        let absent = temp.path().join("bin/rg");
+        let (_, source) = pick_ripgrep(None, &[], None, absent);
+        assert_eq!(source, RipgrepSource::Missing);
+    }
+
+    #[test]
+    fn a_ripgrep_override_that_names_no_executable_is_missing_not_skipped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let system = write_file(temp.path(), "rg", 0o755);
+        let wanted = temp.path().join("nope/rg");
+        let (path, source) = pick_ripgrep(Some(wanted.clone()), &[], None, system);
+        assert_eq!((path, source), (wanted, RipgrepSource::Missing));
+    }
+
+    #[test]
     fn git_override_wins() {
         let (path, source) = pick_git(
             Some(PathBuf::from("/opt/git")),
@@ -414,5 +659,54 @@ mod tests {
         let missing = temp.path().join("bin/git");
         let (path, source) = pick_git(None, missing.clone(), &[], Some(temp.path()));
         assert_eq!((path, source), (missing, GitSource::Missing));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::fs;
+
+    fn touch(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, "").expect("write");
+        path
+    }
+
+    #[test]
+    fn a_bare_name_finds_its_exe() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let wanted = touch(temp.path(), "tool.exe");
+        let search = temp.path().as_os_str();
+        assert_eq!(resolve_program(OsStr::new("tool"), Some(search)), wanted);
+    }
+
+    #[test]
+    fn a_bare_name_finds_an_npm_cmd_shim() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let wanted = touch(temp.path(), "npx.cmd");
+        let search = temp.path().as_os_str();
+        assert_eq!(resolve_program(OsStr::new("npx"), Some(search)), wanted);
+    }
+
+    #[test]
+    fn a_name_with_its_extension_is_found_as_given() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let wanted = touch(temp.path(), "rg.exe");
+        let search = temp.path().as_os_str();
+        assert_eq!(resolve_program(OsStr::new("rg.exe"), Some(search)), wanted);
+    }
+
+    #[test]
+    fn an_extensionless_file_is_not_a_windows_executable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        fs::create_dir_all(&first).expect("mkdir");
+        fs::create_dir_all(&second).expect("mkdir");
+        touch(&first, "tool");
+        let wanted = touch(&second, "tool.exe");
+        let search = std::env::join_paths([&first, &second]).expect("join_paths");
+        assert_eq!(resolve_program(OsStr::new("tool"), Some(&search)), wanted);
     }
 }

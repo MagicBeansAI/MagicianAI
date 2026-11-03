@@ -390,6 +390,74 @@ fn voice_call_agent_id(
 /// A chat a client asked the call to join is used only when it is this
 /// owner's open chat with the call's agent. A branch made for a concurrent
 /// voice request is never the call's own chat.
+/// Which chat a call speaks in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallChat {
+    /// The thread's open chat: a call with nothing to say about it.
+    ThreadActive,
+    /// The chat the client is showing.
+    Requested(String),
+    /// A chat of its own. A call summoned with no chat behind it (the desktop
+    /// Orb's wake word) must not join a conversation the owner is already
+    /// having in that thread.
+    Fresh,
+}
+
+impl CallChat {
+    /// `session.start` names the chat it shows, asks for a new one, or neither.
+    /// A named chat wins over `new_chat`.
+    pub fn from_start(chat_session_id: Option<String>, new_chat: bool) -> Self {
+        match chat_session_id {
+            Some(id) => Self::Requested(id),
+            None if new_chat => Self::Fresh,
+            None => Self::ThreadActive,
+        }
+    }
+}
+
+/// Resolve the chat a call speaks in. A requested chat that is not the
+/// owner's open chat with this agent falls back to the thread's open chat.
+async fn resolve_call_chat(
+    chat_store: &dyn ChatStore,
+    call_chat: CallChat,
+    principal: &str,
+    workspace: &str,
+    ui_thread_id: &str,
+    origin: &ChatChannel,
+    agent_id: &str,
+) -> anyhow::Result<ChatSession> {
+    let requested = match &call_chat {
+        CallChat::Requested(requested) => {
+            let session = chat_store.get_session(requested).await.ok().flatten();
+            let usable = session.filter(|session| {
+                requested_chat_session_is_usable(session, principal, workspace, agent_id)
+            });
+            if usable.is_none() {
+                warn!(
+                    voice_session_id = origin.address.as_deref().unwrap_or_default(),
+                    requested_chat_session_id = %requested,
+                    "[VOICE-ORCHESTRATOR] requested chat is not an open chat of this owner and agent; using the thread's active chat"
+                );
+            }
+            usable
+        },
+        CallChat::ThreadActive | CallChat::Fresh => None,
+    };
+    match (requested, call_chat) {
+        (Some(session), _) => Ok(session),
+        (None, CallChat::Fresh) => {
+            chat_store
+                .new_session(principal, workspace, ui_thread_id, origin, agent_id)
+                .await
+        },
+        (None, _) => {
+            chat_store
+                .get_or_create_active_session(principal, workspace, ui_thread_id, origin, agent_id)
+                .await
+        },
+    }
+}
+
 fn requested_chat_session_is_usable(
     session: &ChatSession,
     principal: &str,
@@ -925,7 +993,7 @@ impl VoiceOrchestrator {
         source_surface: String,
         ui_thread_id: String,
         thread_id: Option<String>,
-        chat_session_id: Option<String>,
+        call_chat: CallChat,
         realtime_profile_name: Option<String>,
         hands_free: bool,
         concurrent_requests: bool,
@@ -1115,42 +1183,17 @@ impl VoiceOrchestrator {
         // The chat the caller is showing wins. A thread can hold several
         // active chats (chat tabs), so "the thread's active chat" alone can
         // land the call's transcripts in a different tab.
-        let requested_chat = match chat_session_id.as_deref() {
-            Some(requested) => {
-                let session = self.chat_store.get_session(requested).await.ok().flatten();
-                let usable = session.filter(|session| {
-                    requested_chat_session_is_usable(
-                        session,
-                        &principal,
-                        &workspace,
-                        &chat_agent_id,
-                    )
-                });
-                if usable.is_none() {
-                    warn!(
-                        voice_session_id = %voice_session_id,
-                        requested_chat_session_id = %requested,
-                        "[VOICE-ORCHESTRATOR] requested chat is not an open chat of this owner and agent; using the thread's active chat"
-                    );
-                }
-                usable
-            },
-            None => None,
-        };
-        let chat_session = match requested_chat {
-            Some(session) => session,
-            None => self
-                .chat_store
-                .get_or_create_active_session(
-                    &principal,
-                    &workspace,
-                    &ui_thread_id,
-                    &ChatChannel::new("voice", voice_session_id.clone()),
-                    &chat_agent_id,
-                )
-                .await
-                .map_err(|error| OrchestratorError::Io(error.to_string()))?,
-        };
+        let chat_session = resolve_call_chat(
+            self.chat_store.as_ref(),
+            call_chat,
+            &principal,
+            &workspace,
+            &ui_thread_id,
+            &ChatChannel::new("voice", voice_session_id.clone()),
+            &chat_agent_id,
+        )
+        .await
+        .map_err(|error| OrchestratorError::Io(error.to_string()))?;
         // Transcripts, rotation and the thread's history follow the chat.
         let ui_thread_id = chat_session.ui_thread_id.clone();
         // A chat this call had to create is removed again if the call never starts.
@@ -4105,6 +4148,58 @@ mod tests {
         )));
         assert!(!usable(&chat("owner", "loom", "active")));
         assert!(!usable(&chat("owner", VOICE_CHAT_AGENT_ID, "archived")));
+    }
+
+    #[tokio::test]
+    async fn a_call_with_no_chat_behind_it_takes_its_own_instead_of_the_open_one() {
+        use magician::magician_v2::chat::storage::FileChatStore;
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = FileChatStore::new(root.path());
+        let voice = ChatChannel::new("voice", "call-1".to_string());
+        let open = store
+            .get_or_create_active_session(
+                "owner",
+                "default",
+                "general",
+                &ChatChannel::web(),
+                VOICE_CHAT_AGENT_ID,
+            )
+            .await
+            .expect("the owner's open chat");
+        let resolve = |call_chat| {
+            resolve_call_chat(
+                &store,
+                call_chat,
+                "owner",
+                "default",
+                "general",
+                &voice,
+                VOICE_CHAT_AGENT_ID,
+            )
+        };
+
+        assert_eq!(resolve(CallChat::ThreadActive).await.unwrap().id, open.id);
+        let fresh = resolve(CallChat::Fresh).await.expect("a chat of its own");
+        assert_ne!(fresh.id, open.id);
+        assert_eq!(fresh.ui_thread_id, "general");
+        let owner_chat = store.get_session(&open.id).await.unwrap().expect("open chat");
+        assert_eq!(owner_chat.status, ChatSessionStatus::Active);
+        // An unusable requested chat falls back to the thread's open chat.
+        assert_eq!(
+            resolve(CallChat::Requested("missing".to_string()))
+                .await
+                .unwrap()
+                .ui_thread_id,
+            "general"
+        );
+
+        // A chat the client names wins over `new_chat`.
+        assert_eq!(
+            CallChat::from_start(Some("chat-1".to_string()), true),
+            CallChat::Requested("chat-1".to_string())
+        );
+        assert_eq!(CallChat::from_start(None, true), CallChat::Fresh);
+        assert_eq!(CallChat::from_start(None, false), CallChat::ThreadActive);
     }
 
     #[test]

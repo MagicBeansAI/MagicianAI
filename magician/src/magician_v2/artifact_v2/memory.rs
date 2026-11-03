@@ -1381,6 +1381,8 @@ mod terminal_episode_text_tests {
                     outputs: Vec::new(),
                     default_task_agent_output_id: None,
                     primary_user_output_id: None,
+                    primary_deliverable_output_id: None,
+                    latest_delivered_output_ids: Vec::new(),
                     updated_at: Some(at.clone()),
                 },
             },

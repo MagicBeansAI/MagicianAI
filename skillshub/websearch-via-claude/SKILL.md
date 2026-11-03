@@ -1,6 +1,6 @@
 ---
 name: "websearch-via-claude"
-version: 0.2.3
+version: 0.2.4
 description: "Quick LLM-curated web search via Claude's built-in `web_search` tool. Pick when the user wants an answered question with sources and benefits from Claude's longer reasoning chains or context coherence. Pick over `websearch-via-openai` when the answer must integrate prior chat context."
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.anthropic.com
     requires:
-      bins: ["claude-websearch"]
+      bins: ["claude-websearch", "python3"]
       env: ["ANTHROPIC_API_KEY"]
     install_hint:
       docs: "requires env: ANTHROPIC_API_KEY — set in vault before activating"
@@ -19,7 +19,9 @@ metadata:
       cost_tier: cheap
       action: run
       input:
-        query: "What is the Rust programming language?"
+        # A question Claude cannot answer from memory: for a general-knowledge
+        # one, Haiku skips the search and returns no sources.
+        query: "What is the latest stable Rust release and when was it published?"
       expect:
         min_items: 1
         items_pointer: "/sources"
@@ -33,7 +35,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [claude-websearch]
+        bins: [claude-websearch, python3]
+        entrypoint: claude-websearch
       runtime:
         protocol: cli
         command_prefix: []

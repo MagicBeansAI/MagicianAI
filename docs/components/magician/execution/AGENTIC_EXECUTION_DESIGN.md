@@ -317,7 +317,7 @@ The local prompt fingerprint is never sent upstream.
 | `AgenticIterationStarted` | Each iteration | `iteration` (1-indexed), `environment_type` |
 | `AgenticIterationCompleted` | End of iteration | `duration_ms`, `outcome` (`action_executed` / `decision_rejected` / `loop_continue` / `terminal` / `paused` / `cancelled`) |
 | `AgenticDecisionMade` | LLM decides | `decision_type`, `action_summary`, `thinking`, `tool_name`, `candidates_count`, `raw_decision` |
-| `AgenticActionExecuted` | Action completes | `action_type`, `target`, `success`, `latency_ms`, `error` |
+| `AgenticActionExecuted` | Action completes | `action_type`, `target`, `success`, `latency_ms`, `error` (capped at 2,000 chars, ending in `…` when cut) |
 | `AgenticStepStuckWarning` | No-success streak ≥ 3 | `consecutive_count`, `recent_actions` (≤3), `is_preflight` |
 | `AgenticPageUnderstanding` | Multimodal page understanding | `observation_id`, `page_stage`, `element_count`, `has_screenshot` |
 | `AgenticExecutionCompleted` | Loop ends | `outcome` (`success`, `failed`, `max_iterations_reached`, `loop_detected`, `waiting_for_user`, `waiting_for_confirmation`, `budget_exhausted`, `cannot_proceed`), `iterations_used`, `artifacts`, `duration_ms`, `summary` |

@@ -92,6 +92,7 @@ pub async fn read_active_procedure_skill_from_tier(
     Some(ActiveProcedureSkill {
         name: manifest.name.clone(),
         body,
+        skill_dir: manifest.source_dir.clone(),
     })
 }
 
@@ -104,6 +105,30 @@ pub async fn read_active_procedure_skill_from_tier(
 pub struct ActiveProcedureSkill {
     pub name: String,
     pub body: String,
+    /// The skill's folder, where the files the body links to live.
+    pub skill_dir: std::path::PathBuf,
+}
+
+impl ActiveProcedureSkill {
+    /// The files the body links to that `activate_skill`'s `file` opens.
+    pub fn linked_files(&self) -> Vec<String> {
+        super::files::linked_files(&self.skill_dir, &self.body)
+    }
+
+    /// How to open the files the body links to, or `None` when it links to
+    /// none. Only the body is injected, so without this a link like
+    /// `references/commands.md` leads nowhere.
+    pub fn linked_files_hint(&self) -> Option<String> {
+        let files = self.linked_files();
+        let first = files.first()?;
+        Some(format!(
+            "Files this playbook links to are not in your prompt: {list}. Open one with \
+             `activate_skill` {{\"name\": \"{name}\", \"file\": \"{first}\"}} before \
+             following guidance that lives there.",
+            list = files.join(", "),
+            name = self.name,
+        ))
+    }
 }
 
 /// Outcome of an activation attempt — distinguishes "first activation",
@@ -227,6 +252,7 @@ pub fn resolve_and_activate_procedure_skill(
     let skill = ActiveProcedureSkill {
         name: activation.skill_name.clone(),
         body: activation.steering_message.clone(),
+        skill_dir: activation.skill_dir.clone(),
     };
 
     Ok(match previous_active_name {
@@ -302,6 +328,7 @@ pub fn resolve_colocated_procedure_skill_for_pack(
     Some(ActiveProcedureSkill {
         name: manifest.name.clone(),
         body,
+        skill_dir: manifest.source_dir.clone(),
     })
 }
 
@@ -319,6 +346,25 @@ mod auto_couple_tests {
             format!("---\nname: {name}\ndescription: d\n---\n{body}"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_playbook_that_links_files_says_how_to_open_them() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("references")).unwrap();
+        fs::write(dir.path().join("references/commands.md"), "the list").unwrap();
+        let skill = |body: &str| ActiveProcedureSkill {
+            name: "impeccable".to_string(),
+            body: body.to_string(),
+            skill_dir: dir.path().to_path_buf(),
+        };
+        let hint = skill("See [notes](PROVENANCE.md) and [workflows](references/commands.md).")
+            .linked_files_hint()
+            .unwrap();
+        assert!(hint.contains(r#"{"name": "impeccable", "file": "references/commands.md"}"#));
+        assert!(skill("See [docs](https://x.dev), cite `[name](url)`.")
+            .linked_files_hint()
+            .is_none());
     }
 
     #[test]

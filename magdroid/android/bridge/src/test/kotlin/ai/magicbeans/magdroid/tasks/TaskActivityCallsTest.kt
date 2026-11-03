@@ -33,8 +33,9 @@ class TaskActivityCallsTest {
         at: Long,
         meta: String = "",
         execution: String = "e1",
+        summary: String? = null,
     ): JsonObject = Json.parseToJsonElement(
-        """{"id":"$id","status":"$status","title":"t-$id","created_at":${base + at},
+        """{"id":"$id","status":"$status","title":"t-$id","created_at":${base + at},${summary?.let { "\"summary\":\"$it\"," } ?: ""}
             "metadata":{"event_type":"$event","execution_id":"$execution"${if (meta.isEmpty()) "" else ", $meta"}}}""",
     ).jsonObject
 
@@ -105,6 +106,55 @@ class TaskActivityCallsTest {
         assertFalse(call.running)
         // The result names no tool; the start does.
         assertEquals("web_search failed", TaskActivityCalls.title(call))
+    }
+
+    @Test fun failedToolCallCarriesTheReasonFromItsSummary() {
+        val started = row("t1", "tool.started", "running", 10, """"call_id":"k1","target":"web_search"""")
+        val failed = row(
+            "t2", "tool.failed", "failed", 20,
+            """"call_id":"k1","error":"step execution failed: raw"""",
+            summary = "clean",
+        )
+        val call = TaskActivityCalls.fold(listOf(started, failed)).single()
+        assertEquals("web_search failed", TaskActivityCalls.title(call))
+        // The summary wins over the error it was projected from.
+        assertEquals("clean", TaskActivityCalls.failureDetail(call))
+    }
+
+    @Test fun failedToolCallWithoutASummaryFallsBackToTheErrorWithoutTheStepPrefix() {
+        val started = row("t1", "tool.started", "running", 10, """"call_id":"k1","target":"read_file"""")
+        val failed = row("t2", "tool.failed", "failed", 20, """"call_id":"k1","error":"step execution failed: permission denied: /etc/shadow"""")
+        val call = TaskActivityCalls.fold(listOf(started, failed)).single()
+        assertEquals("read_file failed", TaskActivityCalls.title(call))
+        assertEquals("permission denied: /etc/shadow", TaskActivityCalls.failureDetail(call))
+
+        // An error the runtime did not prefix reads as it is.
+        val bare = row("t3", "tool.failed", "failed", 30, """"target":"grep","error":"no such file"""")
+        assertEquals("no such file", TaskActivityCalls.failureDetail(TaskActivityCalls.fold(listOf(bare)).single()))
+
+        // Both runtime prefixes go, nested either way, whatever their case and the whitespace after them.
+        val pack = row("t4", "tool.failed", "failed", 40, """"target":"pack","error":"Step Execution Failed:  compiled-pack dispatch failed:\tno handler bound"""")
+        assertEquals("no handler bound", TaskActivityCalls.failureDetail(TaskActivityCalls.fold(listOf(pack)).single()))
+        val packOnly = row("t5", "tool.failed", "failed", 50, """"target":"pack","error":"compiled-pack dispatch failed: timeout"""")
+        assertEquals("timeout", TaskActivityCalls.failureDetail(TaskActivityCalls.fold(listOf(packOnly)).single()))
+        val nested = row("t6", "tool.failed", "failed", 60, """"target":"pack","error":"compiled-pack dispatch failed: step execution failed: boom"""")
+        assertEquals("boom", TaskActivityCalls.failureDetail(TaskActivityCalls.fold(listOf(nested)).single()))
+    }
+
+    @Test fun failureDetailIsTheWholeReasonAndAbsentForAnythingButAFailedTool() {
+        // The server keeps up to 2,000 characters; the row clamps visually, never the text.
+        val long = "x".repeat(2_000)
+        val failed = row("t1", "tool.failed", "failed", 1, """"target":"a","error":"step execution failed: $long"""")
+        assertEquals(long, TaskActivityCalls.failureDetail(TaskActivityCalls.fold(listOf(failed)).single()))
+
+        // A failure that names no reason (or only a prefix), a tool that returned, and a failed model call carry none.
+        val silent = row("t2", "tool.failed", "failed", 2, """"target":"a"""")
+        val prefixOnly = row("t5", "tool.failed", "failed", 5, """"target":"a","error":"step execution failed: """")
+        val returned = row("t3", "tool.succeeded", "done", 3, """"target":"a"""", summary = "42 matches")
+        val model = row("t4", "llm.failed", "failed", 4, """"llm_call_id":"c1","error":"rate limited"""", summary = "rate limited")
+        TaskActivityCalls.fold(listOf(silent, returned, model, prefixOnly)).forEach { entry ->
+            assertNull(TaskActivityCalls.failureDetail(entry))
+        }
     }
 
     @Test fun idlessRequestFoldsIntoTheNextSettledModelRowOfItsExecution() {

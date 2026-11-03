@@ -329,4 +329,137 @@ final class LiveTaskCardSupportTests: XCTestCase {
         XCTAssertEqual(reconciled.status, "running")
         XCTAssertEqual(reconciled.summary, "Working on step 3")
     }
+
+    // MARK: Created / updated times
+
+    func testStoreRecordKeepsTheTaskCreatedAndLatestUpdatedTimes() {
+        let object: [String: Any] = ["task": [
+            "manifest": ["title": "Brief", "created_at": "2026-10-31T08:58:12.123456789+00:00"],
+            "state": [
+                "status": "running",
+                "updated_at": "2026-10-31T09:03:05+00:00",
+                "last_progress_at": "2026-10-31T09:01:40.5Z"
+            ],
+            "refs": [:]
+        ]]
+        let record = TaskStoreRecord.parse(object)
+        XCTAssertEqual(record?.createdAt?.timeIntervalSince1970 ?? 0, 1_793_437_092.123, accuracy: 0.01,
+                       "a nanosecond RFC3339 time reads")
+        XCTAssertEqual(record?.updatedAt?.timeIntervalSince1970 ?? 0, 1_793_437_300.5, accuracy: 0.01,
+                       "last_progress_at over a later heartbeat-moved updated_at")
+
+        let noProgress = TaskStoreRecord.parse(["task": ["state": [
+            "status": "planning", "updated_at": "2026-10-31T09:03:05+00:00"]]])
+        XCTAssertEqual(noProgress?.updatedAt?.timeIntervalSince1970 ?? 0, 1_793_437_385, accuracy: 0.01,
+                       "no last_progress_at: updated_at")
+    }
+
+    func testStoreRecordWithoutTimesHasNone() {
+        let record = TaskStoreRecord.parse(["task": ["state": ["status": "ready", "updated_at": "not a date"]]])
+        XCTAssertEqual(record?.status, "ready")
+        XCTAssertNil(record?.createdAt)
+        XCTAssertNil(record?.updatedAt)
+    }
+
+    func testCardTimesFallBackToTheCardsOwnUpdates() {
+        let (state, _) = state(task("running"))
+        XCTAssertEqual(state.createdAt, Date(timeIntervalSince1970: 1_759_300_000))
+        XCTAssertEqual(state.updatedAt, Date(timeIntervalSince1970: 1_759_300_065))
+    }
+
+    func testCardTimesPreferTheTaskRecordsCreatedTimeAndTheLatestUpdate() {
+        let firstUpdate = Date(timeIntervalSince1970: 1_759_300_000)
+        let latestUpdate = Date(timeIntervalSince1970: 1_759_300_065)
+        let created = Date(timeIntervalSince1970: 1_759_299_000)
+        let later = Date(timeIntervalSince1970: 1_759_300_500)
+        let recorded = LiveTaskCardState(LiveTaskCardRules.input(
+            for: task("running"), messageId: "m1", recordCreatedAt: created, recordUpdatedAt: later))
+        XCTAssertEqual(recorded.createdAt, created, "the record's created time over the first card update")
+        XCTAssertEqual(recorded.updatedAt, later, "a newer record update wins")
+        XCTAssertEqual(recorded.startedAt, firstUpdate, "the elapsed clock still counts from the first card update")
+
+        let staleRecord = LiveTaskCardState(LiveTaskCardRules.input(
+            for: task("running"), messageId: "m1", recordUpdatedAt: Date(timeIntervalSince1970: 1_759_300_010)))
+        XCTAssertEqual(staleRecord.createdAt, firstUpdate, "no record created time: the first card update")
+        XCTAssertEqual(staleRecord.updatedAt, latestUpdate, "a newer card update wins")
+    }
+
+    func testAnUntimedCardHasNoTimes() {
+        let model = TaskStatusModel(taskId: "task_1", title: "Write the brief", status: "running", steps: [])
+        let state = LiveTaskCardState(LiveTaskCardRules.input(for: model, messageId: "m1"))
+        XCTAssertNil(state.createdAt)
+        XCTAssertNil(state.updatedAt)
+    }
+
+    // MARK: Card times format
+
+    private var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+    private let britishEnglish = Locale(identifier: "en_GB")
+    private let usEnglish = Locale(identifier: "en_US")
+    /// 2026-10-31 14:28 UTC, and two minutes later.
+    private let at1428 = Date(timeIntervalSince1970: 1_793_456_880)
+    private var now: Date { at1428.addingTimeInterval(120) }
+
+    func testCardAbsoluteIsTheTimeAloneToday() {
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardAbsolute(at1428, now: now, calendar: utc, locale: britishEnglish), "14:28")
+    }
+
+    func testCardAbsoluteAddsTheDateOnAnotherDayAndTheYearInAnotherYear() {
+        let yesterday = TaskTimelineFormatting.cardAbsolute(
+            Date(timeIntervalSince1970: 1_793_370_480), now: now, calendar: utc, locale: britishEnglish)
+        XCTAssertTrue(yesterday.contains("30") && yesterday.contains("Oct") && yesterday.contains("14:28"), yesterday)
+        XCTAssertFalse(yesterday.contains("2026"), yesterday)
+
+        let lastYear = TaskTimelineFormatting.cardAbsolute(
+            Date(timeIntervalSince1970: 1_767_104_880), now: now, calendar: utc, locale: britishEnglish)
+        XCTAssertTrue(lastYear.contains("2025") && lastYear.contains("Dec") && lastYear.contains("14:28"), lastYear)
+    }
+
+    func testCachedFormattersStayPerLocaleAndTimeZone() {
+        var ist = Calendar(identifier: .gregorian)
+        ist.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardAbsolute(at1428, now: now, calendar: utc, locale: britishEnglish), "14:28")
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardAbsolute(at1428, now: now, calendar: ist, locale: britishEnglish), "19:58",
+            "a cached UTC formatter is not reused for another time zone")
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardAbsolute(at1428, now: now, calendar: utc, locale: britishEnglish), "14:28")
+    }
+
+    func testCardRelativeIsShortAndNowUnderAMinuteOrAheadOfTheDevice() {
+        XCTAssertEqual(TaskTimelineFormatting.cardRelative(at1428, now: now, locale: usEnglish), "2 min. ago")
+        XCTAssertEqual(TaskTimelineFormatting.cardRelative(now, now: now, locale: usEnglish), "now")
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardRelative(now.addingTimeInterval(-59), now: now, locale: usEnglish), "now",
+            "no second-level ages: a settled card refreshes every 30 s")
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardRelative(now.addingTimeInterval(-60), now: now, locale: usEnglish), "1 min. ago")
+        XCTAssertEqual(
+            TaskTimelineFormatting.cardRelative(now.addingTimeInterval(5), now: now, locale: usEnglish), "now",
+            "a server time ahead of the device clock")
+    }
+
+    func testCardTimePartsLeaveOutAnUnknownTime() {
+        let both = TaskTimelineFormatting.cardTimeParts(
+            started: at1428, updated: at1428, now: now, calendar: utc, locale: usEnglish)
+        XCTAssertEqual(both.count, 2)
+        XCTAssertTrue(both[0].hasPrefix("Created "), both[0])
+        XCTAssertEqual(both[1], "Updated 2 min. ago")
+
+        let updatedOnly = TaskTimelineFormatting.cardTimeParts(
+            started: nil, updated: at1428, now: now, calendar: utc, locale: usEnglish)
+        XCTAssertEqual(updatedOnly, ["Updated 2 min. ago"])
+
+        let startedOnly = TaskTimelineFormatting.cardTimeParts(
+            started: at1428, updated: nil, startWord: "Started", now: now, calendar: utc, locale: britishEnglish)
+        XCTAssertEqual(startedOnly, ["Started 14:28"])
+
+        XCTAssertEqual(TaskTimelineFormatting.cardTimeParts(started: nil, updated: nil, now: now), [])
+    }
 }

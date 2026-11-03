@@ -561,7 +561,7 @@ struct ChatThreadSettings: View {
         NavigationStack {
             Form {
                 Section {
-                    Text("Saved name and context for #\(threadID).")
+                    Text("Saved name and context for \(originalName.isEmpty ? ThreadDirectory.shared.label(threadID) : "#" + originalName).")
                         .font(.caption).foregroundStyle(.secondary)
                     if !loaded && error == nil { ProgressView() }
                     if let error {

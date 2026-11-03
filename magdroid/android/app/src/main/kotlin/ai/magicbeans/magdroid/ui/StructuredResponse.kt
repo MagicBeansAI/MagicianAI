@@ -1,6 +1,8 @@
 package ai.magicbeans.magdroid.ui
 
 import ai.magicbeans.magdroid.chat.ActivityRow
+import ai.magicbeans.magdroid.chat.CardTimeText
+import ai.magicbeans.magdroid.chat.CardTimes
 import ai.magicbeans.magdroid.chat.StructuredBlock
 import ai.magicbeans.magdroid.chat.StructuredResponse
 import ai.magicbeans.magdroid.chat.LiveTaskCardClient
@@ -114,12 +116,7 @@ fun StructuredResponseView(response: StructuredResponse) {
             Text(it, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
         }
         response.summary?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                it,
-                color = Ink,
-                fontSize = CHAT_BUBBLE_FONT_SP.sp,
-                lineHeight = CHAT_BUBBLE_LINE_HEIGHT_SP.sp,
-            )
+            ChatLinkedMarkdown(it, color = Ink, fontSize = CHAT_BUBBLE_FONT_SP, lineHeight = CHAT_BUBBLE_LINE_HEIGHT_SP)
         }
         response.blocks.forEach { Block(it) }
     }
@@ -134,7 +131,7 @@ private fun Block(block: StructuredBlock) {
                     Text(title, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(3.dp))
                 }
-                MarkdownText(markdown = text, color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
+                ChatLinkedMarkdown(text, color = Ink, fontSize = 14, lineHeight = 20)
             }
         }
         "callout" -> Callout(block)
@@ -143,17 +140,25 @@ private fun Block(block: StructuredBlock) {
         "artifacts" -> Artifacts(block)
         "metrics" -> KeyValues(block)
         "copy_text" -> CopyText(block)
-        // Plain text and unknown kinds retain their literal text fallback.
+        // Plain text and unknown kinds render their text as Markdown, so the
+        // links it carries parse, show and open like a Markdown reply's.
         else -> block.text?.takeIf { it.isNotBlank() }?.let {
             Column {
                 block.title?.takeIf { t -> t.isNotBlank() }?.let { t ->
                     Text(t, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     Spacer(Modifier.height(3.dp))
                 }
-                Text(it, color = Ink, fontSize = 14.sp, lineHeight = 20.sp)
+                ChatLinkedMarkdown(it, color = Ink, fontSize = 14, lineHeight = 20)
             }
         }
     }
+}
+
+/** Structured block copy as Markdown, with the paths it mentions linked. */
+@Composable
+private fun ChatLinkedMarkdown(text: String, color: Color, fontSize: Int, lineHeight: Int) {
+    val linked = remember(text) { ai.magicbeans.magdroid.chat.ChatLinks.linkifyMarkdown(text) }
+    MarkdownText(markdown = linked, color = color, fontSize = fontSize.sp, lineHeight = lineHeight.sp)
 }
 
 @Composable
@@ -169,7 +174,7 @@ private fun Callout(block: StructuredBlock) {
                 Text(it, color = Ink, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(2.dp))
             }
-            block.text?.let { Text(it, color = Secondary, fontSize = 13.sp, lineHeight = 18.sp) }
+            block.text?.let { ChatLinkedMarkdown(it, color = Secondary, fontSize = 13, lineHeight = 18) }
         }
     }
 }
@@ -219,13 +224,18 @@ private fun Artifacts(block: StructuredBlock) {
             block.title?.takeIf { it.isNotBlank() } ?: "Files",
             color = Ink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
         )
+        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
         block.items.forEach { item ->
             val name = item["name"] ?: item["label"] ?: item["path"]
             if (!name.isNullOrBlank()) {
+                // A delivered file opens through the chat link opener (task
+                // output → authenticated download, host path → open-file).
+                val link = ai.magicbeans.magdroid.chat.ChatLinks.artifactItemLink(item)
                 Surface(
                     color = Ground,
                     shape = RoundedCornerShape(8.dp),
                     border = BorderStroke(1.dp, BorderSoft),
+                    modifier = if (link != null) Modifier.clickable(role = Role.Button) { uriHandler.openUri(link) } else Modifier,
                 ) {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("📄", fontSize = 13.sp)
@@ -452,6 +462,16 @@ fun ActivitySection(
                         bottom = ACTIVITY_SECTION_EXPANDED_BOTTOM_PADDING_DP.dp,
                     ),
                 ) {
+                    // When the turn's steps began and last changed; the clock beats slowly.
+                    val times = remember(rows) { CardTimes.forActivity(rows) }
+                    if (!times.isEmpty) {
+                        CardTimesLine(
+                            times,
+                            rememberLiveNowMillis(times, CardTimeText.RELATIVE_TICK_MILLIS),
+                            startLabel = "Started",
+                            modifier = Modifier.padding(start = ACTIVITY_STEP_MARK_WIDTH_DP.dp, bottom = 2.dp),
+                        )
+                    }
                     if (rows.isEmpty() && isLive) {
                         Text(
                             text = "Waiting for the first activity update…",

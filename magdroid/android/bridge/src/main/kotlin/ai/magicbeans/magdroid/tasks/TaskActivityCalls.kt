@@ -20,7 +20,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * Pure — no Compose. A model call is titled as the chat Steps row titles
  * it ("Thinking with <model>"); tool rows keep the panel's "Using …",
- * "… returned" and "… failed".
+ * "… returned" and "… failed", a failed one carrying why ([failureDetail]).
  */
 
 /** One call's `activity_log` rows, folded into the one row the Run timeline draws. */
@@ -206,6 +206,37 @@ object TaskActivityCalls {
                     ?: if (event == "llm.failed") "Model failed" else "Model responded"
             }
             else -> fallback ?: event?.replace('.', ' ') ?: "Activity"
+        }
+    }
+
+    /**
+     * The prefixes the runtime puts on a failed step's error, nested in either
+     * order ("compiled-pack dispatch failed: step execution failed: …"); the
+     * reason reads without them.
+     */
+    private val FAILURE_PREFIXES = listOf("step execution failed:", "compiled-pack dispatch failed:")
+
+    /**
+     * Why a failed tool call failed, for the line under its "… failed"
+     * title: the settled row's `summary`, which the server panel projection
+     * (`v3_adapter` `tool_failure_reason`) already stripped of the runtime's
+     * prefixes; else its `metadata.error`, stripped here the same way. Whole:
+     * the row clamps it to two lines and a tap reads the rest, as iOS does.
+     * Null for any other row, and for a failure that names no reason.
+     */
+    fun failureDetail(entry: ActivityCallEntry): String? {
+        if (entry.eventType != "tool.failed") return null
+        val row = entry.settled ?: entry.row
+        text(row, "summary")?.let { return it }
+        return meta(row, "error")?.let(::stripFailurePrefixes)?.takeIf(String::isNotEmpty)
+    }
+
+    /** [error] without the runtime's failure prefixes, however nested, and the whitespace after each. */
+    private fun stripFailurePrefixes(error: String): String {
+        var reason = error.trim()
+        while (true) {
+            val prefix = FAILURE_PREFIXES.firstOrNull { reason.startsWith(it, ignoreCase = true) } ?: return reason
+            reason = reason.substring(prefix.length).trimStart()
         }
     }
 

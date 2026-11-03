@@ -57,6 +57,8 @@ partial or unknown speech cannot establish a perceptual pass. No test covers
 the bounded review path yet (`macos_speech.rs` tests only the normal
 transcribe call).
 
+A call's chat is a `CallChat`: the one the client names (`Requested`), the thread's open chat (`ThreadActive`) or a new one (`Fresh`, from `new_chat`), removed if the call never starts.
+
 Concurrent owner calls negotiate their capability before session startup. They
 do not reserve the displayed chat's execution slot, so text can run and queue
 while the call stays connected. Legacy vendor calls keep their call-wide

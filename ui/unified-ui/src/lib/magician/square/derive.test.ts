@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentSummary } from '$lib/stores/agentStore';
 import type { CitizenCurrentWorkVM } from './engine/types';
-import { citizenVibeOf, displayNameOf, vibeOf } from './derive';
+import { citizenVibeOf, displayNameOf, focusAreaGoalId, vibeOf } from './derive';
 import { selectHandoffTrees } from './fleetHandoffs';
 
 function agent(overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -26,6 +26,19 @@ function work(status: string, overrides: Partial<CitizenCurrentWorkVM> = {}): Ci
 		...overrides
 	};
 }
+
+describe('focusAreaGoalId', () => {
+	it('slugs like the backend, including its 64-character cut at a hyphen', () => {
+		expect(focusAreaGoalId('ceo', '  Weekly Replan!! ')).toBe('harness:ceo:weekly-replan');
+		expect(focusAreaGoalId('ceo', '***')).toBe('harness:ceo:unnamed');
+		// 73 characters; the first 64 end inside 'word10', so the cut falls after 'word9'.
+		const long = Array.from({ length: 12 }, (_, i) => `word${i}`).join(' ');
+		expect(focusAreaGoalId('cmo', long)).toBe(
+			'harness:cmo:word0-word1-word2-word3-word4-word5-word6-word7-word8-word9'
+		);
+		expect(focusAreaGoalId('cmo', 'x'.repeat(70))).toBe(`harness:cmo:${'x'.repeat(64)}`);
+	});
+});
 
 describe('vibeOf', () => {
 	it('keeps a paused execution paused even while its execution id is retained', () => {

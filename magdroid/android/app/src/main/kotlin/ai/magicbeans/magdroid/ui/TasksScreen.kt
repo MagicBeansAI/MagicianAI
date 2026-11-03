@@ -1028,7 +1028,9 @@ private fun TaskCard(
                     Icon(Icons.Outlined.Person, null, tint = Muted, modifier = Modifier.size(12.dp))
                     Text(agentName(state, task.agentId), color = Muted, fontSize = 10.sp, maxLines = 1)
                 }
-                Text("#${task.uiThreadId}", color = Muted, fontSize = 10.sp, maxLines = 1)
+                // The thread's name; its id only until threads have loaded.
+                val threadEntries by ai.magicbeans.magdroid.chat.ThreadDirectory.entries.collectAsStateWithLifecycle()
+                Text(ai.magicbeans.magdroid.chat.ThreadDirectory.label(task.uiThreadId, threadEntries), color = Muted, fontSize = 10.sp, maxLines = 1)
                 updatedLabel?.let { Text("· $it", color = Muted, fontSize = 10.sp) }
                 if (state.lane == TaskLane.Internal) StatusPill(task.lifecycleLabel, lifecycleTint(task.lifecycleLabel))
                 when {

@@ -2,6 +2,7 @@
 	import { browser } from '$app/environment';
 	import { goto } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
+	import { get } from 'svelte/store';
 
 	import { showError, showSuccess } from '$lib/shared/stores/notifications';
 	import { clickOutside } from '$lib/shared/clickOutside';
@@ -11,6 +12,9 @@
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 	import { threadStore } from '$lib/stores/threadStore';
 	import type { UiThreadRecord } from '$lib/threads/types';
+	import { startNewThread } from '$lib/threads/newThread';
+	import { findThreadByKey, threadRouteKey } from '$lib/threads/threadKeys';
+	import { threadHref, threadLabel, threadLabels } from '$lib/threads/threadLinks';
 	import {
 		normalizeThreadId,
 		isVibeDevThread,
@@ -24,6 +28,7 @@
 		type HistoryLane,
 		type HistorySearchItem
 	} from '$lib/shell/historyApi';
+	import { chatHistoryReopenOnSessions, historyPickedThread } from '$lib/shell/shellState';
 
 	export let expanded = true;
 	export let mobileOpen = false;
@@ -32,6 +37,8 @@
 
 	const PAGE_SIZE = 15;
 	const MAX_SEARCH_LENGTH = 120;
+	/** How long a thread tap's reopen request stays good for a remounted rail. */
+	const REOPEN_WINDOW_MS = 10_000;
 
 	let activeTab: 'sessions' | 'threads' = initialTab;
 	let historyLane: HistoryLane = 'personal';
@@ -60,6 +67,8 @@
 	let activityGeneration = 0;
 	let activityTimer: ReturnType<typeof setTimeout> | undefined;
 	let activityRequest: AbortController | undefined;
+	let destroyed = false;
+	let previousScopeKey = '';
 
 	$: activeSessionId = $chatStore.activeSessionId;
 	$: viewingArchivedId = $chatStore.viewingArchivedId;
@@ -72,9 +81,10 @@
 	$: hasNext = offset + PAGE_SIZE < total;
 	$: isGlobalSearch = search.length > 0;
 	$: sessionThreadFilter =
-		threadFilter && threadFilter !== dismissedThreadFilter ? threadFilter : null;
+		$historyPickedThread ?? (threadFilter && threadFilter !== dismissedThreadFilter ? threadFilter : null);
 	$: effectiveLane = activeTab === 'sessions' && sessionThreadFilter ? undefined : historyLane;
 	$: scopeKey = `${$scopeIdentityStore.principal}:${$scopeIdentityStore.workspace}`;
+	$: noteScope(scopeKey);
 	$: loadKey = isGlobalSearch
 		? [scopeKey, 'search', search, offset].join('|')
 		: [scopeKey, activeTab, effectiveLane ?? 'thread', sessionThreadFilter ?? '', archiveView, offset].join('|');
@@ -96,6 +106,16 @@
 		if (pageVisible && (expanded || mobileOpen) && !isLoading && !loadError && visibleSessionIds.length) {
 			void pollActivity(visibleSessionIds, activityGeneration);
 		}
+	}
+
+	/** A picked thread belongs to the scope it was picked in. */
+	function noteScope(key: string): void {
+		if (previousScopeKey && key !== previousScopeKey) historyPickedThread.set(null);
+		previousScopeKey = key;
+	}
+
+	function clearPickIf(threadId: string): void {
+		if (get(historyPickedThread) === threadId) historyPickedThread.set(null);
 	}
 
 	function stopActivity(): void {
@@ -120,6 +140,15 @@
 	}
 
 	onMount(() => {
+		// A thread tap that remounted this rail: carry on where it left off.
+		const reopenAt = get(chatHistoryReopenOnSessions);
+		if (reopenAt !== null) {
+			chatHistoryReopenOnSessions.set(null);
+			if (Date.now() - reopenAt < REOPEN_WINDOW_MS) {
+				activeTab = 'sessions';
+				if (browser && window.innerWidth <= 1280) mobileOpen = true;
+			}
+		}
 		const updateVisibility = () => { pageVisible = !document.hidden; };
 		updateVisibility();
 		document.addEventListener('visibilitychange', updateVisibility);
@@ -223,8 +252,17 @@
 	}
 
 	function clearThreadFilter(): void {
+		historyPickedThread.set(null);
 		dismissedThreadFilter = threadFilter;
 		offset = 0;
+	}
+
+	/** A tapped thread: Sessions, filtered to it, page 1, no search. */
+	function showThreadSessions(threadId: string): void {
+		historyPickedThread.set(threadId);
+		dismissedThreadFilter = null;
+		clearSearch();
+		activeTab = 'sessions';
 	}
 
 	function reloadCurrentPage(): void {
@@ -271,7 +309,7 @@
 			await goto(`/vibe?session=${encodeURIComponent(session.id)}`);
 			return;
 		}
-		const chatPath = `/t/${encodeURIComponent(targetThread)}/chat`;
+		const chatPath = threadHref(targetThread, '/chat');
 		const chatHref = `${chatPath}?session=${encodeURIComponent(session.id)}`;
 		const onTargetChat = browser && window.location.pathname === chatPath;
 		if (session.id === activeSessionId && !viewingArchivedId && onTargetChat) {
@@ -289,28 +327,40 @@
 	}
 
 	function selectThread(threadId: string): void {
-		if (browser && window.innerWidth <= 1280) {
-			mobileOpen = false;
-		}
 		if (isVibeDevThread(threadId)) {
+			if (browser && window.innerWidth <= 1280) {
+				mobileOpen = false;
+			}
 			void goto('/vibe');
 			return;
 		}
-		void goto(`/t/${encodeURIComponent(threadId)}`);
+		// The panel stays open on the thread's sessions while its chat opens.
+		showThreadSessions(threadId);
+		const tappedAt = Date.now();
+		chatHistoryReopenOnSessions.set(tappedAt);
+		void goto(threadHref(threadId), { keepFocus: true, noScroll: true }).finally(() => {
+			// Still mounted: the route kept this rail, so no new rail will read the flag.
+			if (!destroyed && get(chatHistoryReopenOnSessions) === tappedAt) chatHistoryReopenOnSessions.set(null);
+		});
 	}
 
-	function newSession(): void {
+	async function newSession(): Promise<void> {
 		if (browser && window.innerWidth <= 1280) {
 			mobileOpen = false;
 		}
-		void chatStore.newExecution(threadFilter ?? 'general');
+		// A filtered list creates in its picked thread, and the chat goes there.
+		const picked = get(historyPickedThread);
+		const session = await chatStore.newExecution(picked ?? threadFilter ?? 'general');
+		// newExecution does not navigate; the thread page opens its new active session.
+		if (picked && session) void goto(threadHref(picked), { keepFocus: true, noScroll: true });
 	}
 
 	function newThread(): void {
 		if (browser && window.innerWidth <= 1280) {
 			mobileOpen = false;
 		}
-		void goto('/t/new');
+		// Ask for the name first; cancel creates nothing.
+		void startNewThread();
 	}
 
 	async function archiveSession(sessionId: string, event: Event): Promise<void> {
@@ -353,9 +403,10 @@
 		try {
 			const updated = await threadStore.updateThread?.(threadId, { archived: true });
 			if (!updated) {
-				showError(`Could not archive #${threadId}`);
+				showError(`Could not archive #${threadLabel(threadId)}`);
 				return;
 			}
+			clearPickIf(threadId);
 			reloadCurrentPage();
 		} finally {
 			finishThreadMutation(threadId);
@@ -368,7 +419,7 @@
 		try {
 			const updated = await threadStore.updateThread?.(threadId, { archived: false });
 			if (!updated) {
-				showError(`Could not restore #${threadId}`);
+				showError(`Could not restore #${threadLabel(threadId)}`);
 				return;
 			}
 			reloadCurrentPage();
@@ -380,8 +431,15 @@
 	async function deleteThread(threadId: string, event: Event): Promise<void> {
 		event.stopPropagation();
 		if (threadId === 'general' || threadMutation) return;
+		const label = threadLabel(threadId);
+		// The open thread's URL carries a slug; map it to the id before the
+		// delete drops the record from the store.
+		const routeKey = browser ? threadRouteKey(window.location.pathname) : null;
+		const viewingDeleted =
+			routeKey !== null &&
+			(routeKey === threadId || findThreadByKey($threadStore.threads, routeKey)?.id === threadId);
 		const confirmed = await requestConfirmation({
-			title: `Delete #${threadId}?`,
+			title: `Delete #${label}?`,
 			message: 'This removes the thread and its chat sessions. Related tasks remain available from Tasks.',
 			confirmLabel: 'Delete',
 			destructive: true
@@ -390,21 +448,16 @@
 		try {
 			const deleted = await threadStore.deleteThread?.(threadId);
 			if (!deleted) {
-				showError(`Could not delete #${threadId}`);
+				showError(`Could not delete #${label}`);
 				return;
 			}
+			clearPickIf(threadId);
 			await chatStore.loadSessions?.();
-			showSuccess(`Deleted #${threadId}.`);
+			showSuccess(`Deleted #${label}.`);
 			reloadCurrentPage();
-			if (browser) {
-				const path = window.location.pathname;
-				const currentThreadId = path.startsWith('/t/')
-					? decodeURIComponent(path.slice('/t/'.length).split('/')[0] ?? '')
-					: null;
-				if (currentThreadId === threadId) await goto('/t/general');
-			}
+			if (viewingDeleted) await goto('/t/general');
 		} catch (error) {
-			showError(error instanceof Error ? error.message : `Failed to delete #${threadId}`);
+			showError(error instanceof Error ? error.message : `Failed to delete #${label}`);
 		} finally {
 			finishThreadMutation(threadId);
 		}
@@ -425,6 +478,7 @@
 	}
 
 	onDestroy(() => {
+		destroyed = true;
 		if (searchTimer) clearTimeout(searchTimer);
 		stopActivity();
 	});
@@ -494,7 +548,7 @@
 							type="button"
 							role="menuitem"
 							class="rail-new-menu-item"
-							on:click={() => { newMenuOpen = false; newSession(); }}
+							on:click={() => { newMenuOpen = false; void newSession(); }}
 						>
 							<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
@@ -535,8 +589,8 @@
 
 		<div class="controls">
 			{#if !isGlobalSearch && activeTab === 'sessions' && sessionThreadFilter}
-				<div class="scope-label" title={`Sessions in #${sessionThreadFilter}`}>
-					<span class="scope-label-name">#{sessionThreadFilter}</span>
+				<div class="scope-label" title={`Sessions in #${$threadLabels(sessionThreadFilter)}`}>
+					<span class="scope-label-name">#{$threadLabels(sessionThreadFilter)}</span>
 					<button
 						type="button"
 						class="scope-clear"
@@ -617,7 +671,7 @@
 									<span class="ts">{formatTimestamp(result.session.updated_at)}</span>
 								</div>
 								<div class="row2">
-									<span class="thread-tag">#{result.session.ui_thread_id || 'general'}</span>
+									<span class="thread-tag">#{$threadLabels(result.session.ui_thread_id || 'general')}</span>
 									<span class="actions">
 										{#if result.session.status === 'archived'}
 											<button disabled={!!$chatStore.deletingSessionIds?.includes(result.session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(result.session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
@@ -686,7 +740,7 @@
 								<span class="ts">{formatTimestamp(session.updated_at)}</span>
 							</div>
 							<div class="row2">
-								<span class="thread-tag">#{session.ui_thread_id || 'general'}</span>
+								<span class="thread-tag">#{$threadLabels(session.ui_thread_id || 'general')}</span>
 								{#if !session.is_default_session && !session.internal_voice}
 									<span class="actions">
 										<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Archive" aria-label="Archive session" on:click={(e) => archiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg></button>
@@ -714,7 +768,7 @@
 								<span class="ts">{formatTimestamp(session.updated_at)}</span>
 							</div>
 							<div class="row2">
-								<span class="thread-tag">#{session.ui_thread_id || 'general'}</span>
+								<span class="thread-tag">#{$threadLabels(session.ui_thread_id || 'general')}</span>
 								<span class="actions">
 									<button disabled={!!$chatStore.deletingSessionIds?.includes(session.id)} class="action" title="Restore" aria-label="Restore session" on:click={(e) => unarchiveSession(session.id, e)}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v11h14V8M9 14l3-3 3 3M12 11v7"/></svg></button>
 									{#if !session.is_default_session && !session.internal_voice}

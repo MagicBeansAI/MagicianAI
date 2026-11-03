@@ -1208,8 +1208,8 @@ pub struct MagicianCodingSettings {
     /// and its own state, secrets unreadable, other agent CLIs blocked,
     /// network by `execution.network_policy`. Default on. `false` launches
     /// every engine under the coding profile alone (the pre-2026-10-14
-    /// behaviour). God mode does not apply in VibeDev; super god mode lifts
-    /// the box.
+    /// behaviour). A chat's god mode reaches the coding runs it starts (their
+    /// Magician tools), but never lifts this box; only super god mode does.
     pub box_harness: bool,
 }
 

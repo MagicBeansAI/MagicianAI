@@ -51,6 +51,18 @@ pub struct YieldDecision {
     /// Artifacts the run produced (text outputs, files, screenshots…).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<Artifact>,
+    /// Files the run wrote that ARE the deliverable, by path (absolute, or
+    /// relative to the task workdir; `outputs/<name>` names a same-yield
+    /// `artifacts` item). The runtime validates each one stays inside this
+    /// task's roots and promotes it to the user as an attachment; the first
+    /// is the primary deliverable. A declared file stands in for pasting its
+    /// full text into `artifacts`.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_deliverables_leniently",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub deliverables: Vec<YieldDeliverable>,
     /// Optional advisory: what the agent thinks should happen next.
     /// Purely informational; orchestrator may or may not honour it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,6 +100,92 @@ pub struct YieldDecision {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// One file a yield declares as (part of) its deliverable. Accepted on the
+/// wire as `{ "path": "...", "title": "..." }` or as a bare path string.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "YieldDeliverableWire")]
+pub struct YieldDeliverable {
+    /// Absolute path, or a path relative to the task workdir.
+    pub path: String,
+    /// Optional human title shown beside the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum YieldDeliverableWire {
+    Path(String),
+    Object {
+        #[serde(alias = "file", alias = "file_path")]
+        path: String,
+        #[serde(default, alias = "name", alias = "label")]
+        title: Option<String>,
+    },
+}
+
+/// `deliverables` never fails the terminal yield it rides on: `null` or a
+/// non-array reads as none, and an item that is not a path string or a
+/// `{path, title?}` object is dropped with a warning.
+fn deserialize_deliverables_leniently<'de, D>(
+    deserializer: D,
+) -> Result<Vec<YieldDeliverable>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let items = match value {
+        None | Some(serde_json::Value::Null) => return Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(serde_json::Value::String(path)) => vec![serde_json::Value::String(path)],
+        Some(other) => {
+            tracing::warn!(
+                kind = %json_kind(&other),
+                "[YIELD] `deliverables` is not a list; ignored"
+            );
+            return Ok(Vec::new());
+        },
+    };
+    Ok(items
+        .into_iter()
+        .filter_map(|item| match serde_json::from_value::<YieldDeliverable>(item.clone()) {
+            Ok(deliverable) if !deliverable.path.trim().is_empty() => Some(deliverable),
+            Ok(_) | Err(_) => {
+                tracing::warn!(
+                    kind = %json_kind(&item),
+                    "[YIELD] dropped a `deliverables` item without a usable `path`"
+                );
+                None
+            },
+        })
+        .collect())
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
+impl From<YieldDeliverableWire> for YieldDeliverable {
+    fn from(wire: YieldDeliverableWire) -> Self {
+        match wire {
+            YieldDeliverableWire::Path(path) => Self { path, title: None },
+            YieldDeliverableWire::Object { path, title } => Self {
+                path,
+                title: title
+                    .map(|title| title.trim().to_string())
+                    .filter(|title| !title.is_empty()),
+            },
+        }
+    }
 }
 
 /// A single concrete blocker preventing forward progress.
@@ -243,9 +341,14 @@ pub fn dispose_yield(decision: &YieldDecision) -> YieldDisposition {
 
     // 4-5. No blockers, nothing open — agent considers task done.
     if decision.open.is_empty() {
-        if !decision.artifacts.is_empty() || !decision.completed.is_empty() {
+        // A declared deliverable file is durable output exactly like an
+        // inline artifact: the run need not also paste its text.
+        if !decision.artifacts.is_empty()
+            || !decision.deliverables.is_empty()
+            || !decision.completed.is_empty()
+        {
             return YieldDisposition::Completed {
-                artifact_count: decision.artifacts.len(),
+                artifact_count: decision.artifacts.len() + decision.deliverables.len(),
             };
         }
         // 6. Truly empty yield: agent yielded without doing anything,
@@ -573,5 +676,77 @@ mod tests {
             "give-up is terminal, not an interview"
         );
         assert_eq!(permission_hitl_prompt(&[], "I cannot proceed"), None);
+    }
+
+    #[test]
+    fn deliverables_parse_from_objects_and_bare_paths() {
+        let parsed: YieldDecision = serde_json::from_value(serde_json::json!({
+            "summary": "Report written",
+            "deliverables": [
+                {"path": "report.md", "title": "  Market report "},
+                "/abs/workdir/data.csv",
+                {"file": "outputs/notes.md", "title": ""}
+            ]
+        }))
+        .expect("yield with deliverables deserialises");
+        assert_eq!(
+            parsed.deliverables,
+            vec![
+                YieldDeliverable {
+                    path: "report.md".into(),
+                    title: Some("Market report".into()),
+                },
+                YieldDeliverable {
+                    path: "/abs/workdir/data.csv".into(),
+                    title: None,
+                },
+                YieldDeliverable {
+                    path: "outputs/notes.md".into(),
+                    title: None,
+                },
+            ]
+        );
+        let round_trip: YieldDecision =
+            serde_json::from_value(serde_json::to_value(&parsed).unwrap()).unwrap();
+        assert_eq!(round_trip.deliverables, parsed.deliverables);
+    }
+
+    #[test]
+    fn malformed_deliverables_never_fail_the_yield() {
+        for deliverables in [
+            serde_json::json!(null),
+            serde_json::json!(7),
+            serde_json::json!([{"title": "no path"}, 3, null, {"path": ""}]),
+        ] {
+            let parsed: YieldDecision = serde_json::from_value(serde_json::json!({
+                "summary": "done",
+                "deliverables": deliverables,
+            }))
+            .expect("a bad deliverables field still parses");
+            assert!(parsed.deliverables.is_empty());
+        }
+        let parsed: YieldDecision = serde_json::from_value(serde_json::json!({
+            "summary": "done",
+            "deliverables": [{"title": "dropped"}, {"path": "kept.md"}],
+        }))
+        .unwrap();
+        assert_eq!(parsed.deliverables.len(), 1);
+        assert_eq!(parsed.deliverables[0].path, "kept.md");
+    }
+
+    #[test]
+    fn a_declared_deliverable_alone_completes_the_yield() {
+        let decision = YieldDecision {
+            summary: "Wrote the report".into(),
+            deliverables: vec![YieldDeliverable {
+                path: "report.md".into(),
+                title: None,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            dispose_yield(&decision),
+            YieldDisposition::Completed { artifact_count: 1 }
+        );
     }
 }

@@ -1,12 +1,13 @@
 ---
 name: dugite
-version: 0.2.0
+version: 0.2.1
 description: Bundled `git` binary for environments without a system git. The governed `dugite.run`
   action executes exact inert argv against the reviewed standalone binary.
 metadata:
   magician:
     requires:
       bins:
+      - git-adapter
       - git
     install_hint:
       docs: Run `make setup-skill-bins` once after clone. Populates `skillshub/dugite/bin/git` from the
@@ -23,7 +24,13 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
+        # The tracked `git-adapter` is the snapshot-safe entrypoint: dugite's
+        # git is built for prefix `/`, so it derives GIT_EXEC_PATH and
+        # GIT_TEMPLATE_DIR from the `git` PATH companion's real location (as
+        # dugite's own Node wrapper does) and execs it in place.
+        entrypoint: git-adapter
         bins:
+        - git-adapter
         - git
       runtime:
         protocol: cli
@@ -96,9 +103,9 @@ metadata:
 ## Callable tool (`dugite.run`)
 
 The agent picks `dugite.run` and passes argv tokens after `git`. The universal
-runtime resolves the exact declared `git` executable from the active package or
-reviewed installation roots, snapshots and revalidates it, and executes the
-argv without a shell.
+runtime snapshots the tracked `bin/git-adapter` entrypoint and executes the argv
+without a shell; the adapter runs the declared dugite `git` in place with the
+exec path and template directory dugite's own wrapper would set.
 
 ```
 dugite.run({ "args": ["status", "--short"] })
@@ -126,5 +133,11 @@ avoids downloading another copy.
 `make setup-skill-bins` installs Dugite's prebuilt standalone `git` at
 `skillshub/dugite/bin/git`. The binary is reproducible build output and remains
 outside git; the one-file `SKILL.md` is the public action/auth/policy contract.
-If the package-local binary is absent, normal reviewed executable discovery may
-use an installed standalone `git` with the same declared identity.
+`bin/git-adapter` is tracked source. Dugite's git is built for prefix `/`, so
+run alone it reports `//libexec/git-core` and finds no templates; the adapter
+derives `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR` (plus `PREFIX` and the bundled CA
+file on Linux) from the companion's real path and refuses a host git such as
+`/usr/bin/git`. Commit identity comes from the repository's own config; without
+one, commits are signed `Magician <magician@localhost>` from the tracked
+`bin/dugite.gitconfig`, loaded as git's system layer (never a hostname guess).
+To commit as yourself, set `user.name`/`user.email` in that repository.

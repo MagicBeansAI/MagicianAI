@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### 2026-11-02 — 0.1.73
+
+- The God mode settings panel says god mode now reaches coding runs started from the chat.
+- Stop works on a turn the server no longer runs (one a restart cut off). The card's Stop cancelled only the turn's run, which had already ended, so nothing changed; when the run has nothing left to cancel and only the page's guess keeps the turn live (no send, no running task, no running turn on the server), Stop now records the turn as stopped (a turn the server already settled keeps its state; the server's own running state still wins).
+
+### 2026-11-02 — 0.1.72
+
+- A failed tool call in the task panel's timeline shows why it failed, clamped to two lines with Show more.
+- Tapping a thread in the history rail or drawer still opens its chat, and now keeps the panel open (phones too) on Sessions filtered to that thread, `#general` included, until × clears it or another thread is tapped; New Session there creates in that thread.
+- The public site's title, descriptions, `llms.txt` and share image (`og-image.png`) say **More You — Life assistant for work, play, and everything else** instead of "Personal AI under your control", "side quests" and "Your personal superintelligence".
+- Chat task cards show **Created <time> · Updated <age>** and the Steps card shows **Started <time> · Updated <age>** (e.g. "Created Oct 31, 14:28 · Updated 2m ago"); hover for the exact times. The age keeps moving after the work settles.
+- New thread asks for the name first (Enter submits, Esc cancels, Create is disabled while the name is empty) and opens `/t/<slug>`. `/t/new` shows the same prompt instead of creating a thread called `new`. Thread URLs follow the name, old links redirect in place, and `#` tags show thread names instead of ids.
+- Global shortcuts no longer fire while you type in the name dialog, and Work's thread filter accepts a thread's slug.
+- A finished task's card and the task panel show the main deliverable first (marked, with Download), then other delivered files, then the agent's summary labelled **Summary** instead of its internal file name. Continuation outputs are hidden. Links to `/api/magician/v3/tasks/{id}/outputs/…` open through the authenticated output fetch for any task.
+
+### 2026-10-31 — 0.1.71
+
+- Team routines' **Start team sequence** runs one stage per focus area of each harness agent, read from the live definitions, instead of five built-in CXO routines retired in October; with no focus areas configured it says so and stays disabled.
+- Team routines dispatch the stages shown when the sequence started, even if the roster changes mid-run; two focus areas that name the same goal are one stage; a focus area with no description is kept; goal ids follow the server's 64-character slug limit; the stepper says when routines are loading or could not load.
+- A `/` command draft can no longer go out through **Stop & send** or **Run in parallel** (the send options are hidden while the picker is open), and a `/engine` model pick that fails leaves the engine unchanged.
+
 ### 2026-10-30 — 0.1.70
 
 - Composer `/` commands: `/engine` and `/run-engine` show the current engine and model, then list the chosen engine's models (the composer dropdown's catalog, the Agentic flows loop model, or the CLI's models) and then the model's thinking level; new `/voice-mode` switches Live, Dictate and Hands-free.
@@ -63,7 +84,6 @@
 - `/settings?embed=1` shows Settings without the app shell, for the desktop and mobile apps to embed. Inside the desktop Settings window it shows the window's This Mac / Magican tabs, and links to other pages open outside the window.
 - Memory → Preferences: **Review what I've learned (N)** lists only the preferences Magician inferred, newest first, 25 at a time with a source filter, each with where and when it was learned. **Confirm** makes one yours (it can then make an outward act wait); **Dismiss** retires it so checks stop weighing it.
 - Decision models: a **Decision model health** card at the top lists each operation's decided, unresolved, timed-out and errored decisions, p50/p95 latency against the caller budget and the last cause, coloured healthy / degraded (over 10% or p95 over budget) / failing (over 50%). It loads on page open and Refresh, with a 1 h–7 day window.
-
 
 ### 2026-10-24 — 0.1.66
 

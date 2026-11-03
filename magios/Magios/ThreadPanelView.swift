@@ -83,16 +83,39 @@ struct ThreadPanelView: View {
                 .background(themeManager.surfaceColor)
 
                 HStack(spacing: 4) {
-                    ForEach(ChatHistoryLane.allCases) { lane in
-                        HistoryLaneButton(
-                            lane: lane,
-                            isActive: viewModel.historyLane == lane,
-                            themeManager: themeManager
-                        ) {
-                            viewModel.selectHistoryLane(lane)
+                    // A tapped thread filters Sessions: its label and × stand
+                    // in for the lanes, since the filter shows both.
+                    if viewModel.activeTab == "sessions", let filter = viewModel.sessionThreadFilter {
+                        let label = ThreadDirectory.shared.label(filter.id)
+                        Text(label)
+                            .font(.themed(12, weight: .semibold))
+                            .foregroundColor(themeManager.textColor)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                            .padding(.leading, 8)
+                            .accessibilityLabel("Sessions in \(label)")
+                        Button(action: viewModel.clearSessionThreadFilter) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(themeManager.secondaryTextColor)
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show sessions from all threads")
+                    } else {
+                        ForEach(ChatHistoryLane.allCases) { lane in
+                            HistoryLaneButton(
+                                lane: lane,
+                                isActive: viewModel.historyLane == lane,
+                                themeManager: themeManager
+                            ) {
+                                viewModel.selectHistoryLane(lane)
+                            }
                         }
                     }
                 }
+                .frame(height: 30)
                 .padding(3)
                 .background(themeManager.backgroundColor)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -142,10 +165,10 @@ struct ThreadPanelView: View {
             .padding(.bottom, 8)
             .background(themeManager.surfaceColor)
 
-            if viewModel.historyLane == .personal && !viewModel.isSearchActive {
+            if viewModel.showsNewItemButton {
                 Button(action: {
                     if viewModel.activeTab == "sessions" {
-                        viewModel.newSession { sid in
+                        viewModel.newPanelSession { sid in
                             chatViewModel.startNewSession(sid)
                             withAnimation { isPresented = false }
                         }
@@ -343,13 +366,29 @@ struct ThreadPanelView: View {
         .alert("New Thread", isPresented: $showNewThreadPrompt) {
             TextField("Thread name", text: $newThreadName)
             Button("Cancel", role: .cancel) {}
-            Button("Create") {
-                viewModel.newThread(name: newThreadName) { _ in
-                    withAnimation { isPresented = false }
-                }
-            }
+            // Named first: Create stays off until there is a name; the server
+            // derives the id and slug, and the new thread opens at once.
+            Button("Create") { createNamedThread() }
+                .disabled(newThreadName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } message: {
             Text("Name your new thread.")
+        }
+    }
+
+    private func createNamedThread() {
+        let name = newThreadName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        viewModel.newThread(name: name) { threadId in
+            guard let threadId else { return }
+            let thread = viewModel.threadMetadata(for: threadId) ?? UiThreadRecord(
+                principal: "", workspace: "", id: threadId, name: name, archived: false,
+                sortOrder: 0, memorySummary: nil, memoryUpdatedAt: nil, createdAt: 0, updatedAt: 0
+            )
+            viewModel.openThread(thread) { sessionId in
+                guard let sessionId else { return }
+                chatViewModel.loadSession(sessionId)
+                withAnimation { isPresented = false }
+            }
         }
     }
 
@@ -413,12 +452,14 @@ struct ThreadPanelView: View {
             historyLane: historyLane,
             mutationLabel: viewModel.mutatingThreadId == thread.id ? viewModel.mutatingThreadLabel : nil
         )
+        // The chat opens the thread's newest session; History stays open on
+        // Sessions, filtered to the thread.
         .onTapGesture {
             guard viewModel.mutatingThreadId != thread.id else { return }
+            viewModel.showSessions(of: thread)
             viewModel.openThread(thread) { sessionId in
                 guard let sessionId else { return }
                 chatViewModel.loadSession(sessionId)
-                withAnimation { isPresented = false }
             }
         }
         .contextMenu {
@@ -565,7 +606,7 @@ struct SessionRowView: View {
                 }
                 
                 HStack {
-                    Text("#\(session.uiThreadId)")
+                    Text(ThreadDirectory.shared.label(session.uiThreadId))
                         .font(.themed(12))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)

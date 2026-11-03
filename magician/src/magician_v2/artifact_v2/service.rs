@@ -150,6 +150,10 @@ use super::{
         TaskState, TaskSyncMode, TaskTagRecord, CONTINUATION_CONTEXT_OUTPUT_ROLE,
         DELIVERED_FILE_OUTPUT_ROLE, RELATIONSHIP_TYPE_DELEGATE, RELATIONSHIP_TYPE_ROOT,
     },
+    delivered_links::{
+        append_delivered_files_section, delivered_file_links, rewrite_host_paths_for_user,
+        DeliveredFileLink,
+    },
     pipeline_store::{ExecutionPipelineStoreError, FilesystemExecutionPipelineStore},
     progress::{
         V3ActivitySummary, V3AttentionSummary, V3ExecutionProgressSummary,
@@ -623,6 +627,23 @@ pub(crate) enum TerminalLoopSettlementAcceptance {
     DeferredToRefinementSuccessor,
 }
 
+/// A sealed receipt stamped parkable: an owner question or approval gate a
+/// delegated child holds for its owner. The lock chooser and terminal
+/// acceptance both read it before checking for a cancelled tree.
+fn delegated_pause_parks(
+    descriptor: Option<
+        &crate::magician_v2::execution::agentic::run_loop::state::TerminalSettlementDescriptor,
+    >,
+) -> bool {
+    descriptor.is_some_and(|descriptor| {
+        descriptor.pause_key.is_some()
+            && descriptor.waiting_for_user_diff_approval
+            && crate::magician_v2::agents::runtime::delegated_child_may_suspend_on_terminal(
+                &descriptor.terminal_kind,
+            )
+    })
+}
+
 pub(crate) enum TerminalLoopReceiptLifecycleExclusion {
     DeletedTask {
         _guard: CrossProcessTaskGuard,
@@ -690,6 +711,10 @@ pub struct TaskFinalizeContext {
     pub source_output_ids: Vec<String>,
     pub verified_terminal_projection: Option<VerifiedTerminalProjection>,
     pub llm_routing_overrides: Option<OperationRoutingOverrides>,
+    /// Files promoted to the user beside this answer (primary first). The
+    /// finalizer links them by served URL and rewrites host paths that name
+    /// them. Empty for runs that delivered no file.
+    pub delivered_files: Vec<DeliveredFileLink>,
     pub now: String,
 }
 
@@ -824,6 +849,24 @@ fn admitted_launch_routing_overrides(
 /// `reconcile_waiting_children_loaded` has always enforced this by loading each
 /// child; the V3 path gated only on plan-step readiness, which does not know
 /// whether the spawned executions have finished.
+/// A delegated child may resume after its children only under the root that
+/// still owns the task, from a park (or an activation a crash left behind).
+fn resumed_child_activation_admissible(
+    task_status: &str,
+    active_root_execution_id: Option<&str>,
+    relationship_type: &str,
+    parent_execution_id: Option<&str>,
+    root_execution_id: Option<&str>,
+    execution_status: &str,
+) -> bool {
+    !is_terminal_execution_status(task_status)
+        && root_execution_id.is_some()
+        && active_root_execution_id == root_execution_id
+        && relationship_type == RELATIONSHIP_TYPE_DELEGATE
+        && parent_execution_id.is_some()
+        && matches!(execution_status, "waiting_for_children" | "running")
+}
+
 fn delegated_children_are_settled(child_waiting_states: &[WaitingState]) -> bool {
     child_waiting_states.iter().all(WaitingState::is_terminal)
 }
@@ -1208,7 +1251,61 @@ const EXECUTION_STATELESS_CHILDREN_HANDOFF_MAX_CHILDREN: usize = 64;
 const EXECUTION_STATELESS_CHILDREN_HANDOFF_MAX_BYTES: usize = 64 * 1024;
 const EXECUTION_STATELESS_CHILDREN_HANDOFF_MAX_JSON_DEPTH: usize = 16;
 const EXECUTION_STATELESS_CHILDREN_HANDOFF_MAX_JSON_NODES: usize = 2 * 1024;
+/// Error prefix for a handoff whose source segment ended on its own terminal
+/// before any handoff was prepared. Nothing can consume that descriptor.
+const STATELESS_CHILDREN_HANDOFF_SOURCE_ENDED: &str = "stateless_children_handoff_source_ended";
+/// How soon the readiness owner looks again at a parked parent whose
+/// delegation checkpoint has not landed. The checkpoint is written by the
+/// outcome reducer moments after the park, so a fast child can beat it; a
+/// minute is long enough not to spin and short against the park grace.
+const MISSING_DELEGATION_CHECKPOINT_RETRY_MS: i64 = 60_000;
+/// Retry delay when this process itself owns the run (live controls or an
+/// in-flight recovery) and there is no durable deadline to wait for.
+const RESUMED_PARENT_LOCAL_OWNER_RETRY_MS: i64 = 30_000;
+/// Retry delay when generic recovery refuses a resumed parent because its
+/// durable authority is not settled yet, or could not be read.
+const RESUMED_PARENT_RECOVERY_RETRY_MS: i64 = 30_000;
+/// Consecutive failed recovery claims after which a resumed parent is failed
+/// visibly instead of retried again (about two and a half minutes of retries).
+const MAX_FAILED_PARENT_RECOVERY_CLAIMS: u32 = 5;
+/// Upper bound of the spread added to a deferred parent retry, so parents
+/// deferred on the same deadline do not all wake on the same millisecond.
+const RESUMED_PARENT_RETRY_JITTER_MS: i64 = 2_000;
 const POST_DELEGATION_RECONCILIATION_MAX_ITERATIONS: usize = 4;
+
+/// Whether `error` carries generic recovery's refusal of a parked segment with
+/// no delegation checkpoint (`run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING`).
+/// It arrives inside the recovery binder's `Deferred` message, so it is matched
+/// anywhere in the detail.
+fn is_stateless_parked_children_checkpoint_missing(error: &ArtifactV2Error) -> bool {
+    matches!(
+        error,
+        ArtifactV2Error::Runtime(detail)
+            if detail.contains(
+                crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING
+            )
+    )
+}
+
+/// When a resumed parent whose continuation was refused by another owner
+/// should be looked at again.
+///
+/// `until_ms` is that owner's durable deadline (a live segment's lease or
+/// placement pin): come back just after it, never before now. Without one the
+/// owner is this process, whose own outcome settles the run, so a short fixed
+/// delay is enough. The jitter is derived from the execution id rather than
+/// drawn, so the answer is reproducible and a test can pin it.
+fn resumed_parent_retry_at_ms(until_ms: Option<i64>, now_ms: i64, execution_id: &str) -> i64 {
+    let base = match until_ms {
+        Some(until_ms) => until_ms.max(now_ms),
+        None => now_ms.saturating_add(RESUMED_PARENT_LOCAL_OWNER_RETRY_MS),
+    };
+    let spread = execution_id
+        .bytes()
+        .fold(0_i64, |acc, byte| (acc * 31 + i64::from(byte)) % RESUMED_PARENT_RETRY_JITTER_MS);
+    base.saturating_add(1).saturating_add(spread)
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct ExecutionPipelineRoster {
@@ -2203,6 +2300,19 @@ pub struct ArtifactV2Service {
     feed_projection_adapter: Arc<OnceLock<Arc<V3FeedProjectionAdapter>>>,
     progress_projection_adapter: Arc<OnceLock<Arc<V3TaskProgressProjectionAdapter>>>,
     active_child_runtime_watches: Arc<Mutex<HashSet<String>>>,
+    /// Parents whose dispatched continuation deferred to another owner's
+    /// durable deadline (`ContinuedExecutionOutcome::Deferred` without an
+    /// exact handoff). The continuation already moved the runtime to Runnable
+    /// and the Artifact record to running, so the wake scheduled for that
+    /// deadline finds no waiting parent; this is what entitles it to dispatch
+    /// the continuation once more instead of acknowledging and stranding it.
+    /// Process-local on purpose: after a restart the interrupted-runtime
+    /// recovery owns a Runnable parent, not this wake.
+    deferred_parent_resumes: Arc<Mutex<HashSet<String>>>,
+    /// Consecutive failed generic-recovery claims per resumed parent, so a
+    /// claim that keeps failing ends in a visible failure (see
+    /// `MAX_FAILED_PARENT_RECOVERY_CLAIMS`). Cleared by any settled outcome.
+    failed_parent_recovery_claims: Arc<Mutex<HashMap<String, u32>>>,
     /// Single-flight lock per child-terminal transaction (synthesis, reducer
     /// updates, episode recording, and parent wake). Weak entries keep the map
     /// bounded while concurrent generic/watcher observers await the same owner;
@@ -2619,6 +2729,8 @@ impl ArtifactV2Service {
             progress_projection_adapter: Arc::new(OnceLock::new()),
             attention_funnel_store: Arc::new(OnceLock::new()),
             active_child_runtime_watches: Arc::new(Mutex::new(HashSet::new())),
+            deferred_parent_resumes: Arc::new(Mutex::new(HashSet::new())),
+            failed_parent_recovery_claims: Arc::new(Mutex::new(HashMap::new())),
             child_terminal_finalization_locks: Arc::new(Mutex::new(HashMap::new())),
             exact_execution_retry_locks: Arc::new(Mutex::new(HashMap::new())),
             active_synthesis_revisions: Arc::new(Mutex::new(HashSet::new())),
@@ -3716,9 +3828,15 @@ impl ArtifactV2Service {
                 },
                 None => None,
             };
+            let deliverable = is_deliverable_output(&output);
             outputs.push(TaskOutputView {
-                deliverable: is_deliverable_output(&output),
+                deliverable,
                 absolute_path,
+                primary: record.primary_deliverable_output_id.as_deref()
+                    == Some(output.output_id.as_str()),
+                download_url: deliverable.then(|| {
+                    super::models::task_output_served_url(&record.task_id, &output.relative_path)
+                }),
                 output,
             });
         }
@@ -3748,6 +3866,7 @@ impl ArtifactV2Service {
             task_id: record.task_id,
             default_task_agent_output_id: None,
             primary_user_output_id: record.primary_user_output_id,
+            primary_deliverable_output_id: record.primary_deliverable_output_id,
             outputs,
             internal_files,
         })
@@ -5773,6 +5892,8 @@ impl ArtifactV2Service {
             outputs: Vec::new(),
             default_task_agent_output_id: None,
             primary_user_output_id: None,
+            primary_deliverable_output_id: None,
+            latest_delivered_output_ids: Vec::new(),
             updated_at: Some(now),
         };
         let task = TaskRecord {
@@ -6100,6 +6221,8 @@ impl ArtifactV2Service {
             outputs: Vec::new(),
             default_task_agent_output_id: None,
             primary_user_output_id: None,
+            primary_deliverable_output_id: None,
+            latest_delivered_output_ids: Vec::new(),
             updated_at: Some(now),
         };
         let task = TaskRecord {
@@ -15716,6 +15839,54 @@ impl ArtifactV2Service {
         Ok((task, execution))
     }
 
+    /// Activation for a delegated child resuming after its own children. Like
+    /// the sleeping-child case, the task's active root stays the recorded root:
+    /// the root activator refuses here (the root is alive, waiting on this
+    /// child), which left every delegated coordinator parked for good.
+    async fn activate_resumed_child_execution(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+    ) -> Result<(), ArtifactV2Error> {
+        let task = self.get_task(scope, task_id).await?;
+        let mut execution = self.get_execution(scope, task_id, execution_id).await?;
+        if !resumed_child_activation_admissible(
+            &task.state.status,
+            task.state.active_root_execution_id.as_deref(),
+            &execution.state.relationship_type,
+            execution.state.parent_execution_id.as_deref(),
+            execution.state.root_execution_id.as_deref(),
+            &execution.state.status,
+        ) {
+            return Err(ArtifactV2Error::InvalidRequest(format!(
+                "resumed_child_activation_binding_mismatch:{execution_id}"
+            )));
+        }
+        if execution.state.status == "running" {
+            return Ok(());
+        }
+        let now = now_rfc3339();
+        execution.state.status = "running".to_owned();
+        execution.state.updated_at = now;
+        self.reducer
+            .reduce_execution_discovered(scope, &execution)
+            .await?;
+        self.event_writer
+            .append(
+                &ExecutionContext {
+                    principal: scope.principal().to_string(),
+                    workspace: scope.workspace().to_string(),
+                    task_id: task_id.to_string(),
+                    execution_id: execution_id.to_string(),
+                },
+                ArtifactV2EventType::ExecutionStarted,
+                json!({ "status": "running", "resume": "child_results_ready" }),
+            )
+            .await?;
+        self.project_task_progress(scope, task_id).await
+    }
+
     /// Timer-only activation for a delegated child. The task's active-root
     /// ownership must remain on the recorded root; using the ordinary root
     /// activator here would replace that pointer with the child id and strand
@@ -16403,12 +16574,17 @@ impl ArtifactV2Service {
                     // publication applies the HMAC-bound delegated subtype.
                     return Ok(ExecutionRetryDisposition::PendingProjection);
                 }
+                // The same delegated-pause policy terminal acceptance applies:
+                // a staged diff, an owner question or an approval gate keeps
+                // the child parked for its owner. Admitting only a canonical
+                // diff here force-failed a recovered child the owner was
+                // still answering.
                 let delegated_pause_allowed = waiting_state
                     == &crate::magician_v2::storage::models::WaitingState::WaitingChildren
                     || (waiting_state
                         == &crate::magician_v2::storage::models::WaitingState::WaitingUser
                         && admission.resumable()
-                        && admission.canonical_diff_approval());
+                        && admission.delegated_owner_answerable());
                 if !delegated_pause_allowed {
                     crate::magician_v2::agents::runtime::force_child_failure_checked_with_pause_lifecycle_admission(
                         &self.orchestrator,
@@ -17491,6 +17667,7 @@ impl ArtifactV2Service {
                 continuation_context_output: None,
                 media_outputs: vec![],
                 delivered_file_outputs: vec![],
+                primary_deliverable_output_id: None,
                 task_output_mode: binding.task_output_mode.clone(),
             };
             self.reducer
@@ -24729,7 +24906,9 @@ impl ArtifactV2Service {
             || descriptor.outcome.outcome_type.trim().is_empty()
             || descriptor.outcome.outcome_summary.len() > 32 * 1024
             || (descriptor.waiting_for_user_diff_approval
-                && descriptor.terminal_kind != "waiting_for_user")
+                && !crate::magician_v2::agents::runtime::delegated_child_may_suspend_on_terminal(
+                    &descriptor.terminal_kind,
+                ))
             || (descriptor.pipeline_loop_state_segment.is_some() && descriptor.outcome.is_terminal)
             || (descriptor.pipeline_stage_settlement.is_some() && !descriptor.outcome.is_terminal)
             || !matches!(
@@ -25231,16 +25410,18 @@ impl ArtifactV2Service {
         // The one delegated-pause policy, shared with the live disposition
         // (`classify_delegated_child_outcome`) and the receipt classifier
         // (`stateless_terminal_receipt_is_delegated_diff_approval`): a
-        // delegated child may suspend on a staged diff approval or on any
-        // owner-answerable question. Three copies of a narrower predicate
-        // let the live arm suspend a child that asked for an Apple Account
-        // email while the 30-second terminal scan force-failed it.
+        // delegated child may suspend on a staged diff approval, on any
+        // owner-answerable question, or on an approval gate, which only the
+        // owner can answer. Three copies of a narrower predicate let the
+        // live arm suspend a child that asked for an Apple Account email
+        // while the 30-second terminal scan force-failed it.
         let waiting_for_user_diff_approval = match outcome {
             AgenticOutcome::WaitingForUser { input_type, .. } => {
                 crate::magician_v2::agents::runtime::delegated_waiting_for_user_should_suspend(
                     input_type,
                 )
             },
+            AgenticOutcome::WaitingForConfirmation { .. } => true,
             _ => false,
         };
         let mut outcome_summary = snapshot.outcome_summary;
@@ -25498,6 +25679,48 @@ impl ArtifactV2Service {
         Ok(true)
     }
 
+    /// A parkable delegated pause (`delegated_pause_parks`) whose parent or
+    /// root is already cancelled, other than a canonical staged diff
+    /// approval, which tree cancellation spares by design. The lock chooser
+    /// and acceptance ask the same question. An unreadable pause body is
+    /// logged and left to acceptance's own exact-body check rather than
+    /// wedging settlement here.
+    async fn delegated_pause_under_cancelled_tree(
+        &self,
+        execution_id: &str,
+        descriptor: Option<
+            &crate::magician_v2::execution::agentic::run_loop::state::TerminalSettlementDescriptor,
+        >,
+    ) -> bool {
+        let Some(descriptor) =
+            descriptor.filter(|descriptor| delegated_pause_parks(Some(*descriptor)))
+        else {
+            return false;
+        };
+        if !self
+            .orchestrator
+            .delegated_child_tree_cancelled(execution_id)
+            .await
+        {
+            return false;
+        }
+        match self
+            .orchestrator
+            .stateless_terminal_receipt_canonical_diff_approval(descriptor)
+        {
+            Ok(Some(canonical_diff)) => !canonical_diff,
+            Ok(None) => false,
+            Err(error) => {
+                warn!(
+                    execution_id,
+                    %error,
+                    "delegated pause body is unreadable; leaving its cancelled-tree disposition to acceptance"
+                );
+                false
+            },
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn acquire_terminal_loop_receipt_lifecycle_exclusion(
         &self,
@@ -25592,6 +25815,20 @@ impl ArtifactV2Service {
                 receipt.descriptor.pause_key.is_some()
                     && receipt.descriptor.waiting_for_user_diff_approval
             });
+            // A tree cancel that met this child while its pause was still
+            // staged skipped it (`cancel_execution_tree_loaded_locked`) after
+            // committing `Cancelled` on the parent and root. Parking now would
+            // publish a card under a cancelled tree, so the child takes the
+            // canonical failure under the agent-only fence instead.
+            // Acceptance re-reads the same trace.
+            let permitted_child_suspend = permitted_child_suspend
+                && !(delegated_child
+                    && self
+                        .delegated_pause_under_cancelled_tree(
+                            execution_id,
+                            receipt.map(|receipt| &receipt.descriptor),
+                        )
+                        .await);
             let delegated_non_success = delegated_child
                 && terminal
                     != crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind::Success
@@ -25658,6 +25895,10 @@ impl ArtifactV2Service {
         receipt: Option<
             &crate::magician_v2::execution::agentic::run_loop::state::TerminalSettlementReceipt,
         >,
+        // Whether `acquire_terminal_loop_receipt_lifecycle_exclusion` chose
+        // the agent-only fence for this receipt
+        // (`TerminalLoopReceiptLifecycleExclusion::Agent`).
+        agent_only_lifecycle_exclusion: bool,
     ) -> Result<TerminalLoopSettlementAcceptance, ArtifactV2Error> {
         use crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind;
 
@@ -26170,8 +26411,46 @@ impl ArtifactV2Service {
                 execution.state.relationship_type.as_str(),
                 "child" | "delegated_child"
             );
+        // The lock chooser sends a parkable pause whose parent or root is
+        // already cancelled to the agent-only fence and the canonical failure
+        // below.
+        // A cancel that landed after it chose the full fence cannot be failed
+        // here: the failure owner takes the control-tree lock while that
+        // cascade waits on this execution's fence. Ask for another pass, which
+        // chooses the agent-only fence. Governed children fail under the full
+        // fence by design.
+        let pause_under_cancelled_tree = delegated_child
+            && self
+                .delegated_pause_under_cancelled_tree(execution_id, verified_descriptor)
+                .await;
+        if pause_under_cancelled_tree
+            && !agent_only_lifecycle_exclusion
+            && !self
+                .orchestrator
+                .is_governed_app_execution(execution_id)
+                .await
+                .map_err(ArtifactV2Error::Runtime)?
+        {
+            return Err(ArtifactV2Error::Runtime(format!(
+                "delegated_pause_tree_cancelled_retry:{}",
+                key.execution_id()
+            )));
+        }
+        // An owner question or an approval gate: both are the owner's to
+        // answer, so a delegated child parks on either instead of failing. A
+        // gate receipt sealed before gates could park carries a clear bit; it
+        // keeps the force-failure it was sealed under instead of failing the
+        // body consistency check below on every projector pass.
+        let delegated_may_suspend = delegated_child
+            && crate::magician_v2::agents::runtime::delegated_child_may_suspend_on_terminal(
+                terminal.settlement_label(),
+            )
+            && (terminal != TerminalKind::WaitingForConfirmation
+                || verified_descriptor
+                    .is_some_and(|descriptor| descriptor.waiting_for_user_diff_approval))
+            && !pause_under_cancelled_tree;
         let delegated_diff_approval_suspend =
-            if delegated_child && terminal == TerminalKind::WaitingForUser {
+            if delegated_may_suspend {
                 let descriptor = verified_descriptor.ok_or_else(|| {
                     ArtifactV2Error::InvalidRequest(format!(
                         "delegated_waiting_for_user_receipt_missing:{}",
@@ -26479,8 +26758,9 @@ impl ArtifactV2Service {
                 );
             if delegated_child
                 && terminal != TerminalKind::Success
-                && !(terminal == TerminalKind::WaitingForUser
-                    && descriptor.waiting_for_user_diff_approval)
+                && !(crate::magician_v2::agents::runtime::delegated_child_may_suspend_on_terminal(
+                    terminal.settlement_label(),
+                ) && descriptor.waiting_for_user_diff_approval)
             {
                 // Acceptance already routed this receipt through canonical
                 // child force-failure and exact pause revocation. Publication
@@ -28146,6 +28426,8 @@ impl ArtifactV2Service {
             feed_projection_adapter: self.feed_projection_adapter.clone(),
             progress_projection_adapter: self.progress_projection_adapter.clone(),
             active_child_runtime_watches: Arc::clone(&self.active_child_runtime_watches),
+            deferred_parent_resumes: Arc::clone(&self.deferred_parent_resumes),
+            failed_parent_recovery_claims: Arc::clone(&self.failed_parent_recovery_claims),
             child_terminal_finalization_locks: Arc::clone(&self.child_terminal_finalization_locks),
             exact_execution_retry_locks: Arc::clone(&self.exact_execution_retry_locks),
             active_synthesis_revisions: Arc::clone(&self.active_synthesis_revisions),
@@ -30661,7 +30943,7 @@ impl ArtifactV2Service {
         // catalog (#4), and artifact_v2 terminal verdict (#1) read it without
         // re-loading the task.
         overrides.coding_coordinator_run = coding_coordinator_run;
-        // Any VibeDev run, Discuss included: god mode never applies to it.
+        // Any VibeDev run, Discuss included (coding budgets and engine box).
         overrides.vibedev_run = crate::magician_v2::artifact_v2::models::is_vibedev_cockpit_run(
             &manifest.ui_thread_id,
             &manifest.tags,
@@ -32137,13 +32419,136 @@ impl ArtifactV2Service {
                 },
             }
 
-            orchestrator
+            match orchestrator
                 .bind_interrupted_runtime_recovery_overrides(
                     &binding.execution.execution_id,
                     &mut overrides,
                 )
                 .await
-                .map_err(ArtifactV2Error::Runtime)?;
+            {
+                Ok(()) => {},
+                // Another generation owns the run. That is a reason to come
+                // back, not a failure: return the typed deferral so the
+                // settlement schedules the retry for when the ownership lapses.
+                // As a bare error it was retried at once, inside the owner's
+                // window, and then acknowledged by a wake that found the parent
+                // no longer waiting (2026-11-01).
+                Err(
+                    crate::magician_v2::orchestrator::v2_orchestrator::InterruptedRuntimeRecoveryRefusal::AlreadyOwned {
+                        until_ms,
+                        ..
+                    },
+                ) => {
+                    let retry_at_ms = resumed_parent_retry_at_ms(
+                        until_ms,
+                        Utc::now().timestamp_millis(),
+                        &binding.execution.execution_id,
+                    );
+                    info!(
+                        task_id = %binding.execution.task_id,
+                        execution_id = %binding.execution.execution_id,
+                        owner_until_ms = ?until_ms,
+                        retry_at_ms,
+                        "resumed parent continuation deferred: another generation owns the run"
+                    );
+                    return Ok(Err(ContinuedExecutionOutcome::Deferred { retry_at_ms }));
+                },
+                // Durable authority not settled enough to recover from yet
+                // (settlement pending, uncertain, a parked segment without its
+                // checkpoint, a lookup that failed). Also a reason to come back:
+                // as an error the runtime is already Runnable, nothing parks,
+                // and the wake finds no waiting parent. A parked segment
+                // without its checkpoint waits as long as the readiness guard.
+                Err(
+                    crate::magician_v2::orchestrator::v2_orchestrator::InterruptedRuntimeRecoveryRefusal::Deferred {
+                        reason,
+                        ..
+                    },
+                ) => {
+                    let delay_ms = if reason.starts_with(
+                        crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING,
+                    ) {
+                        MISSING_DELEGATION_CHECKPOINT_RETRY_MS
+                    } else {
+                        RESUMED_PARENT_RECOVERY_RETRY_MS
+                    };
+                    let now_ms = Utc::now().timestamp_millis();
+                    let retry_at_ms = resumed_parent_retry_at_ms(
+                        Some(now_ms.saturating_add(delay_ms)),
+                        now_ms,
+                        &binding.execution.execution_id,
+                    );
+                    info!(
+                        task_id = %binding.execution.task_id,
+                        execution_id = %binding.execution.execution_id,
+                        %reason,
+                        retry_at_ms,
+                        "resumed parent continuation deferred: recovery authority not settled"
+                    );
+                    return Ok(Err(ContinuedExecutionOutcome::Deferred { retry_at_ms }));
+                },
+                // The authority could not be read or claimed. Usually a
+                // transient fence or storage stall, so retry on the same
+                // backoff — but only a few times in a row: a parent whose
+                // recovery keeps failing is failed visibly rather than retried
+                // forever or left Runnable with nothing to drive it.
+                Err(
+                    crate::magician_v2::orchestrator::v2_orchestrator::InterruptedRuntimeRecoveryRefusal::Failed(
+                        detail,
+                    ),
+                ) => {
+                    let attempts = {
+                        let mut failures = self
+                            .failed_parent_recovery_claims
+                            .lock()
+                            .expect("failed_parent_recovery_claims lock poisoned");
+                        let attempts = failures
+                            .entry(Self::deferred_parent_resume_key(
+                                &binding.scope,
+                                &binding.execution.execution_id,
+                            ))
+                            .or_insert(0);
+                        *attempts = attempts.saturating_add(1);
+                        *attempts
+                    };
+                    if attempts > MAX_FAILED_PARENT_RECOVERY_CLAIMS {
+                        self.failed_parent_recovery_claims
+                            .lock()
+                            .expect("failed_parent_recovery_claims lock poisoned")
+                            .remove(&Self::deferred_parent_resume_key(
+                                &binding.scope,
+                                &binding.execution.execution_id,
+                            ));
+                        warn!(
+                            task_id = %binding.execution.task_id,
+                            execution_id = %binding.execution.execution_id,
+                            attempts,
+                            %detail,
+                            "resumed parent recovery kept failing; failing the parent"
+                        );
+                        return Ok(Err(ContinuedExecutionOutcome::Outcome(
+                            ExecutionOutcomeSnapshot::runtime_error(format!(
+                                "resumed parent recovery failed {attempts} times: {detail}"
+                            )),
+                        )));
+                    }
+                    let now_ms = Utc::now().timestamp_millis();
+                    let retry_at_ms = resumed_parent_retry_at_ms(
+                        Some(now_ms.saturating_add(RESUMED_PARENT_RECOVERY_RETRY_MS)),
+                        now_ms,
+                        &binding.execution.execution_id,
+                    );
+                    warn!(
+                        task_id = %binding.execution.task_id,
+                        execution_id = %binding.execution.execution_id,
+                        attempts,
+                        %detail,
+                        retry_at_ms,
+                        "resumed parent recovery claim failed; retrying"
+                    );
+                    return Ok(Err(ContinuedExecutionOutcome::Deferred { retry_at_ms }));
+                },
+            }
             let stop_bridge = self.start_runtime_bridges(Arc::clone(&orchestrator), &binding.execution);
             let outcome = orchestrator
                 .execute_agentic_direct_with_outcome(
@@ -34855,6 +35260,13 @@ impl ArtifactV2Service {
             .outputs
             .iter()
             .filter(|output| output.role == DELIVERED_FILE_OUTPUT_ROLE)
+            .filter(|output| {
+                task.refs.latest_delivered_output_ids.is_empty()
+                    || task
+                        .refs
+                        .latest_delivered_output_ids
+                        .contains(&output.output_id)
+            })
             .cloned()
             .collect();
 
@@ -34864,6 +35276,7 @@ impl ArtifactV2Service {
             continuation_context_output,
             media_outputs,
             delivered_file_outputs,
+            primary_deliverable_output_id: task.refs.primary_deliverable_output_id.clone(),
             task_output_mode: task_output_mode.clone(),
         })
     }
@@ -35614,6 +36027,409 @@ impl ArtifactV2Service {
         Ok(Some(seal.descriptor))
     }
 
+    /// The loop segment of `parent_execution_id` that is parked on delegated
+    /// children and names its successor, if one is.
+    ///
+    /// Read from the committed loop state of every segment the base
+    /// execution's recovery authority still names as nonterminal. A segment
+    /// that ended (handed off, or retired by the reconciler) is not named, so
+    /// a completed handoff never reads as parked.
+    async fn parked_children_segment(
+        &self,
+        scope: &ScopeRef,
+        parent_execution_id: &str,
+    ) -> Result<
+        Option<crate::magician_v2::execution::agentic::run_loop::state::ParkedChildrenSegment>,
+        ArtifactV2Error,
+    > {
+        use crate::magician_v2::execution::agentic::run_loop::store::fs::BaseExecutionRecoveryAuthority;
+        use crate::magician_v2::execution::agentic::run_loop::store::LoopStateStore;
+
+        let authority = self
+            .orchestrator
+            .stateless_base_execution_recovery_authority(
+                scope.principal(),
+                scope.workspace(),
+                parent_execution_id,
+            )
+            .await
+            .map_err(|error| {
+                ArtifactV2Error::Runtime(format!(
+                    "stateless_parked_children_lookup_failed:{parent_execution_id}:{error}"
+                ))
+            })?;
+        let candidates = match authority {
+            BaseExecutionRecoveryAuthority::Live { exact_segments, .. }
+            | BaseExecutionRecoveryAuthority::Uncertain { exact_segments, .. } => exact_segments,
+            BaseExecutionRecoveryAuthority::RecoverableExact { exact_segment, .. } => {
+                vec![exact_segment]
+            },
+            BaseExecutionRecoveryAuthority::SettlementPending { .. }
+            | BaseExecutionRecoveryAuthority::Absent => return Ok(None),
+        };
+        let store = crate::magician_v2::execution::agentic::run_loop::store::fs::FsLoopStateStore::new(
+            self.workspace.base_root(),
+        );
+        for segment in candidates {
+            let key = crate::magician_v2::execution::agentic::run_loop::store::ExecutionKey::new(
+                scope.principal(),
+                scope.workspace(),
+                segment.as_str(),
+            )
+            .map_err(|error| {
+                ArtifactV2Error::InvalidRequest(format!(
+                    "stateless_parked_children_segment_invalid:{error}"
+                ))
+            })?;
+            let Some(committed) = store.load(&key).await.map_err(|error| {
+                ArtifactV2Error::Runtime(format!(
+                    "stateless_parked_children_segment_load_failed:{segment}:{error}"
+                ))
+            })?
+            else {
+                continue;
+            };
+            if let Some(parked) =
+                crate::magician_v2::execution::agentic::run_loop::state::parked_children_segment_from_wait(
+                    &segment,
+                    committed.state.wait.as_ref(),
+                )
+            {
+                return Ok(Some(parked));
+            }
+        }
+        Ok(None)
+    }
+
+    /// A parked segment this owner cannot hand off: parked on children and
+    /// naming its successor, with neither a handoff descriptor nor a
+    /// delegation checkpoint to carry the continuation.
+    ///
+    /// Reads the checkpoint under the execution lifecycle exclusion, as the
+    /// handoff preparer does, so a checkpoint a peer is publishing is either
+    /// seen or not yet started. The answer is still advisory — a caller only
+    /// ever uses it to wait, never to retire anything.
+    async fn parked_children_segment_without_delegation_checkpoint(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        parent_execution_id: &str,
+    ) -> Result<
+        Option<crate::magician_v2::execution::agentic::run_loop::state::ParkedChildrenSegment>,
+        ArtifactV2Error,
+    > {
+        if self
+            .has_pending_stateless_children_handoff(scope, task_id, parent_execution_id)
+            .await?
+        {
+            return Ok(None);
+        }
+        let pause_store = self.orchestrator.full_pause_store_handle().ok_or_else(|| {
+            ArtifactV2Error::Runtime(format!(
+                "stateless_children_handoff_pause_store_unavailable:{parent_execution_id}"
+            ))
+        })?;
+        let checkpoint = {
+            let _execution_lifecycle_guard = pause_store
+                .acquire_stateless_execution_lifecycle_exclusion_scoped(
+                    scope.principal(),
+                    scope.workspace(),
+                    parent_execution_id,
+                )
+                .await
+                .map_err(|error| {
+                    ArtifactV2Error::Runtime(format!(
+                        "stateless_children_handoff_execution_lock_failed:{parent_execution_id}:{error}"
+                    ))
+                })?;
+            self.orchestrator
+                .internal_delegation_checkpoint_scoped(
+                    parent_execution_id,
+                    scope.principal(),
+                    scope.workspace(),
+                )
+                .await
+                .map_err(ArtifactV2Error::Runtime)?
+        };
+        if checkpoint.is_some() {
+            return Ok(None);
+        }
+        self.parked_children_segment(scope, parent_execution_id)
+            .await
+    }
+
+    fn deferred_parent_resume_key(scope: &ScopeRef, parent_execution_id: &str) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}",
+            scope.principal(),
+            scope.workspace(),
+            parent_execution_id
+        )
+    }
+
+    /// Hand a resumed parent's continuation to the execution runtime and do
+    /// not wait for it.
+    ///
+    /// A child can finish while its complete agentic poll chain is still
+    /// unwinding. Constructing and polling the parent's full continuation
+    /// inline would nest another complete executor beneath it. Transfer a
+    /// lazy closure to the execution runtime so every delegation level starts
+    /// at a fresh scheduler root; `Box::pin` at the terminal routing edge
+    /// controls future size but is not, by itself, a poll-stack reset.
+    ///
+    /// And do not wait for it. This resume is normally reached from a child's
+    /// terminal settlement, which holds the child's lifecycle exclusion (and
+    /// its finalization lock). Awaiting the parent's whole turn there kept
+    /// those held for that turn, and the parent needed its own locks to record
+    /// its result: when the two executions shared a lock the parent timed out,
+    /// never parked, and was announced as ready on every wake for good. The
+    /// job carries the reconciliation ownership (`ownership`) and settles the
+    /// outcome itself (`settle_resumed_parent_continuation`).
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_resumed_parent_continuation(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        parent_execution_id: &str,
+        parent_binding: V3ExecutionBinding,
+        manifest: TaskManifest,
+        walk: ParentResumeWalk,
+        prepared_stateless_handoff: Option<
+            crate::magician_v2::execution::agentic::run_loop::reconciler::PreparedChildrenHandoff,
+        >,
+        ownership: Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) {
+        let resume_service = Arc::new(self.clone_for_runtime_projection());
+        let resume_orchestrator = Arc::clone(&self.orchestrator);
+        let require_exact_delegation_checkpoint = prepared_stateless_handoff.is_some();
+        let resume_scope = scope.clone();
+        let resume_task_id = task_id.to_string();
+        let resume_parent_id = parent_execution_id.to_string();
+        drop(crate::magician_v2::execution::runtime_boundary::spawn_execution_job(
+            move || async move {
+                let _resume_ownership = ownership;
+                let continuation = resume_service
+                    .continue_execution_with_orchestrator(
+                        &parent_binding,
+                        &manifest,
+                        resume_orchestrator,
+                        require_exact_delegation_checkpoint,
+                    )
+                    .await;
+                if let Err(error) = resume_service
+                    .settle_resumed_parent_continuation(
+                        &resume_scope,
+                        &resume_task_id,
+                        &resume_parent_id,
+                        &parent_binding,
+                        continuation,
+                        walk,
+                        prepared_stateless_handoff.as_ref(),
+                    )
+                    .await
+                {
+                    warn!(
+                        task_id = %resume_task_id,
+                        parent_execution_id = %resume_parent_id,
+                        %error,
+                        "resumed parent continuation did not settle; scheduling a retry"
+                    );
+                    // A parked segment without its checkpoint does not change by
+                    // the next claim cycle; do not spin on it. Residual: the
+                    // checkpoint can vanish between the readiness guard and the
+                    // recovery claim; the claim's deferral then lands here as a
+                    // plain error with the runtime already Runnable, and the
+                    // loop reconciler retires the park.
+                    let retry_in_ms = if is_stateless_parked_children_checkpoint_missing(&error) {
+                        MISSING_DELEGATION_CHECKPOINT_RETRY_MS
+                    } else {
+                        0
+                    };
+                    let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(
+                        Utc::now().timestamp_millis().saturating_add(retry_in_ms),
+                    )
+                    .unwrap_or_else(Utc::now);
+                    if let Err(wake_error) = resume_service
+                        .schedule_parent_resume_wake_at(&resume_parent_id, wake_at)
+                        .await
+                    {
+                        warn!(
+                            parent_execution_id = %resume_parent_id,
+                            %wake_error,
+                            "could not schedule the parent resume retry"
+                        );
+                    }
+                }
+            },
+        ));
+    }
+
+    /// Dispatch the continuation once more for a parent whose last dispatch
+    /// deferred to another owner's durable deadline.
+    ///
+    /// That continuation had already moved the runtime to Runnable and the
+    /// Artifact record to running, so the wake scheduled for the deadline
+    /// reaches the reconciler's "no longer waiting" branch, which used to
+    /// acknowledge it and leave the parent Runnable with nothing to drive it
+    /// (2026-11-01). Only a parent [`Self::deferred_parent_resumes`] names is
+    /// eligible. The entry is dropped by a declining precondition (logged, and
+    /// left to the run's other owners) and taken at the dispatch itself; a
+    /// read that fails keeps it for the next wake, and a parked segment still
+    /// waiting for its checkpoint keeps it and reschedules the wake. A dispatch that defers
+    /// again re-marks it, so an ordinary failing continuation is not re-run on
+    /// every wake.
+    ///
+    /// `Ok(None)` means nothing was owed or a precondition declined it;
+    /// `Ok(Some(true))` means the continuation was dispatched. The caller
+    /// holds the parent's reconciliation lock, which the dispatched job takes
+    /// over, so no second dispatch from this owner can overlap it.
+    #[allow(clippy::too_many_arguments)]
+    async fn redispatch_deferred_parent_resume(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        parent_execution_id: &str,
+        parent: &ExecutionRecord,
+        runtime_state: &WaitingState,
+        walk: &ParentResumeWalk,
+        reconciliation_guard: &mut Option<tokio::sync::OwnedMutexGuard<()>>,
+    ) -> Result<Option<bool>, ArtifactV2Error> {
+        let marker = Self::deferred_parent_resume_key(scope, parent_execution_id);
+        let owed = self
+            .deferred_parent_resumes
+            .lock()
+            .expect("deferred_parent_resumes lock poisoned")
+            .contains(&marker);
+        if !owed {
+            return Ok(None);
+        }
+        // A precondition that declines drops the entry: the run moved on, or
+        // something else owns it now. A read that merely failed (`?` below)
+        // keeps it, so the next wake can still dispatch.
+        let decline = |reason: &str| {
+            self.deferred_parent_resumes
+                .lock()
+                .expect("deferred_parent_resumes lock poisoned")
+                .remove(&marker);
+            info!(
+                task_id = %task_id,
+                parent_execution_id = %parent_execution_id,
+                artifact_status = %parent.state.status,
+                runtime_state = ?runtime_state,
+                reason,
+                "deferred parent resume not re-dispatched"
+            );
+        };
+        if parent.state.status != "running" {
+            decline("artifact_record_not_running");
+            return Ok(None);
+        }
+        if *runtime_state != WaitingState::Runnable {
+            decline("runtime_not_runnable");
+            return Ok(None);
+        }
+        if self
+            .orchestrator
+            .has_active_execution_controls(parent_execution_id)
+        {
+            decline("live_controls_in_this_process");
+            return Ok(None);
+        }
+        let child_execution_ids: Vec<&str> = parent
+            .refs
+            .delegations
+            .iter()
+            .filter_map(|delegation| delegation.child_execution_id.as_deref())
+            .collect();
+        if child_execution_ids.is_empty() {
+            decline("no_delegated_children");
+            return Ok(None);
+        }
+        for child_execution_id in child_execution_ids {
+            let child = self
+                .orchestrator
+                .get_execution(child_execution_id)
+                .await
+                .map_err(ArtifactV2Error::Runtime)?;
+            if !child.waiting_state.is_terminal() {
+                decline("a_delegated_child_is_still_running");
+                return Ok(None);
+            }
+        }
+        if let Some(parked) = self
+            .parked_children_segment_without_delegation_checkpoint(
+                scope,
+                task_id,
+                parent_execution_id,
+            )
+            .await?
+        {
+            // Still owed: the checkpoint may yet land. Keep the entry and look
+            // again on the readiness guard's cadence. Bounded: once the loop
+            // reconciler proves the park unwakeable and retires it, the segment
+            // is no longer parked and this branch stops matching.
+            info!(
+                task_id = %task_id,
+                parent_execution_id = %parent_execution_id,
+                parked_segment = %parked.segment,
+                resumes_as = %parked.resumes_as,
+                retry_in_ms = MISSING_DELEGATION_CHECKPOINT_RETRY_MS,
+                "deferred parent resume waits: its loop segment is parked on children with no delegation checkpoint"
+            );
+            let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(
+                Utc::now()
+                    .timestamp_millis()
+                    .saturating_add(MISSING_DELEGATION_CHECKPOINT_RETRY_MS),
+            )
+            .unwrap_or_else(Utc::now);
+            self.schedule_parent_resume_wake_at(parent_execution_id, wake_at)
+                .await?;
+            return Ok(None);
+        }
+
+        let parent_binding = self
+            .binding_for_existing_execution(scope, task_id, parent_execution_id)
+            .await?;
+        let manifest = self.get_task(scope, task_id).await?.manifest;
+        let parent_ctx = ExecutionContext {
+            principal: scope.principal().to_string(),
+            workspace: scope.workspace().to_string(),
+            task_id: task_id.to_string(),
+            execution_id: parent_execution_id.to_string(),
+        };
+        self.event_writer
+            .append(
+                &parent_ctx,
+                ArtifactV2EventType::ParentResumeDispatched,
+                json!({
+                    "reason": "deferred_continuation_retry",
+                }),
+            )
+            .await?;
+        info!(
+            task_id = %task_id,
+            parent_execution_id = %parent_execution_id,
+            "re-dispatching a deferred parent continuation"
+        );
+        // Taken only now, at the dispatch it entitles: a deferral of this
+        // dispatch re-marks it, and its settled outcome clears it.
+        self.deferred_parent_resumes
+            .lock()
+            .expect("deferred_parent_resumes lock poisoned")
+            .remove(&marker);
+        self.spawn_resumed_parent_continuation(
+            scope,
+            task_id,
+            parent_execution_id,
+            parent_binding,
+            manifest,
+            walk.clone(),
+            None,
+            reconciliation_guard.take(),
+        );
+        Ok(Some(true))
+    }
+
     pub(crate) async fn has_pending_stateless_children_handoff(
         &self,
         scope: &ScopeRef,
@@ -35901,10 +36717,15 @@ impl ArtifactV2Service {
                 &worker,
             )
             .await
-            .map_err(|error| {
-                ArtifactV2Error::Runtime(format!(
+            .map_err(|error| match error {
+                crate::magician_v2::execution::agentic::run_loop::reconciler::ChildrenHandoffError::SourceEndedWithoutHandoff { .. } => {
+                    ArtifactV2Error::Runtime(format!(
+                        "{STATELESS_CHILDREN_HANDOFF_SOURCE_ENDED}:{parent_execution_id}:{error}"
+                    ))
+                },
+                error => ArtifactV2Error::Runtime(format!(
                     "stateless_children_handoff_prepare_failed:{error}"
-                ))
+                )),
             })?;
         descriptor.wake_token = Some(prepared.wake_token.clone());
         descriptor.resolution_id = Some(prepared.resolution_id.clone());
@@ -35920,6 +36741,35 @@ impl ArtifactV2Service {
         )
         .await?;
         Ok(Some(prepared))
+    }
+
+    /// Drop a descriptor whose source segment ended without a handoff. Only a
+    /// terminal parent's crash repair calls this: the receipt it names can never
+    /// be prepared, so keeping it turns every later wake into the same failure.
+    async fn discard_stale_stateless_children_handoff(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        parent_execution_id: &str,
+    ) -> Result<(), ArtifactV2Error> {
+        let descriptor_path =
+            self.stateless_children_handoff_descriptor_path(scope, task_id, parent_execution_id);
+        let _descriptor_guard =
+            crate::magician_v2::agents::storage::AgentStorage::acquire_file_lock_exclusive(
+                &descriptor_path,
+            )
+            .await
+            .map_err(|error| {
+                ArtifactV2Error::Runtime(format!(
+                    "stateless_children_handoff_lock_failed:{parent_execution_id}:{error}"
+                ))
+            })?;
+        match self.workspace.remove_file_path(&descriptor_path).await {
+            Ok(()) => {},
+            Err(ArtifactV2Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => return Err(error),
+        }
+        super::io::sync_parent_dir(&descriptor_path).await
     }
 
     async fn consume_stateless_children_handoff(
@@ -36240,6 +37090,12 @@ impl ArtifactV2Service {
                 if !is_terminal_execution_status(&parent.state.status)
                     && runtime_parent.waiting_state == WaitingState::WaitingChildren
                 {
+                    warn!(
+                        task_id = %task_id,
+                        parent_execution_id = %parent_execution_id,
+                        artifact_status = %parent.state.status,
+                        "delegated parent not resumed: its record is not waiting for children while the runtime still is"
+                    );
                     return Ok(false);
                 }
                 // Crash repair for the second half of an exact stateless
@@ -36248,19 +37104,110 @@ impl ArtifactV2Service {
                 // an outstanding prepared receipt may now be consumed. The
                 // prepare call is idempotent when the source is already
                 // HandedOff and restores a wake receipt lost before consume.
+                // Except when that continuation never ran: one that deferred
+                // to a peer's deadline released its checkpoint for retry and
+                // left the parent Runnable, and this wake re-dispatches it.
                 let repaired_stateless_handoff = if self
                     .has_pending_stateless_children_handoff(scope, task_id, parent_execution_id)
                     .await?
                 {
-                    let handoff = self
+                    let handoff = match self
                         .prepare_stateless_children_handoff(
                             scope,
                             task_id,
                             parent_execution_id,
                             &[],
                         )
-                        .await?;
+                        .await
+                    {
+                        // The reconciler retired the parked segment (or it
+                        // ended) before any handoff, and the parent is already
+                        // terminal: the receipt can never be prepared. Retrying
+                        // it kept a durable wake failing every 30 s for hours.
+                        Err(ArtifactV2Error::Runtime(detail))
+                            if is_terminal_execution_status(&parent.state.status)
+                                && detail.starts_with(STATELESS_CHILDREN_HANDOFF_SOURCE_ENDED) =>
+                        {
+                            warn!(
+                                task_id = %task_id,
+                                parent_execution_id = %parent_execution_id,
+                                parent_status = %parent.state.status,
+                                %detail,
+                                "terminal parent's stateless handoff names a segment that ended without one; discarding the stale descriptor"
+                            );
+                            self.discard_stale_stateless_children_handoff(
+                                scope,
+                                task_id,
+                                parent_execution_id,
+                            )
+                            .await?;
+                            None
+                        },
+                        result => result?,
+                    };
                     let repaired = handoff.is_some();
+                    // A deferred exact continuation (its successor owned by a
+                    // peer until a deadline) left the receipt unconsumed, its
+                    // Delegation checkpoint released for retry, and the parent
+                    // Runnable with its record running; the wake for that
+                    // deadline lands here. Consuming the receipt for a
+                    // continuation that never ran stranded the parent, so
+                    // dispatch it again; its own settlement consumes the
+                    // receipt. A checkpoint already gone means the continuation
+                    // did run, and the receipt is consumed as before.
+                    if let Some(prepared) = handoff.as_ref() {
+                        if runtime_parent.waiting_state == WaitingState::Runnable
+                            && !is_terminal_execution_status(&parent.state.status)
+                            && !self
+                                .orchestrator
+                                .has_active_execution_controls(parent_execution_id)
+                            && self
+                                .orchestrator
+                                .internal_delegation_checkpoint_scoped(
+                                    parent_execution_id,
+                                    scope.principal(),
+                                    scope.workspace(),
+                                )
+                                .await
+                                .map_err(ArtifactV2Error::Runtime)?
+                                .is_some()
+                        {
+                            let parent_binding = self
+                                .binding_for_existing_execution(scope, task_id, parent_execution_id)
+                                .await?;
+                            let manifest = self.get_task(scope, task_id).await?.manifest;
+                            self.event_writer
+                                .append(
+                                    &ExecutionContext {
+                                        principal: scope.principal().to_string(),
+                                        workspace: scope.workspace().to_string(),
+                                        task_id: task_id.to_string(),
+                                        execution_id: parent_execution_id.to_string(),
+                                    },
+                                    ArtifactV2EventType::ParentResumeDispatched,
+                                    json!({
+                                        "reason": "deferred_exact_continuation_retry",
+                                    }),
+                                )
+                                .await?;
+                            info!(
+                                task_id = %task_id,
+                                parent_execution_id = %parent_execution_id,
+                                "re-dispatching a deferred exact delegation continuation"
+                            );
+                            self.spawn_resumed_parent_continuation(
+                                scope,
+                                task_id,
+                                parent_execution_id,
+                                parent_binding,
+                                manifest,
+                                walk.clone(),
+                                Some(prepared.clone()),
+                                reconciliation_guard.take(),
+                            );
+                            return Ok(true);
+                        }
+                    }
                     self.consume_stateless_children_handoff(
                         scope,
                         task_id,
@@ -36293,9 +37240,44 @@ impl ArtifactV2Service {
                         .map_err(ArtifactV2Error::Runtime)?;
                     return Ok(settled || repaired_stateless_handoff);
                 }
+                // A continuation that deferred to another owner's deadline left
+                // this parent Runnable with its record running, and the wake it
+                // scheduled for that deadline lands here. Acknowledging it
+                // stranded the parent with nothing left to drive it
+                // (2026-11-01); dispatch it once more instead.
+                if !repaired_stateless_handoff {
+                    // Heap-pinned for the reason the summary call below is.
+                    if let Some(done) = Box::pin(self.redispatch_deferred_parent_resume(
+                        scope,
+                        task_id,
+                        parent_execution_id,
+                        &parent,
+                        &runtime_parent.waiting_state,
+                        &walk,
+                        &mut reconciliation_guard,
+                    ))
+                    .await?
+                    {
+                        return Ok(done);
+                    }
+                    if !is_terminal_execution_status(&parent.state.status) {
+                        info!(
+                            task_id = %task_id,
+                            parent_execution_id = %parent_execution_id,
+                            artifact_status = %parent.state.status,
+                            runtime_state = ?runtime_parent.waiting_state,
+                            "delegated parent not resumed: its record no longer waits for children and no deferred continuation is owed"
+                        );
+                    }
+                }
                 return Ok(repaired_stateless_handoff);
             }
             if parent.refs.delegations.is_empty() && parent.refs.child_output_refs.is_empty() {
+                info!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    "delegated parent not resumed: it records no delegations or child outputs"
+                );
                 return Ok(false);
             }
             let parent_binding = self
@@ -36336,6 +37318,12 @@ impl ArtifactV2Service {
                     .iter()
                     .any(|step| step.readiness == "waiting_on_child")
             {
+                info!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    waiting_step_ids = ?readiness.waiting_step_ids,
+                    "delegated parent not resumed: a plan step still waits on a child"
+                );
                 return Ok(false);
             }
             let ready_step_ids = readiness.ready_step_ids;
@@ -36372,6 +37360,12 @@ impl ArtifactV2Service {
             // let it re-delegate — exactly the "cancel didn't stop the loop" failure. Bail
             // on the authoritative RUNTIME state, which flips terminal synchronously on cancel.
             if runtime_parent.waiting_state.is_terminal() {
+                info!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    runtime_state = ?runtime_parent.waiting_state,
+                    "delegated parent not resumed: the runtime has already ended it"
+                );
                 return Ok(false);
             }
             // A very fast child can finish through a legacy/runtime wake before
@@ -36394,6 +37388,16 @@ impl ArtifactV2Service {
                 child_waiting_states.push(child.waiting_state);
             }
             if !delegated_children_are_settled(&child_waiting_states) {
+                info!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    unsettled = child_waiting_states
+                        .iter()
+                        .filter(|state| !state.is_terminal())
+                        .count(),
+                    group = child_waiting_states.len(),
+                    "delegated parent not resumed yet: children still running"
+                );
                 return Ok(false);
             }
             // A completed child whose output is not registered yet is a child
@@ -36423,6 +37427,45 @@ impl ArtifactV2Service {
                     return Ok(false);
                 }
             }
+            // A park this owner cannot hand off: the loop segment is parked on
+            // these children and names its successor, but no delegation
+            // checkpoint carries the continuation. Moving the runtime to
+            // Runnable now sends the resume down generic recovery, which refuses
+            // the parked segment (its pin, then the parked-without-checkpoint
+            // deferral in the recovery claim) — and by then the parent is
+            // Runnable with nothing to drive it (2026-11-01). That claim is the
+            // backstop for every other resume; this guard is the one that runs
+            // before Runnable, so the parent stays parked and resumable. The
+            // checkpoint is written moments after the park, so a fast child can
+            // beat it: look again shortly. One that never lands is retired by
+            // the loop reconciler once every child is proved finished.
+            if let Some(parked) = self
+                .parked_children_segment_without_delegation_checkpoint(
+                    scope,
+                    task_id,
+                    parent_execution_id,
+                )
+                .await?
+            {
+                warn!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    parked_segment = %parked.segment,
+                    resumes_as = %parked.resumes_as,
+                    children = parked.child_execution_ids.len(),
+                    retry_in_ms = MISSING_DELEGATION_CHECKPOINT_RETRY_MS,
+                    "delegated parent not resumed: its loop segment is parked on children but no delegation checkpoint carries its continuation"
+                );
+                let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(
+                    Utc::now()
+                        .timestamp_millis()
+                        .saturating_add(MISSING_DELEGATION_CHECKPOINT_RETRY_MS),
+                )
+                .unwrap_or_else(Utc::now);
+                self.schedule_parent_resume_wake_at(parent_execution_id, wake_at)
+                    .await?;
+                return Ok(false);
+            }
             // Heap-pinned: this closure sits at the bottom of the
             // terminal-settlement chain on a runtime worker.
             Box::pin(self.persist_parent_delegation_summary_from_v3(
@@ -36432,6 +37475,26 @@ impl ArtifactV2Service {
                 &exact_child_execution_ids,
             ))
             .await?;
+
+            // A delegated parent resumes under the root that owns the task.
+            // Refuse before the handoff retires its segment and the runtime
+            // moves, so a mismatch cannot strand it Runnable with nothing to
+            // activate it.
+            if parent.state.parent_execution_id.is_some() {
+                let task = self.get_task(scope, task_id).await?;
+                if !resumed_child_activation_admissible(
+                    &task.state.status,
+                    task.state.active_root_execution_id.as_deref(),
+                    &parent.state.relationship_type,
+                    parent.state.parent_execution_id.as_deref(),
+                    parent.state.root_execution_id.as_deref(),
+                    &parent.state.status,
+                ) {
+                    return Err(ArtifactV2Error::InvalidRequest(format!(
+                        "resumed_child_activation_binding_mismatch:{parent_execution_id}"
+                    )));
+                }
+            }
 
             // The V3 readiness owner is the only bridge allowed to retire the
             // stateless segment parked in Apply/WaitingForChildren. Prepare the
@@ -36483,8 +37546,13 @@ impl ArtifactV2Service {
             // 372 KB poll frame on a fresh execution job. Exits carry Some(bool).
             if let Some(done) = async {
                 if dispatch_authorized {
-                    self.activate_execution_internal(scope, task_id, parent_execution_id)
-                        .await?;
+                    if parent.state.parent_execution_id.is_some() {
+                        self.activate_resumed_child_execution(scope, task_id, parent_execution_id)
+                            .await?;
+                    } else {
+                        self.activate_execution_internal(scope, task_id, parent_execution_id)
+                            .await?;
+                    }
                     self.event_writer
                         .append(
                             &parent_ctx,
@@ -36495,74 +37563,18 @@ impl ArtifactV2Service {
                         )
                         .await?;
                     let manifest = self.get_task(scope, task_id).await?.manifest;
-                    // A child can finish while its complete agentic poll chain is still
-                    // unwinding. Constructing and polling the parent's full continuation
-                    // inline would nest another complete executor beneath it. Transfer a
-                    // lazy closure to the execution runtime so every delegation level
-                    // starts at a fresh scheduler root; `Box::pin` at the terminal routing
-                    // edge controls future size but is not, by itself, a poll-stack reset.
-                    //
-                    // And do not wait for it. This resume is normally reached from
-                    // a child's terminal settlement, which holds the child's
-                    // lifecycle exclusion (and its finalization lock). Awaiting the
-                    // parent's whole turn here kept those held for that turn, and the
-                    // parent needed its own locks to record its result: when the two
-                    // executions shared a lock the parent timed out, never parked,
-                    // and was announced as ready on every wake for good. The job
-                    // carries the reconciliation ownership and settles the outcome
-                    // itself (`settle_resumed_parent_continuation`).
-                    let resume_service = Arc::new(self.clone_for_runtime_projection());
-                    let resume_binding = parent_binding.clone();
-                    let resume_orchestrator = Arc::clone(&self.orchestrator);
-                    let require_exact_delegation_checkpoint = prepared_stateless_handoff.is_some();
-                    let resume_scope = scope.clone();
-                    let resume_task_id = task_id.to_string();
-                    let resume_parent_id = parent_execution_id.to_string();
-                    let resume_walk = walk.clone();
-                    let resume_handoff = prepared_stateless_handoff.clone();
-                    let resume_ownership = reconciliation_guard.take();
-                    drop(crate::magician_v2::execution::runtime_boundary::spawn_execution_job(
-                        move || async move {
-                            let _resume_ownership = resume_ownership;
-                            let continuation = resume_service
-                                .continue_execution_with_orchestrator(
-                                    &resume_binding,
-                                    &manifest,
-                                    resume_orchestrator,
-                                    require_exact_delegation_checkpoint,
-                                )
-                                .await;
-                            if let Err(error) = resume_service
-                                .settle_resumed_parent_continuation(
-                                    &resume_scope,
-                                    &resume_task_id,
-                                    &resume_parent_id,
-                                    &resume_binding,
-                                    continuation,
-                                    resume_walk,
-                                    resume_handoff.as_ref(),
-                                )
-                                .await
-                            {
-                                warn!(
-                                    task_id = %resume_task_id,
-                                    parent_execution_id = %resume_parent_id,
-                                    %error,
-                                    "resumed parent continuation did not settle; scheduling a retry"
-                                );
-                                if let Err(wake_error) = resume_service
-                                    .schedule_parent_resume_wake(&resume_parent_id)
-                                    .await
-                                {
-                                    warn!(
-                                        parent_execution_id = %resume_parent_id,
-                                        %wake_error,
-                                        "could not schedule the parent resume retry"
-                                    );
-                                }
-                            }
-                        },
-                    ));
+                    // Transferred to its own job and not awaited; see
+                    // `spawn_resumed_parent_continuation` for why on both counts.
+                    self.spawn_resumed_parent_continuation(
+                        scope,
+                        task_id,
+                        parent_execution_id,
+                        parent_binding.clone(),
+                        manifest,
+                        walk.clone(),
+                        prepared_stateless_handoff.clone(),
+                        reconciliation_guard.take(),
+                    );
                 } else if prepared_stateless_handoff.is_some()
                     && runtime_parent.waiting_state == WaitingState::WaitingChildren
                 {
@@ -36615,6 +37627,26 @@ impl ArtifactV2Service {
             Ok(ContinuedExecutionOutcome::Deferred { retry_at_ms }) => {
                 let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(retry_at_ms)
                     .unwrap_or_else(Utc::now);
+                // Without an exact handoff nothing durable says a continuation
+                // is still owed: the runtime is Runnable and the record running,
+                // so the wake below would find no waiting parent. Name it, so
+                // that wake dispatches it once more
+                // (`redispatch_deferred_parent_resume`). An exact handoff keeps
+                // its descriptor and its released checkpoint; the wake's
+                // crash-repair branch re-dispatches from those instead.
+                if prepared_stateless_handoff.is_none() {
+                    self.deferred_parent_resumes
+                        .lock()
+                        .expect("deferred_parent_resumes lock poisoned")
+                        .insert(Self::deferred_parent_resume_key(scope, parent_execution_id));
+                }
+                info!(
+                    task_id = %task_id,
+                    parent_execution_id = %parent_execution_id,
+                    retry_at_ms,
+                    exact_handoff = prepared_stateless_handoff.is_some(),
+                    "resumed parent continuation deferred; retry scheduled"
+                );
                 return self
                     .schedule_parent_resume_wake_at(parent_execution_id, wake_at)
                     .await;
@@ -36667,6 +37699,16 @@ impl ArtifactV2Service {
                 return Err(error);
             },
         };
+        // The continuation reached an outcome: no deferred dispatch is owed,
+        // and no recovery failure streak continues.
+        self.deferred_parent_resumes
+            .lock()
+            .expect("deferred_parent_resumes lock poisoned")
+            .remove(&Self::deferred_parent_resume_key(scope, parent_execution_id));
+        self.failed_parent_recovery_claims
+            .lock()
+            .expect("failed_parent_recovery_claims lock poisoned")
+            .remove(&Self::deferred_parent_resume_key(scope, parent_execution_id));
         if let Some(outcome) = outcome {
             self.persist_resumed_parent_outcome_on_execution_runtime(parent_binding, outcome, walk)
                 .await?;
@@ -40620,6 +41662,49 @@ impl ArtifactV2Service {
             .clone()
             .unwrap_or_else(|| execution.state.execution_id.clone());
         let is_root_task_projection = task_projection_execution_id == execution.state.execution_id;
+        // Files the run wrote and named as delivered DO join the answer-ready
+        // transaction: the terminal chat card is built from this commit, so a
+        // file registered later (as media is) never reaches it. Only the
+        // execution that owns the task projection attaches them, and a
+        // cancelled run delivers nothing. They are promoted BEFORE task-level
+        // synthesis so the published answer links each one by its served URL
+        // instead of a host path.
+        let delivered_files = if is_root_task_projection
+            && !matches!(outcome.execution_status.as_str(), "cancelled" | "canceled")
+        {
+            let expected_task_user_output_id = task_primary_output_id(
+                "out_task_user",
+                &binding.execution.task_id,
+                &task_projection_execution_id,
+                &binding.task_output_mode,
+            );
+            self.delivered_file_outputs_for_terminal(
+                binding,
+                outcome,
+                execution,
+                &expected_task_user_output_id,
+                verified_terminal_projection
+                    .as_ref()
+                    .map(|projection| projection.content_sha256.as_ref()),
+            )
+            .await
+        } else {
+            DeliveredFilesForTerminal::default()
+        };
+        let mut delivered_file_links = self
+            .delivered_file_links_with_sizes(
+                &binding.scope,
+                &binding.execution.task_id,
+                &delivered_files.outputs,
+                delivered_files.primary_output_id.as_deref(),
+            )
+            .await;
+        for link in &mut delivered_file_links {
+            if let Some(paths) = delivered_files.source_paths.get(&link.output_id) {
+                link.source_paths.extend(paths.iter().cloned());
+            }
+            link.title = delivered_files.titles.get(&link.output_id).cloned();
+        }
         let task_user_output = if !crate::config::task_synthesis_root_gate_enabled()
             || is_root_task_projection
         {
@@ -40631,6 +41716,7 @@ impl ArtifactV2Service {
                 &execution_output,
                 &child_source_output_ids,
                 verified_terminal_projection.as_ref(),
+                &delivered_file_links,
             )
             .await?
         } else {
@@ -40642,27 +41728,15 @@ impl ArtifactV2Service {
             );
             execution_output.clone()
         };
-        // Files the run wrote and named as delivered DO join the answer-ready
-        // transaction: the terminal chat card is built from this commit, so a
-        // file registered later (as media is) never reaches it. Only the
-        // execution that owns the task projection attaches them, and a
-        // cancelled run delivers nothing.
-        let delivered_file_outputs = if is_root_task_projection
-            && !matches!(outcome.execution_status.as_str(), "cancelled" | "canceled")
-        {
-            self.delivered_file_outputs_for_terminal(
-                binding,
-                outcome,
-                execution,
-                &task_user_output,
-                verified_terminal_projection
-                    .as_ref()
-                    .map(|projection| projection.content_sha256.as_ref()),
-            )
-            .await
-        } else {
-            Vec::new()
-        };
+        // The delivered copies trace to the answer that was actually written.
+        let DeliveredFilesForTerminal {
+            outputs: mut delivered_file_outputs,
+            primary_output_id: primary_deliverable_output_id,
+            ..
+        } = delivered_files;
+        for output in &mut delivered_file_outputs {
+            output.source_output_ids = vec![task_user_output.output_id.clone()];
+        }
         Ok(FinalizedOutputs {
             execution_output,
             task_user_output,
@@ -40672,6 +41746,7 @@ impl ArtifactV2Service {
             continuation_context_output: None,
             media_outputs: Vec::new(),
             delivered_file_outputs,
+            primary_deliverable_output_id,
             task_output_mode: binding.task_output_mode.clone(),
         })
     }
@@ -40941,6 +42016,7 @@ impl ArtifactV2Service {
         execution_output: &OutputRef,
         child_source_output_ids: &[String],
         verified_terminal_projection: Option<&VerifiedTerminalProjection>,
+        delivered_files: &[DeliveredFileLink],
     ) -> Result<OutputRef, ArtifactV2Error> {
         let task_finalize_ctx = Arc::new(TaskFinalizeContext {
             execution: binding.execution.clone(),
@@ -40968,6 +42044,7 @@ impl ArtifactV2Service {
                     binding.llm_routing_overrides.as_ref(),
                 )
                 .await,
+            delivered_files: delivered_files.to_vec(),
             now: now_rfc3339(),
         });
 
@@ -41179,6 +42256,12 @@ impl ArtifactV2Service {
             if record.artifact_type != "tool_output_file" {
                 continue;
             }
+            // A declared deliverable is delivered as a `user_attachment`
+            // whatever its type; registering it as media too would show the
+            // file twice.
+            if is_declared_deliverable_record(&record) {
+                continue;
+            }
             if record
                 .payload
                 .get("artifact_kind")
@@ -41281,18 +42364,22 @@ impl ArtifactV2Service {
         Ok(refs)
     }
 
-    /// The files a terminal root delivers beside its answer: every file the
-    /// root, or a child whose output it consumed, wrote and named as
-    /// delivered. Never fails finalization — a file that cannot be verified
-    /// is logged and left out, and the answer publishes regardless.
+    /// The files a terminal root delivers beside its answer, primary first:
+    /// every file the root, or a child whose output it consumed, declared in
+    /// `yield.deliverables`; every captured file it wrote and named as
+    /// delivered; and, for runs that never declared or captured one (a run
+    /// out of budget never yields), a task-workdir file this execution
+    /// modified whose name or path the delivery text gives. Never fails
+    /// finalization — a file that cannot be verified is logged and left out,
+    /// and the answer publishes regardless.
     async fn delivered_file_outputs_for_terminal(
         &self,
         binding: &V3ExecutionBinding,
         outcome: &ExecutionOutcomeSnapshot,
         execution: &ExecutionRecord,
-        task_user_output: &OutputRef,
+        primary_output_id: &str,
         published_sha256: Option<&str>,
-    ) -> Vec<OutputRef> {
+    ) -> DeliveredFilesForTerminal {
         let task_id = binding.execution.task_id.as_str();
         let root_execution_id = execution.state.execution_id.as_str();
         let mut source_execution_ids = vec![root_execution_id.to_string()];
@@ -41329,30 +42416,187 @@ impl ArtifactV2Service {
             }
             delivery_text.push_str(&text);
         }
-        if delivery_text.trim().is_empty() {
-            return Vec::new();
-        }
         let now = now_rfc3339();
-        let mut refs = Vec::new();
+        let mut declared: Vec<OutputRef> = Vec::new();
+        let mut named: Vec<OutputRef> = Vec::new();
+        let mut primary: Option<String> = None;
+        let mut source_paths: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
+        let mut titles: HashMap<String, String> = HashMap::new();
         for source_execution_id in &source_execution_ids {
-            if refs.len() >= MAX_DELIVERED_FILE_OUTPUTS {
-                break;
-            }
             let collected = self
                 .collect_delivered_file_output_refs(
                     &binding.scope,
                     task_id,
                     source_execution_id,
                     &delivery_text,
-                    &task_user_output.output_id,
+                    primary_output_id,
                     published_sha256,
                     &now,
                 )
                 .await;
-            let room = MAX_DELIVERED_FILE_OUTPUTS - refs.len();
-            refs.extend(collected.into_iter().take(room));
+            // The root's own first declared file is primary; a child's only
+            // when the root declared none.
+            if primary.is_none() {
+                primary = collected.primary_output_id;
+            }
+            declared.extend(collected.declared);
+            named.extend(collected.named);
+            source_paths.extend(collected.source_paths);
+            titles.extend(collected.titles);
         }
-        refs
+        // The workdir sweep is the fallback for a run that delivered nothing
+        // the index knows of; once a file was declared or captured, a mere
+        // mention of another workdir file (a README, a source file) is not a
+        // delivery.
+        let sweep = declared.is_empty() && named.is_empty();
+        let mut outputs: Vec<OutputRef> = Vec::new();
+        for output in declared.into_iter().chain(named) {
+            if outputs.len() >= MAX_DELIVERED_FILE_OUTPUTS {
+                break;
+            }
+            if outputs
+                .iter()
+                .any(|existing| existing.relative_path == output.relative_path)
+            {
+                continue;
+            }
+            outputs.push(output);
+        }
+        if let Some(primary_id) = primary.as_deref() {
+            if let Some(index) = outputs
+                .iter()
+                .position(|output| output.output_id == primary_id)
+            {
+                let primary_output = outputs.remove(index);
+                outputs.insert(0, primary_output);
+            } else {
+                primary = None;
+            }
+        }
+        let room = MAX_DELIVERED_FILE_OUTPUTS.saturating_sub(outputs.len());
+        if sweep && room > 0 && !delivery_text.trim().is_empty() {
+            let taken: HashSet<String> = outputs
+                .iter()
+                .filter_map(|output| output.relative_path.rsplit('/').next())
+                .map(str::to_lowercase)
+                .collect();
+            let swept = self
+                .collect_workdir_named_file_output_refs(
+                    &binding.scope,
+                    task_id,
+                    root_execution_id,
+                    &execution.state.started_at,
+                    &delivery_text,
+                    primary_output_id,
+                    published_sha256,
+                    &now,
+                    &taken,
+                    room,
+                )
+                .await;
+            for (output, paths) in swept {
+                source_paths.insert(output.output_id.clone(), paths);
+                outputs.push(output);
+            }
+        }
+        source_paths.retain(|output_id, _| outputs.iter().any(|output| output.output_id == *output_id));
+        DeliveredFilesForTerminal {
+            outputs,
+            primary_output_id: primary,
+            source_paths,
+            titles,
+        }
+    }
+
+    /// `delivered_file_links` for `outputs` with each file's size read from
+    /// disk — the list the finalizer links and the chat mouth reads.
+    async fn delivered_file_links_with_sizes(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        outputs: &[OutputRef],
+        primary_output_id: Option<&str>,
+    ) -> Vec<DeliveredFileLink> {
+        let mut links = delivered_file_links(task_id, outputs, primary_output_id);
+        if links.is_empty() {
+            return links;
+        }
+        let task_dir = self
+            .workspace
+            .task_dir(&scope.principal(), &scope.workspace(), task_id);
+        for link in &mut links {
+            let Some(output) = outputs
+                .iter()
+                .find(|output| output.output_id == link.output_id)
+            else {
+                continue;
+            };
+            if output.relative_path.contains("..") || output.relative_path.starts_with('/') {
+                continue;
+            }
+            let promoted = task_dir.join(&output.relative_path);
+            if let Ok(metadata) = fs::metadata(&promoted).await {
+                link.size = Some(metadata.len());
+            }
+            link.source_paths.push(promoted);
+        }
+        links
+    }
+
+    /// The task's delivered files as clients and the chat mouth read them:
+    /// name, served URL, size and whether it is the primary deliverable.
+    /// Empty when the task delivered no file or cannot be read.
+    pub async fn delivered_file_links_for_task(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+    ) -> Vec<DeliveredFileLink> {
+        let Ok(task) = self.get_task(scope, task_id).await else {
+            return Vec::new();
+        };
+        // Only the latest answer's files: earlier runs' attachments stay on
+        // the task but are not what this answer delivered.
+        let latest: Vec<OutputRef> = task
+            .refs
+            .latest_delivered_output_ids
+            .iter()
+            .filter_map(|id| {
+                task.refs
+                    .outputs
+                    .iter()
+                    .find(|output| output.output_id == *id)
+                    .cloned()
+            })
+            .collect();
+        self.delivered_file_links_with_sizes(
+            scope,
+            task_id,
+            &latest,
+            task.refs.primary_deliverable_output_id.as_deref(),
+        )
+        .await
+    }
+
+    /// `text` as the owner may see it: absolute host paths and `file://`
+    /// links into this task's directory rewritten to the served URLs of the
+    /// task's delivered files (or demoted to plain file names), and the
+    /// delivered files the text does not already link listed after it. The
+    /// one rule the task-user answer and the chat terminal message share.
+    pub async fn present_text_for_user(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        text: &str,
+        list_unlinked_files: bool,
+    ) -> String {
+        if !list_unlinked_files && !text.contains('/') {
+            return text.to_string();
+        }
+        let delivered = self.delivered_file_links_for_task(scope, task_id).await;
+        let task_dir = self
+            .workspace
+            .task_dir(&scope.principal(), &scope.workspace(), task_id);
+        present_text_with_delivered_files(text, &task_dir, &delivered, list_unlinked_files)
     }
 
     /// What an execution said it delivered: its outcome summary, the verified
@@ -41496,12 +42740,15 @@ impl ArtifactV2Service {
     }
 
     /// User-audience OutputRefs for the files this execution wrote (its
-    /// `tool_output_file` captures) whose name `delivery_text` says. Each is
-    /// copied, digest-checked, to `outputs/delivered/<execution>/<name>` so
-    /// the owner sees it under its original file name. Only the newest write
-    /// of a name counts; media is left to `user_media`; the run's own notes
-    /// and bytes already published as the answer are not attached again.
-    /// Never errors: a file that fails a check is logged and skipped.
+    /// `tool_output_file` captures) that it declared in `yield.deliverables`
+    /// or whose name `delivery_text` says. Each is copied, digest-checked, to
+    /// `outputs/delivered/<execution>/<name>` so the owner sees it under its
+    /// original file name. Declared files come first and are not held to the
+    /// name check; the first file of the latest declaring yield is the
+    /// primary deliverable. Only the newest write of a name counts; media is
+    /// left to `user_media`; the run's own notes and bytes already published
+    /// as the answer are not attached again. Never errors: a file that fails
+    /// a check is logged and skipped.
     #[allow(clippy::too_many_arguments)]
     async fn collect_delivered_file_output_refs(
         &self,
@@ -41512,7 +42759,7 @@ impl ArtifactV2Service {
         primary_output_id: &str,
         published_sha256: Option<&str>,
         now: &str,
-    ) -> Vec<OutputRef> {
+    ) -> CollectedDeliveredFiles {
         let store = FilesystemExecutionArtifactIndexStore::new(self.workspace.clone());
         let records = match store.list_artifacts(scope, task_id, execution_id).await {
             Ok(records) => records,
@@ -41523,7 +42770,7 @@ impl ArtifactV2Service {
                     %error,
                     "[DELIVERED-FILES] could not read the execution artifact index"
                 );
-                return Vec::new();
+                return CollectedDeliveredFiles::default();
             },
         };
         let delivery_text = delivery_text.to_lowercase();
@@ -41540,13 +42787,63 @@ impl ArtifactV2Service {
             .join(execution_id);
         let mut canonical_execution_outputs_dir = None;
         let mut seen_names = HashSet::new();
-        let mut refs = Vec::new();
-        // `list_artifacts` is oldest-first; a rewritten file delivers its
+        let mut collected = CollectedDeliveredFiles::default();
+        // Declared deliverables first, so a later undeclared write of the
+        // same name never hides the declaration; within each group
+        // `list_artifacts` is oldest-first and a rewritten file delivers its
         // newest bytes.
-        for record in records.iter().rev() {
-            if refs.len() >= MAX_DELIVERED_FILE_OUTPUTS {
+        //
+        // Declared files are ordered by their yield, newest yield first (by
+        // index position, which is monotonic within the execution — never a
+        // loop-local counter), then by the rank the yield gave them, so the
+        // first declared file promoted is the latest answer's primary.
+        let yield_key = |record: &PersistedExecutionArtifactRecord| -> String {
+            record
+                .payload
+                .get("deliverable_yield_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| record.produced_at.clone())
+        };
+        let mut newest_position_by_yield: HashMap<String, usize> = HashMap::new();
+        for (position, record) in records.iter().enumerate() {
+            if is_declared_deliverable_record(record) {
+                newest_position_by_yield.insert(yield_key(record), position);
+            }
+        }
+        let rank_of = |record: &PersistedExecutionArtifactRecord| -> u64 {
+            record
+                .payload
+                .get("deliverable_rank")
+                .and_then(Value::as_u64)
+                .unwrap_or(u64::MAX)
+        };
+        let mut declared_records: Vec<&PersistedExecutionArtifactRecord> = records
+            .iter()
+            .filter(|record| is_declared_deliverable_record(record))
+            .collect();
+        declared_records.sort_by(|left, right| {
+            let (left, right) = (*left, *right);
+            let left_yield = newest_position_by_yield.get(&yield_key(left)).copied().unwrap_or(0);
+            let right_yield = newest_position_by_yield
+                .get(&yield_key(right))
+                .copied()
+                .unwrap_or(0);
+            right_yield
+                .cmp(&left_yield)
+                .then_with(|| rank_of(left).cmp(&rank_of(right)))
+        });
+        let ordered = declared_records.into_iter().chain(
+            records
+                .iter()
+                .rev()
+                .filter(|record| !is_declared_deliverable_record(record)),
+        );
+        for record in ordered {
+            if collected.declared.len() + collected.named.len() >= MAX_DELIVERED_FILE_OUTPUTS {
                 break;
             }
+            let declared = is_declared_deliverable_record(record);
             if record.artifact_type != "tool_output_file"
                 || record.payload.get("artifact_kind").and_then(Value::as_str)
                     != Some("tool_output_file")
@@ -41583,10 +42880,15 @@ impl ArtifactV2Service {
             let Some(file_name) = delivered_file_name(display_name) else {
                 continue;
             };
-            if matches!(
-                file_name.to_ascii_lowercase().as_str(),
-                "partial_findings.md" | "task_deliverable.md"
-            ) {
+            // A file the run declared is delivered whatever it is; only an
+            // undeclared capture leaves the run's own notes to the answer
+            // and media to `user_media` (which skips declared records).
+            if !declared
+                && matches!(
+                    file_name.to_ascii_lowercase().as_str(),
+                    "partial_findings.md" | "task_deliverable.md"
+                )
+            {
                 continue;
             }
             let media_type = record
@@ -41596,13 +42898,14 @@ impl ArtifactV2Service {
                 .map(base_media_type)
                 .filter(|media_type| !media_type.is_empty())
                 .unwrap_or("application/octet-stream");
-            if media_type.starts_with("image/")
-                || media_type.starts_with("video/")
-                || media_type.starts_with("audio/")
+            if !declared
+                && (media_type.starts_with("image/")
+                    || media_type.starts_with("video/")
+                    || media_type.starts_with("audio/"))
             {
                 continue;
             }
-            if !file_named_in_text(&delivery_text, display_name) {
+            if !declared && !file_named_in_text(&delivery_text, display_name) {
                 continue;
             }
             let Some(expected_sha256) = record
@@ -41625,6 +42928,14 @@ impl ArtifactV2Service {
             if published_sha256
                 .is_some_and(|published| published.eq_ignore_ascii_case(expected_sha256))
             {
+                if declared {
+                    info!(
+                        %task_id,
+                        %execution_id,
+                        artifact_id = %record.artifact_id,
+                        "[DELIVERED-FILES] declared file is the published answer itself; not attached twice"
+                    );
+                }
                 continue;
             }
             let Some(source_path) = record
@@ -41706,25 +43017,41 @@ impl ArtifactV2Service {
                     continue;
                 },
             }
-            if let Err(error) = self
-                .workspace
-                .copy_workspace_file_verified_atomic_path(
-                    &canonical_source,
-                    delivered_dir.join(&file_name),
-                    expected_sha256,
-                )
-                .await
-            {
-                warn!(
-                    %task_id,
-                    %execution_id,
-                    artifact_id = %record.artifact_id,
-                    %error,
-                    "[DELIVERED-FILES] verified copy failed; not attached"
-                );
-                continue;
+            let destination = delivered_dir.join(&file_name);
+            // A replay (or an earlier pass) already published these bytes.
+            let already_published = matches!(
+                delivered_file_sha256(&destination).await,
+                Ok(existing) if existing.eq_ignore_ascii_case(expected_sha256)
+            );
+            if !already_published {
+                if let Err(error) = self
+                    .workspace
+                    .copy_workspace_file_verified_atomic_path(
+                        &canonical_source,
+                        &destination,
+                        expected_sha256,
+                    )
+                    .await
+                {
+                    warn!(
+                        %task_id,
+                        %execution_id,
+                        artifact_id = %record.artifact_id,
+                        %error,
+                        "[DELIVERED-FILES] verified copy failed; not attached"
+                    );
+                    continue;
+                }
             }
-            refs.push(OutputRef {
+            let mut source_paths = vec![canonical_source.clone(), destination.clone()];
+            if let Some(source) = record
+                .payload
+                .get("source_absolute_path")
+                .and_then(Value::as_str)
+            {
+                source_paths.push(std::path::PathBuf::from(source));
+            }
+            let output = OutputRef {
                 output_id: format!("out_task_user_attachment:{}", record.artifact_id),
                 scope: "task".to_string(),
                 audience: "user".to_string(),
@@ -41735,7 +43062,136 @@ impl ArtifactV2Service {
                 source_execution_id: Some(execution_id.to_string()),
                 source_plan_id: None,
                 source_output_ids: vec![primary_output_id.to_string()],
-            });
+            };
+            collected
+                .source_paths
+                .insert(output.output_id.clone(), source_paths);
+            if let Some(title) = record
+                .payload
+                .get("deliverable_title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+            {
+                collected
+                    .titles
+                    .insert(output.output_id.clone(), title.to_string());
+            }
+            if declared {
+                collected.declared.push(output);
+            } else {
+                collected.named.push(output);
+            }
+        }
+        // Declared files arrive newest yield first, in its rank order: the
+        // first one is the latest answer's primary deliverable.
+        collected.primary_output_id = collected
+            .declared
+            .first()
+            .map(|output| output.output_id.clone());
+        collected
+    }
+
+    /// Delivered-file OutputRefs for task-workdir files this execution
+    /// modified (at or after `started_at`) whose file name or absolute path
+    /// `delivery_text` gives — the deliverable a run wrote but never
+    /// declared or captured (a run that ran out of budget never yields).
+    /// Regular files only (a symlink is never followed), size-capped, media
+    /// left to `user_media`, names in `taken` skipped. Each is copied,
+    /// digest-checked, to `outputs/delivered/<execution>/<name>`.
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_workdir_named_file_output_refs(
+        &self,
+        scope: &ScopeRef,
+        task_id: &str,
+        execution_id: &str,
+        started_at: &str,
+        delivery_text: &str,
+        primary_output_id: &str,
+        published_sha256: Option<&str>,
+        now: &str,
+        taken: &HashSet<String>,
+        room: usize,
+    ) -> Vec<(OutputRef, Vec<std::path::PathBuf>)> {
+        // Without a known start the "modified during this run" bound cannot
+        // be applied, so nothing is swept.
+        let Ok(started) = chrono::DateTime::parse_from_rfc3339(started_at) else {
+            return Vec::new();
+        };
+        let modified_since = std::time::SystemTime::from(started)
+            .checked_sub(std::time::Duration::from_secs(2))
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let task_dir = self
+            .workspace
+            .task_dir(&scope.principal(), &scope.workspace(), task_id);
+        let workdir = task_dir.join("workdir");
+        let text_lower = delivery_text.to_lowercase();
+        let taken = taken.clone();
+        let candidates = match tokio::task::spawn_blocking(move || {
+            workdir_files_named_in_text(&workdir, &text_lower, modified_since, &taken)
+        })
+        .await
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                warn!(%task_id, %execution_id, %error, "[DELIVERED-FILES] workdir sweep failed");
+                return Vec::new();
+            },
+        };
+        let delivered_dir = self
+            .workspace
+            .task_outputs_dir(&scope.principal(), &scope.workspace(), task_id)
+            .join("delivered")
+            .join(execution_id);
+        let mut refs = Vec::new();
+        for candidate in candidates {
+            if refs.len() >= room {
+                break;
+            }
+            let media_type =
+                super::file_types::output_file_content_type(&candidate.path, None).await;
+            let media_type = base_media_type(&media_type).to_string();
+            if media_type.starts_with("image/")
+                || media_type.starts_with("video/")
+                || media_type.starts_with("audio/")
+            {
+                continue;
+            }
+            let Some(file_name) = delivered_file_name(&candidate.name) else {
+                continue;
+            };
+            let sha256 = match delivered_file_sha256(&candidate.path).await {
+                Ok(sha256) => sha256,
+                Err(error) => {
+                    warn!(%task_id, %execution_id, %error, "[DELIVERED-FILES] named workdir file could not be hashed; not attached");
+                    continue;
+                },
+            };
+            if published_sha256.is_some_and(|published| published.eq_ignore_ascii_case(&sha256)) {
+                continue;
+            }
+            let destination = delivered_dir.join(&file_name);
+            if let Err(error) = self
+                .workspace
+                .copy_workspace_file_verified_atomic_path(&candidate.path, &destination, &sha256)
+                .await
+            {
+                warn!(%task_id, %execution_id, %error, "[DELIVERED-FILES] named workdir file copy failed; not attached");
+                continue;
+            }
+            let paths = vec![candidate.path.clone(), destination];
+            refs.push((OutputRef {
+                output_id: format!("out_task_user_attachment:workdir:{execution_id}:{file_name}"),
+                scope: "task".to_string(),
+                audience: "user".to_string(),
+                role: DELIVERED_FILE_OUTPUT_ROLE.to_string(),
+                relative_path: format!("outputs/delivered/{execution_id}/{file_name}"),
+                media_type,
+                created_at: now.to_string(),
+                source_execution_id: Some(execution_id.to_string()),
+                source_plan_id: None,
+                source_output_ids: vec![primary_output_id.to_string()],
+            }, paths));
         }
         refs
     }
@@ -41862,6 +43318,7 @@ impl V3ReadApi for ArtifactV2Service {
             // was retired. Legacy records may still name one on disk.
             default_task_agent_output_id: None,
             primary_user_output_id: task.refs.primary_user_output_id,
+            primary_deliverable_output_id: task.refs.primary_deliverable_output_id,
             outputs,
         })
     }
@@ -50389,6 +51846,259 @@ fn carries_words(text: &str, part: &str) -> bool {
 
 /// At most this many delivered files attach to one terminal answer.
 const MAX_DELIVERED_FILE_OUTPUTS: usize = 8;
+/// The workdir sweep descends at most this deep and inspects at most this
+/// many entries, so a run that unpacked a large tree cannot stall the
+/// terminal.
+const MAX_DELIVERED_WORKDIR_SWEEP_DEPTH: usize = 6;
+const MAX_DELIVERED_WORKDIR_SWEEP_ENTRIES: usize = 5_000;
+
+/// What `delivered_file_outputs_for_terminal` promotes: the delivered
+/// OutputRefs (primary first) and which one is the primary deliverable.
+#[derive(Debug, Default)]
+struct DeliveredFilesForTerminal {
+    outputs: Vec<OutputRef>,
+    primary_output_id: Option<String>,
+    /// Host paths that are each output's file (workdir source, execution
+    /// copy, promoted copy), so host paths in the answer link to exactly
+    /// that file.
+    source_paths: HashMap<String, Vec<std::path::PathBuf>>,
+    /// The title the run declared for an output, by output id.
+    titles: HashMap<String, String>,
+}
+
+/// One execution's delivered files: declared ones (in declaration order),
+/// named ones, and the primary declared deliverable.
+#[derive(Debug, Default)]
+struct CollectedDeliveredFiles {
+    declared: Vec<OutputRef>,
+    named: Vec<OutputRef>,
+    primary_output_id: Option<String>,
+    source_paths: HashMap<String, Vec<std::path::PathBuf>>,
+    titles: HashMap<String, String>,
+}
+
+/// A `tool_output_file` record the run declared in `yield.deliverables`
+/// (written by `execution::agentic::yield_deliverables`).
+fn is_declared_deliverable_record(record: &PersistedExecutionArtifactRecord) -> bool {
+    record
+        .payload
+        .get("declared_deliverable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// A task-workdir file the delivery text names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkdirDeliveredCandidate {
+    path: std::path::PathBuf,
+    name: String,
+}
+
+/// Regular files under `workdir` (symlinks never followed, hidden and
+/// dependency directories skipped, bounded depth and entry count) that were
+/// modified at or after `modified_since`, are non-empty and within
+/// `MAX_DELIVERED_FILE_BYTES`, and whose file name (as a whole token) or
+/// absolute path `text_lower` gives. One file per name — the newest — and
+/// none whose lowercased name is in `taken`; ordered by where the text first
+/// names them.
+fn workdir_files_named_in_text(
+    workdir: &std::path::Path,
+    text_lower: &str,
+    modified_since: std::time::SystemTime,
+    taken: &HashSet<String>,
+) -> Vec<WorkdirDeliveredCandidate> {
+    use crate::magician_v2::artifact_v2::models::MAX_DELIVERED_FILE_BYTES;
+    match std::fs::symlink_metadata(workdir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {},
+        _ => return Vec::new(),
+    }
+    // A repository checkout is a working tree, not a pile of deliverables:
+    // every file in it is "modified" and many are named in any summary.
+    let is_repository = |dir: &std::path::Path| {
+        [".git", ".hg", ".svn"]
+            .iter()
+            .any(|marker| std::fs::symlink_metadata(dir.join(marker)).is_ok())
+    };
+    if is_repository(workdir) {
+        return Vec::new();
+    }
+    let mut best: HashMap<String, (std::path::PathBuf, String, std::time::SystemTime, usize)> =
+        HashMap::new();
+    let mut pending = vec![(workdir.to_path_buf(), 0usize)];
+    let mut inspected = 0usize;
+    while let Some((dir, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            inspected += 1;
+            if inspected > MAX_DELIVERED_WORKDIR_SWEEP_ENTRIES {
+                break;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if file_type.is_dir() {
+                if depth + 1 < MAX_DELIVERED_WORKDIR_SWEEP_DEPTH
+                    && !name.starts_with('.')
+                    && !matches!(
+                        name.as_str(),
+                        "node_modules" | "__pycache__" | "target" | "venv" | "site-packages"
+                    )
+                    && !is_repository(&entry.path())
+                {
+                    pending.push((entry.path(), depth + 1));
+                }
+                continue;
+            }
+            if !file_type.is_file() || name.starts_with('.') {
+                continue;
+            }
+            let name_lower = name.to_lowercase();
+            if taken.contains(&name_lower) {
+                continue;
+            }
+            let path = entry.path();
+            let path_lower = path.to_string_lossy().to_lowercase();
+            let position = if file_named_in_text(text_lower, &name) {
+                text_lower.find(name_lower.as_str())
+            } else {
+                text_lower.find(path_lower.as_str())
+            };
+            let Some(position) = position else {
+                continue;
+            };
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.len() == 0 || metadata.len() > MAX_DELIVERED_FILE_BYTES {
+                continue;
+            }
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if modified < modified_since {
+                continue;
+            }
+            let newer = best
+                .get(&name_lower)
+                .map_or(true, |(_, _, existing, _)| modified > *existing);
+            if newer {
+                best.insert(name_lower, (path, name, modified, position));
+            }
+        }
+        if inspected > MAX_DELIVERED_WORKDIR_SWEEP_ENTRIES {
+            break;
+        }
+    }
+    let mut found: Vec<_> = best.into_values().collect();
+    found.sort_by(|left, right| left.3.cmp(&right.3).then_with(|| left.1.cmp(&right.1)));
+    found
+        .into_iter()
+        .map(|(path, name, _, _)| WorkdirDeliveredCandidate { path, name })
+        .collect()
+}
+
+/// `text` with host paths and `file://` links into `task_dir` rewritten to
+/// the delivered files' served URLs (or demoted to file names), and — when
+/// `list_unlinked_files` — the delivered files the text does not link
+/// listed after it. Shared by the task-user finalizer and the chat terminal
+/// message (`ArtifactV2Service::present_text_for_user`).
+pub(crate) fn present_text_with_delivered_files(
+    text: &str,
+    task_dir: &std::path::Path,
+    delivered: &[DeliveredFileLink],
+    list_unlinked_files: bool,
+) -> String {
+    let rewritten = rewrite_host_paths_for_user(text, &[task_dir.to_path_buf()], delivered);
+    if list_unlinked_files {
+        append_delivered_files_section(&rewritten, delivered)
+    } else {
+        rewritten
+    }
+}
+
+/// A task-user answer as the owner receives it, by format:
+///
+/// - markdown / plain text: [`present_text_with_delivered_files`] (links,
+///   demotions, and the `**Files**` list of files the answer does not link);
+/// - HTML: `href`/`src` values and text nodes rewritten, code untouched
+///   (`rewrite_host_paths_in_html`);
+/// - JSON: string values rewritten, keys and structure kept
+///   (`rewrite_host_paths_in_json`);
+/// - a verified-file answer (`OutputBody::File`) is published byte for
+///   byte: its bytes are digest-bound — the writer re-checks
+///   `expected_sha256` before publishing, and the byte-preserving projection
+///   is the contract that let it skip a rewrite. The owner still never meets
+///   its host paths through Magician's own text: the chat summary and
+///   "Done." message are rewritten (`present_text_for_user`), and the file
+///   itself is served at its task-output URL.
+fn present_delivered_files_in_document(
+    document: OutputDocument,
+    ctx: &TaskFinalizeContext,
+) -> OutputDocument {
+    let media_type = base_media_type(&document.media_type).to_ascii_lowercase();
+    let roots = [ctx.task_dir.clone()];
+    let rewritten: Option<OutputBody> = match &document.body {
+        OutputBody::Text(text)
+            if matches!(
+                media_type.as_str(),
+                "text/markdown" | "text/x-markdown" | "text/plain"
+            ) =>
+        {
+            let presented =
+                present_text_with_delivered_files(text, &ctx.task_dir, &ctx.delivered_files, true);
+            (presented != *text).then_some(OutputBody::Text(presented))
+        },
+        OutputBody::Text(text)
+            if matches!(media_type.as_str(), "text/html" | "application/xhtml+xml") =>
+        {
+            let presented = super::delivered_links::rewrite_host_paths_in_html(
+                text,
+                &roots,
+                &ctx.delivered_files,
+            );
+            (presented != *text).then_some(OutputBody::Text(presented))
+        },
+        OutputBody::Text(text)
+            if media_type == "application/json" || media_type.ends_with("+json") =>
+        {
+            serde_json::from_str::<Value>(text)
+                .ok()
+                .and_then(|mut value| {
+                    super::delivered_links::rewrite_host_paths_in_json(
+                        &mut value,
+                        &roots,
+                        &ctx.delivered_files,
+                    )
+                    .then_some(value)
+                })
+                .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                .map(OutputBody::Text)
+        },
+        OutputBody::Json(value) => {
+            let mut value = value.clone();
+            super::delivered_links::rewrite_host_paths_in_json(
+                &mut value,
+                &roots,
+                &ctx.delivered_files,
+            )
+            .then_some(OutputBody::Json(value))
+        },
+        _ => None,
+    };
+    match rewritten {
+        Some(body) => OutputDocument {
+            media_type: document.media_type,
+            body,
+        },
+        None => document,
+    }
+}
 /// The ceiling synthesis applies to the durable task state it reads.
 const MAX_DELIVERY_TASK_STATE_BYTES: u64 = 1024 * 1024;
 
@@ -50919,6 +52629,7 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
             }
         }
         let document = append_media_artifacts_to_document(document, &bundle.selected_artifacts);
+        let document = present_delivered_files_in_document(document, ctx);
         validate_document_media_type(
             OutputClass::TaskUser,
             &document,
@@ -51294,6 +53005,7 @@ impl TaskUserFinalizer for FilesystemTaskUserFinalizer {
         } else {
             document
         };
+        let document = present_delivered_files_in_document(document, ctx);
         validate_document_media_type(
             OutputClass::TaskUser,
             &document,
@@ -55803,6 +57515,56 @@ mod tests {
             .is_err());
     }
 
+    /// The HMAC-bound delegated-suspend bit seals on an owner question and on
+    /// an approval gate, the two pause endings the owner answers, and on no
+    /// other ending.
+    #[test]
+    fn delegated_suspend_bit_seals_on_owner_question_and_approval_gate_only() {
+        use crate::magician_v2::execution::agentic::run_loop::state::{
+            TerminalOutcomeProjection, TerminalSettlementDescriptor,
+        };
+
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let service = build_test_artifact_v2_service(tmp.path());
+        let paused = |terminal_kind: &str| TerminalSettlementDescriptor {
+            schema_version: 1,
+            principal: "anonymous".to_owned(),
+            workspace: "default".to_owned(),
+            task_id: "task-gated-child".to_owned(),
+            base_execution_id: "exec-gated-child".to_owned(),
+            exact_segment_id: "exec-gated-child-segment".to_owned(),
+            terminal_kind: terminal_kind.to_owned(),
+            terminal_seq: 3,
+            outcome: TerminalOutcomeProjection {
+                execution_status: "waiting_user".to_owned(),
+                task_status: "waiting_for_user".to_owned(),
+                outcome_type: terminal_kind.to_owned(),
+                outcome_summary: "update_agent needs the owner's approval".to_owned(),
+                iterations_used: Some(2),
+                is_terminal: false,
+                completion_kind: None,
+                open_items: Vec::new(),
+            },
+            waiting_for_user_diff_approval: true,
+            pipeline_loop_state_segment: None,
+            pipeline_stage_settlement: None,
+            pause_key: Some("pause-gated-child".to_owned()),
+            pause_revision: Some("rev-1".to_owned()),
+            pause_body_sha256: Some("ab".repeat(32)),
+            pause_resume_segment: Some("exec-gated-child-segment-r1".to_owned()),
+            refinement_successor_segment: None,
+        };
+        assert!(service
+            .seal_terminal_settlement_descriptor(paused("waiting_for_confirmation"))
+            .is_ok());
+        assert!(service
+            .seal_terminal_settlement_descriptor(paused("waiting_for_user"))
+            .is_ok());
+        assert!(service
+            .seal_terminal_settlement_descriptor(paused("paused_by_user"))
+            .is_err());
+    }
+
     #[cfg(test)]
     mod root_owner_pause_tests {
         include!("root_owner_pause_tests.rs");
@@ -55894,8 +57656,8 @@ mod tests {
             .find("admission.staged()")
             .expect("staged publication deferral");
         let canonical_diff = recovery
-            .find("admission.canonical_diff_approval()")
-            .expect("canonical diff-approval classification");
+            .find("admission.delegated_owner_answerable()")
+            .expect("delegated owner-answerable pause classification");
         let force_failure = recovery
             .find("force_child_failure_checked")
             .expect("forbidden child continuation failure");
@@ -55935,6 +57697,144 @@ mod tests {
             .expect("canonical child failure owner");
         assert!(adopted < sealed_subtype && sealed_subtype < body_check);
         assert!(body_check < force_failure);
+    }
+
+    /// A delegated child that pauses on an approval gate is parked for its
+    /// owner, not force-failed: the receipt is stamped suspendable, acceptance
+    /// classifies a `waiting_for_confirmation` receipt before the canonical
+    /// failure owner, and publication then activates its approval card instead
+    /// of acknowledging a suppressed disposition.
+    /// An owner question or gate staged under a tree cancel that already
+    /// deferred its child is never parked (a canonical diff approval
+    /// excepted): the lock chooser reads the cancelled parent/root and
+    /// takes the agent-only fence, acceptance re-reads the same trace and
+    /// force-fails there, and under the full fence (a cancel that landed
+    /// after the choice) it asks for another pass instead of taking the
+    /// control-tree lock the waiting cascade holds.
+    #[test]
+    fn delegated_pause_under_cancelled_tree_fails_under_the_agent_fence_only() {
+        let source = include_str!("service.rs");
+        let selector = source
+            .split("pub(crate) async fn acquire_terminal_loop_receipt_lifecycle_exclusion")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) async fn accept_terminal_loop_settlement")
+                    .next()
+            })
+            .expect("terminal receipt lifecycle selector");
+        let chooser_trace = selector
+            .find("delegated_pause_under_cancelled_tree(")
+            .expect("chooser reads the cancelled-tree trace");
+        let delegated = selector
+            .find("let delegated_non_success")
+            .expect("delegated non-success classification");
+        assert!(chooser_trace < delegated);
+
+        let acceptance = source
+            .split("pub(crate) async fn accept_terminal_loop_settlement")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) async fn publish_terminal_loop_pause")
+                    .next()
+            })
+            .expect("terminal receipt acceptance");
+        let trace = acceptance
+            .find("delegated_pause_under_cancelled_tree(")
+            .expect("acceptance re-reads the cancelled-tree trace");
+        let retry = acceptance
+            .find("delegated_pause_tree_cancelled_retry")
+            .expect("full-fence retry");
+        let may_suspend = acceptance
+            .find("let delegated_may_suspend")
+            .expect("delegated suspend policy");
+        let force_failure = acceptance
+            .find("force_child_failure_checked")
+            .expect("canonical child failure owner");
+        assert!(trace < retry && retry < may_suspend && may_suspend < force_failure);
+        assert!(acceptance[trace..retry].contains("!agent_only_lifecycle_exclusion"));
+        assert!(acceptance[may_suspend..force_failure].contains("!pause_under_cancelled_tree"));
+
+        // Every parkable delegated pause is covered, except a canonical diff
+        // approval, which the cascade spares.
+        let helper = source
+            .split("async fn delegated_pause_under_cancelled_tree(")
+            .nth(1)
+            .and_then(|tail| tail.split("pub(crate) async fn acquire_terminal_loop_receipt_lifecycle_exclusion").next())
+            .expect("cancelled-tree pause classifier");
+        let parks = helper.find("delegated_pause_parks(").expect("parkable pause");
+        let tree = helper
+            .find("delegated_child_tree_cancelled(execution_id)")
+            .expect("cancelled-tree trace");
+        let diff = helper
+            .find("stateless_terminal_receipt_canonical_diff_approval(descriptor)")
+            .expect("canonical diff exemption");
+        assert!(parks < tree && tree < diff);
+        assert!(helper[diff..].contains("Ok(Some(canonical_diff)) => !canonical_diff"));
+        let parks_fn = source
+            .split("fn delegated_pause_parks(")
+            .nth(1)
+            .and_then(|tail| tail.split("pub(crate) enum TerminalLoopReceiptLifecycleExclusion").next())
+            .expect("parkable pause predicate");
+        assert!(parks_fn.contains("delegated_child_may_suspend_on_terminal("));
+
+        let outbox = include_str!("../execution/agentic/run_loop/terminal_outbox.rs");
+        assert!(outbox.contains("TerminalLoopReceiptLifecycleExclusion::Agent { .. })"));
+    }
+
+    #[test]
+    fn delegated_approval_gate_receipt_is_parked_and_published_not_force_failed() {
+        let source = include_str!("service.rs");
+        let stamp = source
+            .split("let waiting_for_user_diff_approval = match outcome {")
+            .nth(1)
+            .and_then(|tail| tail.split("};").next())
+            .expect("delegated suspend stamp");
+        assert!(stamp.contains("AgenticOutcome::WaitingForConfirmation { .. } => true"));
+
+        let acceptance = source
+            .split("pub(crate) async fn accept_terminal_loop_settlement")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("pub(crate) async fn publish_terminal_loop_pause")
+                    .next()
+            })
+            .expect("terminal receipt acceptance");
+        let may_suspend = acceptance
+            .find("delegated_child_may_suspend_on_terminal(")
+            .expect("shared delegated pause-ending policy");
+        let body_check = acceptance[may_suspend..]
+            .find("stateless_terminal_receipt_is_delegated_diff_approval")
+            .map(|offset| may_suspend + offset)
+            .expect("present-body consistency check");
+        let force_failure = acceptance[body_check..]
+            .find("force_child_failure_checked")
+            .map(|offset| body_check + offset)
+            .expect("canonical child failure owner");
+        assert!(may_suspend < body_check && body_check < force_failure);
+        assert!(!acceptance.contains(concat!(
+            "delegated_child && terminal == ",
+            "TerminalKind::WaitingForUser"
+        )));
+
+        let publication = source
+            .split("pub(crate) async fn publish_terminal_loop_pause")
+            .nth(1)
+            .and_then(|tail| tail.split("async fn resolve_scope_for_execution_id").next())
+            .expect("terminal pause publication");
+        let policy = publication
+            .find("delegated_child_may_suspend_on_terminal(")
+            .expect("publication reads the shared pause-ending policy");
+        let approval = publication
+            .find("replay_stateless_confirmation_approval")
+            .expect("approval card replay");
+        let activation = publication
+            .find("activate_stateless_terminal_pause_receipt")
+            .expect("pause activation");
+        assert!(policy < approval && approval < activation);
+        assert!(!publication.contains(concat!(
+            "!(terminal == ",
+            "TerminalKind::WaitingForUser"
+        )));
     }
 
     /// A first pass that handed its settlement to a refinement pass is judged
@@ -56939,6 +58839,84 @@ mod tests {
             .map(|offset| projection + offset)
             .expect("no retryable waiting projection");
         assert!(superseded < projection && projection < return_owned);
+    }
+
+    #[test]
+    fn a_delegated_coordinator_resumes_under_the_root_that_owns_the_task() {
+        let admissible = |task: &str, active: Option<&str>, relationship: &str, status: &str| {
+            resumed_child_activation_admissible(
+                task,
+                active,
+                relationship,
+                Some("exec-root"),
+                Some("exec-root"),
+                status,
+            )
+        };
+        // The root is alive and waiting on this child: the root activator
+        // refuses it, this one must not.
+        let (root, delegate, parked) = (Some("exec-root"), RELATIONSHIP_TYPE_DELEGATE, "waiting_for_children");
+        assert!(admissible("running", root, delegate, parked));
+        assert!(admissible("running", root, delegate, "running"));
+        assert!(!admissible("running", Some("exec-other"), delegate, parked));
+        assert!(!admissible("cancelled", root, delegate, parked));
+        assert!(!admissible("running", root, RELATIONSHIP_TYPE_ROOT, parked));
+        assert!(!admissible("running", root, delegate, "completed"));
+        assert!(!resumed_child_activation_admissible(
+            "running",
+            Some("exec-root"),
+            RELATIONSHIP_TYPE_DELEGATE,
+            None,
+            Some("exec-root"),
+            "waiting_for_children",
+        ));
+
+        let source = include_str!("service.rs");
+        let dispatch = source
+            .split("let dispatch_authorized = resumed")
+            .nth(1)
+            .and_then(|tail| tail.split("ParentResumeDispatched").next())
+            .expect("parent resume dispatch");
+        let child = dispatch
+            .find("activate_resumed_child_execution")
+            .expect("a delegated parent keeps the task root");
+        let root = dispatch
+            .find("activate_execution_internal")
+            .expect("a root parent claims the task root");
+        assert!(dispatch[..child].contains("parent.state.parent_execution_id.is_some()"));
+        assert!(child < root);
+    }
+
+    #[test]
+    fn only_a_terminal_parent_discards_a_handoff_whose_source_ended_without_one() {
+        let source = include_str!("service.rs");
+        let resume = source
+            .split("fn maybe_resume_parent_after_v3_child_results")
+            .nth(1)
+            .and_then(|tail| tail.split("if parent.refs.delegations.is_empty()").next())
+            .expect("crash-repair branch of the parent resume");
+        let guard = resume
+            .find("detail.starts_with(STATELESS_CHILDREN_HANDOFF_SOURCE_ENDED)")
+            .expect("typed source-ended refusal");
+        let terminal = resume[..guard]
+            .rfind("is_terminal_execution_status(&parent.state.status)")
+            .expect("discard is gated on a terminal parent");
+        let discard = resume[guard..]
+            .find("discard_stale_stateless_children_handoff")
+            .map(|offset| guard + offset)
+            .expect("stale descriptor is dropped");
+        assert!(terminal < guard && guard < discard);
+
+        let prepare = source
+            .split("async fn prepare_stateless_children_handoff_with_lifecycle_held")
+            .nth(1)
+            .and_then(|tail| {
+                tail.split("async fn discard_stale_stateless_children_handoff")
+                    .next()
+            })
+            .expect("handoff preparer");
+        assert!(prepare.contains("ChildrenHandoffError::SourceEndedWithoutHandoff"));
+        assert!(prepare.contains("stateless_children_handoff_prepare_failed"));
     }
 
     #[test]
@@ -58180,6 +60158,7 @@ mod tests {
             source_output_ids: Vec::new(),
             verified_terminal_projection: None,
             llm_routing_overrides: None,
+            delivered_files: Vec::new(),
             now: execution_ctx.now.clone(),
         });
         let execution_ctx_address = Arc::as_ptr(&execution_ctx) as usize;
@@ -58303,6 +60282,7 @@ mod tests {
                 companion_notes: Vec::new(),
             }),
             llm_routing_overrides: None,
+            delivered_files: Vec::new(),
             now: "2026-10-01T00:00:01Z".to_string(),
         };
         let dependencies = SynthesisDependencies::default();
@@ -59254,6 +61234,238 @@ mod tests {
         ]));
     }
 
+    /// The readiness owner's guard reads the park from the base execution's
+    /// loop state: a segment parked on children that names its successor, with
+    /// no descriptor and no Delegation checkpoint, is the 2026-11-01 strand and
+    /// must be found before the runtime moves to Runnable.
+    #[tokio::test]
+    async fn a_parked_segment_without_its_checkpoint_is_found_from_the_base_execution() {
+        use crate::magician_v2::execution::agentic::run_loop::state::{
+            LoopSegmentBinding, ResumeAddress, WaitReason,
+        };
+        use crate::magician_v2::execution::agentic::run_loop::store::{
+            contract, fs::FsLoopStateStore, ExecutionKey, LoopStateStore, Revision,
+        };
+
+        let tmp = tempfile::TempDir::new().expect("temp root");
+        let service = crate::magician_v2::test_support::build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("owner", "default");
+        let base = "exec-parked-parent";
+        assert_eq!(
+            service
+                .parked_children_segment(&scope, base)
+                .await
+                .expect("lookup with nothing committed"),
+            None
+        );
+
+        let segment = "exec-parked-parent-r134";
+        let key = ExecutionKey::new("owner", "default", segment).expect("segment key");
+        let mut state = contract::fresh_state(&key);
+        state.segment_binding = Some(LoopSegmentBinding {
+            base_execution_id: base.to_owned(),
+            exact_segment_id: segment.to_owned(),
+            preseed_admission_token: None,
+        });
+        state.wait = Some(WaitReason::Children {
+            child_execution_ids: vec!["exec-deleg-child".to_string()],
+            resume: ResumeAddress {
+                run_resumes_as: Some("exec-parked-parent-r138".to_string()),
+                ..ResumeAddress::default()
+            },
+        });
+        FsLoopStateStore::new(service.workspace().base_root())
+            .commit(&key, &state, Revision::INITIAL)
+            .await
+            .expect("seed the parked segment");
+
+        let parked = service
+            .parked_children_segment(&scope, base)
+            .await
+            .expect("lookup")
+            .expect("the parked segment is named by its base execution");
+        assert_eq!(parked.segment, segment);
+        assert_eq!(parked.resumes_as, "exec-parked-parent-r138");
+        assert_eq!(parked.child_execution_ids, vec!["exec-deleg-child".to_string()]);
+        assert_eq!(
+            service
+                .parked_children_segment_without_delegation_checkpoint(
+                    &scope,
+                    "task-parked-parent",
+                    base,
+                )
+                .await
+                .expect("guard lookup")
+                .map(|parked| parked.segment),
+            Some(segment.to_string()),
+            "no descriptor and no Delegation checkpoint: the readiness owner must wait"
+        );
+
+        assert!(is_stateless_parked_children_checkpoint_missing(
+            &ArtifactV2Error::Runtime(format!(
+                "interrupted runtime {base} retained for durable authority: {}:{base}:{segment}",
+                crate::magician_v2::execution::agentic::run_loop::state::STATELESS_PARKED_CHILDREN_CHECKPOINT_MISSING
+            ))
+        ));
+        assert!(!is_stateless_parked_children_checkpoint_missing(
+            &ArtifactV2Error::Runtime(
+                "interrupted runtime exec-parent is already owned by a live generation"
+                    .to_string()
+            )
+        ));
+    }
+
+    /// A continuation refused by another owner retries just after that
+    /// owner's durable deadline — the pin that stranded the 2026-11-01 parent
+    /// ran to 16:14:25 — never before now, and with a bounded spread.
+    #[test]
+    fn an_owned_parent_retries_just_after_the_owner_deadline() {
+        let now_ms = 1_793_549_382_000;
+        let until_ms = 1_793_549_665_182;
+        let at = resumed_parent_retry_at_ms(Some(until_ms), now_ms, "exec_9ed7");
+        assert!(at > until_ms, "never inside the owner's window");
+        assert!(at <= until_ms + 1 + RESUMED_PARENT_RETRY_JITTER_MS);
+        assert_eq!(
+            at,
+            resumed_parent_retry_at_ms(Some(until_ms), now_ms, "exec_9ed7"),
+            "the spread is reproducible"
+        );
+
+        let lapsed = resumed_parent_retry_at_ms(Some(now_ms - 60_000), now_ms, "exec_9ed7");
+        assert!(lapsed > now_ms && lapsed <= now_ms + 1 + RESUMED_PARENT_RETRY_JITTER_MS);
+
+        let local = resumed_parent_retry_at_ms(None, now_ms, "exec_9ed7");
+        assert!(local > now_ms + RESUMED_PARENT_LOCAL_OWNER_RETRY_MS);
+        assert!(
+            local <= now_ms + RESUMED_PARENT_LOCAL_OWNER_RETRY_MS + 1 + RESUMED_PARENT_RETRY_JITTER_MS
+        );
+
+        let source = include_str!("service.rs");
+        let continuation = source
+            .split("async fn continue_execution_with_orchestrator")
+            .nth(1)
+            .and_then(|tail| tail.split("/// RCA fix #1").next())
+            .expect("parent continuation");
+        let owned = continuation
+            .find("InterruptedRuntimeRecoveryRefusal::AlreadyOwned")
+            .expect("typed ownership refusal");
+        let retry_at = continuation[owned..]
+            .find("resumed_parent_retry_at_ms(")
+            .map(|offset| owned + offset)
+            .expect("retry computed from the owner deadline");
+        let deferred = continuation[retry_at..]
+            .find("return Ok(Err(ContinuedExecutionOutcome::Deferred { retry_at_ms }))")
+            .map(|offset| retry_at + offset)
+            .expect("typed deferral, not an error");
+        assert!(owned < retry_at && retry_at < deferred);
+    }
+
+    /// The wake a deferred continuation schedules finds the parent Runnable
+    /// with its record running. Only a parent the deferral named may be
+    /// re-dispatched; a precondition that declines drops the entry, and a read
+    /// that fails keeps it for the next wake.
+    #[tokio::test]
+    async fn a_deferred_parent_resume_is_owed_until_dispatched_or_declined() {
+        let tmp = tempfile::TempDir::new().expect("temp root");
+        let service = crate::magician_v2::test_support::build_test_artifact_v2_service(tmp.path());
+        let scope = ScopeRef::system_internal_unauthenticated("owner", "default");
+        let marker = ArtifactV2Service::deferred_parent_resume_key(&scope, "exec-1");
+        let is_owed = |service: &ArtifactV2Service| {
+            service
+                .deferred_parent_resumes
+                .lock()
+                .expect("marker set")
+                .contains(&marker)
+        };
+        let walk = ParentResumeWalk::default();
+        let mut guard = None;
+        let mut parent = sample_execution_record();
+
+        // Nothing owed: the wake keeps its ordinary answer.
+        assert_eq!(
+            service
+                .redispatch_deferred_parent_resume(
+                    &scope,
+                    "task-1",
+                    "exec-1",
+                    &parent,
+                    &WaitingState::Runnable,
+                    &walk,
+                    &mut guard,
+                )
+                .await
+                .expect("not owed"),
+            None
+        );
+
+        // Owed, but the record settled meanwhile: declined and dropped.
+        service
+            .deferred_parent_resumes
+            .lock()
+            .expect("marker set")
+            .insert(marker.clone());
+        assert_eq!(
+            service
+                .redispatch_deferred_parent_resume(
+                    &scope,
+                    "task-1",
+                    "exec-1",
+                    &parent,
+                    &WaitingState::Runnable,
+                    &walk,
+                    &mut guard,
+                )
+                .await
+                .expect("declined"),
+            None
+        );
+        assert!(!is_owed(&service), "a decline drops the entry");
+
+        // Owed and eligible so far, but a child read fails: kept.
+        parent.state.status = "running".to_string();
+        parent.refs.delegations = vec![crate::magician_v2::artifact_v2::models::DelegationRef {
+            child_execution_id: Some("exec-child-not-in-the-runtime".to_string()),
+            ..Default::default()
+        }];
+        service
+            .deferred_parent_resumes
+            .lock()
+            .expect("marker set")
+            .insert(marker.clone());
+        assert!(service
+            .redispatch_deferred_parent_resume(
+                &scope,
+                "task-1",
+                "exec-1",
+                &parent,
+                &WaitingState::Runnable,
+                &walk,
+                &mut guard,
+            )
+            .await
+            .is_err());
+        assert!(is_owed(&service), "a failed read keeps the entry for the next wake");
+
+        // Not Runnable (someone is driving it): declined and dropped.
+        assert_eq!(
+            service
+                .redispatch_deferred_parent_resume(
+                    &scope,
+                    "task-1",
+                    "exec-1",
+                    &parent,
+                    &WaitingState::Executing,
+                    &walk,
+                    &mut guard,
+                )
+                .await
+                .expect("declined"),
+            None
+        );
+        assert!(!is_owed(&service));
+        assert!(guard.is_none(), "nothing was dispatched");
+    }
+
     /// The settled check must gate the summary and the resume, not follow them:
     /// the summary is what the parent reads as its children's results.
     #[test]
@@ -59576,6 +61788,8 @@ mod tests {
                 outputs: Vec::new(),
                 default_task_agent_output_id: None,
                 primary_user_output_id: None,
+                primary_deliverable_output_id: None,
+                latest_delivered_output_ids: Vec::new(),
                 updated_at: Some("2026-04-05T00:00:00Z".to_string()),
             },
         }
@@ -60115,6 +62329,100 @@ mod tests {
         }
     }
 
+    /// The terminal sweep promotes a workdir file the run named and wrote
+    /// during this execution; an unnamed file, a file older than the run, a
+    /// symlink, an empty file and an already-taken name are left alone.
+    #[test]
+    fn workdir_sweep_takes_only_named_regular_files_from_this_run() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let workdir = temp.path().join("workdir");
+        std::fs::create_dir_all(workdir.join("reports")).unwrap();
+        std::fs::create_dir_all(workdir.join(".cache")).unwrap();
+        std::fs::write(workdir.join("reports/market_list.md"), "# 40 companies").unwrap();
+        std::fs::write(workdir.join("scratch.md"), "not named").unwrap();
+        std::fs::write(workdir.join("old.csv"), "a,b").unwrap();
+        std::fs::write(workdir.join("empty.md"), "").unwrap();
+        std::fs::write(workdir.join("taken.md"), "already delivered").unwrap();
+        std::fs::write(workdir.join(".cache/hidden.md"), "hidden").unwrap();
+        let outside = temp.path().join("secret.md");
+        std::fs::write(&outside, "secret").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, workdir.join("linked.md")).unwrap();
+
+        let text = format!(
+            "Done. The full list is in {}. Also see old.csv, empty.md, linked.md, \
+             taken.md and hidden.md.",
+            workdir.join("reports/market_list.md").display()
+        )
+        .to_lowercase();
+        let taken = HashSet::from(["taken.md".to_string()]);
+        // Everything above was written before this "run" started except
+        // what the run writes after `started`.
+        let all = workdir_files_named_in_text(
+            &workdir,
+            &text,
+            std::time::SystemTime::UNIX_EPOCH,
+            &taken,
+        );
+        let names: Vec<&str> = all.iter().map(|found| found.name.as_str()).collect();
+        assert_eq!(names, vec!["market_list.md", "old.csv"]);
+
+        let started = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        assert!(
+            workdir_files_named_in_text(&workdir, &text, started, &taken).is_empty(),
+            "files older than the run are not swept"
+        );
+        assert!(workdir_files_named_in_text(
+            &temp.path().join("missing"),
+            &text,
+            std::time::SystemTime::UNIX_EPOCH,
+            &taken
+        )
+        .is_empty());
+
+        // A repository checkout is never swept, at the top or nested.
+        std::fs::create_dir_all(workdir.join("reports/.git")).unwrap();
+        assert!(
+            workdir_files_named_in_text(&workdir, &text, std::time::SystemTime::UNIX_EPOCH, &taken)
+                .iter()
+                .all(|found| found.name != "market_list.md"),
+            "a nested repository is skipped"
+        );
+        std::fs::create_dir_all(workdir.join(".git")).unwrap();
+        assert!(workdir_files_named_in_text(
+            &workdir,
+            &text,
+            std::time::SystemTime::UNIX_EPOCH,
+            &taken
+        )
+        .is_empty());
+    }
+
+    /// Host paths in the published answer point at the served copy.
+    #[test]
+    fn task_user_text_links_delivered_files_instead_of_host_paths() {
+        let task_dir = std::path::PathBuf::from("/runtime/internal_tasks/task-1");
+        let delivered = vec![DeliveredFileLink {
+            output_id: "out_task_user_attachment:tool_output_file:x".into(),
+            name: "market_list.md".into(),
+            url: "/api/magician/v3/tasks/task-1/outputs/delivered/exec-1/market_list.md".into(),
+            size: Some(14),
+            primary: true,
+            media_type: Some("text/markdown".into()),
+            title: None,
+            source_paths: vec![task_dir.join("workdir/market_list.md")],
+        }];
+        let text = "See [the list](file:///runtime/internal_tasks/task-1/workdir/market_list.md).";
+        assert_eq!(
+            present_text_with_delivered_files(text, &task_dir, &delivered, true),
+            "See [the list](/api/magician/v3/tasks/task-1/outputs/delivered/exec-1/market_list.md)."
+        );
+        assert_eq!(
+            present_text_with_delivered_files("Done.", &task_dir, &delivered, true),
+            "Done.\n\n**Files**\n- [market_list.md](/api/magician/v3/tasks/task-1/outputs/delivered/exec-1/market_list.md) (main deliverable)\n"
+        );
+    }
+
     #[test]
     fn file_named_in_text_matches_whole_file_names_only() {
         let text = "Delivered Report.MD to outputs/notes.md and data.csv.".to_lowercase();
@@ -60315,7 +62623,7 @@ mod tests {
                         Also tampered.md, undigested.md, chart.png, foreign.md and \
                         partial_findings.md.";
 
-        let refs = service
+        let collected = service
             .collect_delivered_file_output_refs(
                 &scope,
                 task,
@@ -60326,6 +62634,8 @@ mod tests {
                 "2026-10-27T10:01:00Z",
             )
             .await;
+        assert!(collected.declared.is_empty(), "nothing was declared");
+        let refs = collected.named;
         let paths: Vec<&str> = refs
             .iter()
             .map(|output| output.relative_path.as_str())
@@ -60373,7 +62683,8 @@ mod tests {
                 Some(sha(b"final report").as_str()),
                 "2026-10-27T10:01:00Z",
             )
-            .await;
+            .await
+            .named;
         assert_eq!(refs.len(), 1);
         assert_eq!(
             refs[0].relative_path,
@@ -60392,6 +62703,7 @@ mod tests {
                 "2026-10-27T10:01:00Z",
             )
             .await
+            .named
             .is_empty());
     }
 
@@ -61594,6 +63906,7 @@ mod tests {
                 crate::magician_v2::execution::agentic::run_loop::journal::TerminalKind::CannotProceed,
                 1,
                 None,
+                false,
             )
             .await
             .expect("already-adopted terminal debt is acknowledged without failing root");
@@ -70202,7 +72515,8 @@ mod tests {
                             Some(&segment),
                             terminal,
                             1,
-                            receipt
+                            receipt,
+                            false,
                         )
                         .await
                         .unwrap(),
@@ -70235,6 +72549,7 @@ mod tests {
                     TerminalKind::WaitingForUser,
                     1,
                     Some(&question),
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -70250,6 +72565,7 @@ mod tests {
                 TerminalKind::WaitingForUser,
                 1,
                 Some(&forged_question),
+                false,
             )
             .await
             .is_err());
@@ -70329,6 +72645,7 @@ mod tests {
                     TerminalKind::WaitingForUser,
                     1,
                     Some(&internal_question),
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -70356,7 +72673,8 @@ mod tests {
                 Some(&segment),
                 TerminalKind::CannotProceed,
                 1,
-                None
+                None,
+                false,
             )
             .await
             .is_err());

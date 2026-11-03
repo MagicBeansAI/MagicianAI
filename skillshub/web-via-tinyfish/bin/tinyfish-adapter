@@ -1,0 +1,17 @@
+#!/bin/sh
+# Snapshot-safe entrypoint for the web-via-tinyfish skill.
+#
+# The governed runtime copies its entrypoint ALONE into a private temporary
+# directory and runs that copy, so the official launcher cannot be the
+# entrypoint: its ESM entry (dist/index.js) imports ./program.js and other
+# siblings.
+#
+# This file carries nothing relative to itself. It execs the declared PATH
+# companion `tinyfish` by name; the runtime puts this skill's reviewed bin/
+# directory on the child's PATH and the companion runs in place, beside its
+# real package files. argv is passed through unchanged.
+if ! command -v tinyfish >/dev/null 2>&1; then
+  echo "web-via-tinyfish: the pinned tinyfish CLI is not installed (run: make setup-all)" >&2
+  exit 127
+fi
+exec tinyfish "$@"

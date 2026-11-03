@@ -320,6 +320,125 @@ final class ChatTurnActivityTests: XCTestCase {
         XCTAssertEqual(classifyActivityLink("https://example.com/report"), .external("https://example.com/report"))
     }
 
+    /// The chat link rule set (web `classifyRef`) for every link a reply can carry.
+    func testChatLinkClassificationCoversDeliveredFilesRoutesAndUnknowns() {
+        let taskId = "task_0123456789abcdef0123456789abcdef"
+        // file:// → the absolute path, decoded; host files open on the machine.
+        XCTAssertEqual(classifyActivityLink("file:///Volumes/SSD/My%20Report.pdf"), .file("/Volumes/SSD/My Report.pdf"))
+        XCTAssertEqual(classifyActivityLink("/Volumes/SSD/notes/plan.md"), .file("/Volumes/SSD/notes/plan.md"))
+        XCTAssertEqual(classifyActivityLink("Pages/Chapter-Map.md"), .file("Pages/Chapter-Map.md"))
+        // A path inside a task's outputs is that task's output, however it is spelled.
+        let output = ActivityLinkDestination.taskOutput(taskId: taskId, relativePath: "reports/summary.pdf")
+        XCTAssertEqual(classifyActivityLink("/Users/me/magician_data_v3/tasks/\(taskId)/workdir/outputs/reports/summary.pdf"), output)
+        XCTAssertEqual(classifyActivityLink("file:///Users/me/magician_data_v3/tasks/\(taskId)/outputs/reports/summary.pdf"), output)
+        XCTAssertEqual(classifyActivityLink("/api/magician/v3/tasks/\(taskId)/outputs/reports/summary.pdf"), output)
+        XCTAssertEqual(
+            classifyActivityLink("/api/magician/v3/tasks/\(taskId)/outputs/My%20File.pdf"),
+            .taskOutput(taskId: taskId, relativePath: "My File.pdf")
+        )
+        XCTAssertEqual(
+            classifyActivityLink("/x/tasks/\(taskId)/executions/exec_1/outputs/a.txt"),
+            .taskOutput(taskId: taskId, relativePath: "executions/exec_1/outputs/a.txt")
+        )
+        // A task workdir file that is not an output opens on the host.
+        XCTAssertEqual(
+            classifyActivityLink("/Users/me/magician_data_v3/tasks/\(taskId)/workdir/main.py"),
+            .file("/Users/me/magician_data_v3/tasks/\(taskId)/workdir/main.py")
+        )
+        // Other relative /api references are server resources (authenticated viewer).
+        XCTAssertEqual(
+            classifyActivityLink("/api/magician/v2/chat/sessions/s1/outputs/a.md"),
+            .artifact("/api/magician/v2/chat/sessions/s1/outputs/a.md")
+        )
+        // App routes.
+        XCTAssertEqual(classifyActivityLink("/t/general"), .thread("general"))
+        XCTAssertEqual(classifyActivityLink("/work?filter=all&selected=\(taskId)"), .webRoute("/work?filter=all&selected=\(taskId)"))
+        XCTAssertEqual(classifyActivityLink("/t/general/tasks/\(taskId)"), .webRoute("/t/general/tasks/\(taskId)"))
+        // Chat links open the conversation in the app; every web chat URL form.
+        XCTAssertEqual(classifyActivityLink("/chat"), .chat(sessionId: nil, threadId: nil))
+        XCTAssertEqual(classifyActivityLink("/chat?session=chat-1"), .chat(sessionId: "chat-1", threadId: nil))
+        XCTAssertEqual(classifyActivityLink("/chat?thread=work&session=chat-1"), .chat(sessionId: "chat-1", threadId: "work"))
+        XCTAssertEqual(classifyActivityLink("/t/work/chat?session=chat-1"), .chat(sessionId: "chat-1", threadId: "work"))
+        XCTAssertEqual(classifyActivityLink("/t/work/chat"), .chat(sessionId: nil, threadId: "work"))
+        XCTAssertEqual(classifyActivityLink("/t/work?session=chat-1"), .chat(sessionId: "chat-1", threadId: "work"))
+        XCTAssertEqual(classifyActivityLink("/t/work/files?session=chat-1"), .chat(sessionId: "chat-1", threadId: "work"))
+        XCTAssertEqual(classifyActivityLink("/history"), .chat(sessionId: nil, threadId: nil))
+        // `/t/<thread>?selected=<task>` lands on the thread's task, like web.
+        XCTAssertEqual(classifyActivityLink("/t/work?selected=\(taskId)"), .webRoute("/t/work/tasks/\(taskId)"))
+        XCTAssertEqual(classifyActivityLink("/work?selected=\(taskId)&type=monitors"), .webRoute("/work?selected=\(taskId)&type=monitors"))
+        XCTAssertEqual(classifyActivityLink("/today?tab=followups"), .today("followups"))
+        XCTAssertEqual(classifyActivityLink("/settings/model-routing"), .settings)
+        XCTAssertEqual(classifyActivityLink("/observe"), .observe)
+        XCTAssertEqual(classifyActivityLink("/vibe"), .vibeDev)
+        XCTAssertEqual(classifyActivityLink("/t/vibedev"), .vibeDev)
+        XCTAssertEqual(classifyActivityLink("/notes"), .notes)
+        XCTAssertEqual(classifyActivityLink("/briefing/today"), .webRoute("/briefing/today"))
+        // An absolute link on the paired machine is read by its path.
+        let origin = URL(string: "https://mac.example.test")!
+        XCTAssertEqual(
+            classifyActivityLink("https://mac.example.test/api/magician/v3/tasks/\(taskId)/outputs/a.png", origin: origin),
+            .taskOutput(taskId: taskId, relativePath: "a.png")
+        )
+        XCTAssertEqual(classifyActivityLink("https://mac.example.test/t/general", origin: origin), .thread("general"))
+        // External links stay external.
+        XCTAssertEqual(classifyActivityLink("https://example.com/a.pdf", origin: origin), .external("https://example.com/a.pdf"))
+        XCTAssertEqual(classifyActivityLink("mailto:owner@example.com"), .external("mailto:owner@example.com"))
+        XCTAssertEqual(classifyActivityLink("tel:+15551234"), .external("tel:+15551234"))
+        // Unknown schemes and protocol-relative escapes are never opened.
+        for raw in ["javascript:alert(1)", "//evil.test/a.md", "data:text/html,hi", "", "just words"] {
+            XCTAssertEqual(classifyActivityLink(raw), .unknown, raw)
+        }
+    }
+
+    /// A thread's slug follows its name; links resolve to its fixed id.
+    func testThreadRouteKeyIsSwappedForTheCanonicalId() {
+        let taskId = "task_0123456789abcdef0123456789abcdef"
+        XCTAssertEqual(chatThreadRouteKey("/t/launch%20plan/chat?session=s1"), "launch plan")
+        XCTAssertNil(chatThreadRouteKey("/work?selected=\(taskId)"))
+        XCTAssertEqual(chatRoute("/t/launch-plan/tasks/\(taskId)", withThreadId: "thr_1"), "/t/thr_1/tasks/\(taskId)")
+        XCTAssertEqual(chatRoute("/t/launch-plan?selected=\(taskId)", withThreadId: "thr_1"), "/t/thr_1?selected=\(taskId)")
+        XCTAssertEqual(chatRoute("/t/launch-plan", withThreadId: "thr_1"), "/t/thr_1")
+    }
+
+    func testThreadDirectoryResolvesSlugsAndLabelsByName() {
+        let directory = ThreadDirectory()
+        directory.remember([UiThreadRecord(
+            principal: "", workspace: "", id: "thr_1", name: "Launch plan", archived: false,
+            sortOrder: 0, memorySummary: nil, memoryUpdatedAt: nil, slug: "launch-plan", createdAt: 0, updatedAt: 0
+        )], origin: "https://one.test")
+        XCTAssertEqual(directory.canonicalId("thr_1"), "thr_1")
+        XCTAssertEqual(directory.canonicalId("launch-plan"), "thr_1")
+        XCTAssertNil(directory.canonicalId("old-name"))
+        XCTAssertEqual(directory.label("thr_1"), "#Launch plan")
+        XCTAssertEqual(directory.label("unknown"), "#unknown")
+        XCTAssertEqual(directory.label(nil), "#general")
+        XCTAssertEqual(ThreadDirectory.threadObject(Data(#"{"thread":{"id":"thr_3","name":"B"}}"#.utf8))?["id"] as? String, "thr_3")
+        XCTAssertEqual(ThreadDirectory.threadObject(Data(#"{"id":"thr_2","name":"A"}"#.utf8))?["id"] as? String, "thr_2")
+        XCTAssertNil(ThreadDirectory.threadObject(Data(#"{"error":"no"}"#.utf8)))
+        directory.use(origin: "https://two.test")
+        XCTAssertNil(directory.canonicalId("launch-plan"))
+    }
+
+    func testChatPathLinkifierLinksMentionedPathsButLeavesCodeAndLinksAlone() {
+        XCTAssertEqual(
+            ChatPathLinkifier.markdown("Saved to /Volumes/SSD/out/report.pdf."),
+            "Saved to [/Volumes/SSD/out/report.pdf](/Volumes/SSD/out/report.pdf)."
+        )
+        XCTAssertEqual(
+            ChatPathLinkifier.markdown("See `file:///tmp/My Report.pdf`"),
+            "See [`file:///tmp/My Report.pdf`](file:///tmp/My%20Report.pdf)"
+        )
+        XCTAssertEqual(ChatPathLinkifier.markdown("Run `/usr/bin/env` now"), "Run `/usr/bin/env` now")
+        let untouched = [
+            "[report](/tmp/a/report.pdf)",
+            "<https://example.com/a/b.pdf>",
+            "https://example.com/a/b.pdf",
+            "and/or/x.md",
+            "```\n/tmp/a/b.png\n```",
+        ]
+        for text in untouched { XCTAssertEqual(ChatPathLinkifier.markdown(text), text, text) }
+    }
+
     func testCompletedTaskStatusKeepsConcreteExecutionForInspection() {
         let seed = TaskDetailSeed(TaskStatusModel(
             taskId: "task_0123456789abcdef0123456789abcdef",
@@ -1060,6 +1179,28 @@ final class ChatTurnActivityTests: XCTestCase {
         var unstamped = running
         unstamped.startedAtMs = nil
         XCTAssertFalse(ActivityLiveClock.ticks(unstamped, isLive: true))
+    }
+
+    func testCardTimesAreTheFirstStartAndTheLatestStartOrEnd() {
+        let start = 1_700_000_000_000.0
+        func row(_ key: String, startedAt: Double?, durationMs: Double?) -> ActivityRow {
+            ActivityRow(key: key, kind: .tool, label: key, detail: nil, status: durationMs == nil ? .running : .done,
+                        tone: .info, durationMs: durationMs, startedAtMs: startedAt)
+        }
+        let rows = [
+            row("a", startedAt: start + 1_000, durationMs: 20_000),  // ends at +21 s
+            row("b", startedAt: start, durationMs: 500),
+            row("c", startedAt: start + 15_000, durationMs: nil),    // still running
+            row("d", startedAt: nil, durationMs: 90_000)             // unstamped: not counted
+        ]
+        let times = ActivityLiveClock.cardTimes(rows)
+        XCTAssertEqual(times.started, Date(timeIntervalSince1970: start / 1_000))
+        XCTAssertEqual(times.updated, Date(timeIntervalSince1970: (start + 21_000) / 1_000))
+
+        let none = ActivityLiveClock.cardTimes([row("x", startedAt: nil, durationMs: nil)])
+        XCTAssertNil(none.started)
+        XCTAssertNil(none.updated)
+        XCTAssertNil(ActivityLiveClock.cardTimes([]).started)
     }
 
     func testTintSlotMatchesWebFnv1a() {

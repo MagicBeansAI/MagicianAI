@@ -152,8 +152,10 @@ bounds.
 
 [metabase-mcp](../../../skillshub/metabase-mcp/) connects directly to the
 instance's official MCP endpoint using scoped browser OAuth. Configure
-`METABASE_BASE_URL` in the workspace skill environment; setup renders the
-endpoint. Reads and structured queries run directly; raw SQL, content edits
+`METABASE_BASE_URL` in the workspace skill environment (Skills page,
+Environment); the shared manifest's `${METABASE_BASE_URL}` endpoint and OAuth
+issuer resolve from it at load, and a workspace without it is not offered the
+skill. Reads and structured queries run directly; raw SQL, content edits
 and deliveries require approval. `simple-data-analyst` uses this tool.
 `make -C skillshub migrate-metabase-mcp` retires the generated CLI in every
 existing workspace, reusing only its own origin and preserving private state.

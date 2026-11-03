@@ -70,6 +70,10 @@ guide: |-
     finishes or at their deadline, so wait for or cancel them before completing
     the task. Save checkpoints and output logs in the task workdir. After an
     interrupted job, retry explicitly from accepted outputs; never assume success.
+  - Inside a task, package installs (pip, npm, brew), large downloads and
+    builds run as background jobs (`background=true`, then `action=status`);
+    in chat, run them in the foreground with a generous `timeout_secs`. Do not
+    guess a short `timeout_secs` for them.
   - Do not use `nohup`, `&`, or double-forking to detach workers from the runtime.
   - Keep commands explicit; avoid destructive ops (`rm -rf`, `git reset`,
     `DROP TABLE`) unless the task clearly demands it.

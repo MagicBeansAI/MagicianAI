@@ -76,7 +76,14 @@ it in full (**Compaction deferred**); otherwise it answers from the part already
 summarized plus an unpublished "omitted" note. The next turn retries. A summary
 over `summary_max_bytes` is cut at a character boundary rather than discarded.
 The model catalog supplies limits; output capacity and a safety margin are
-reserved. Final admission also counts rendered images, injected files and tools.
+reserved. Final admission also counts rendered images, injected files and tools;
+an image counts at the flat per-image rate (`magicllm::estimate_messages_input_tokens`),
+not its encoded bytes. The request copy of a prompt image longer than 1,568 px
+or over the per-image byte limit is scaled to a 1,568 px long side
+(`chat/prompt_image.rs`; the stored file is unchanged), and one that cannot be
+fitted is replaced by a note naming the file. One request attaches at most 12 MiB
+of images and 50 images: the current turn's first, then the newest earlier ones;
+older images become a note.
 
 The canonical transcript and visible timeline remain complete. A scoped,
 versioned `llm_history/context_checkpoint.json` stores an incremental handoff and

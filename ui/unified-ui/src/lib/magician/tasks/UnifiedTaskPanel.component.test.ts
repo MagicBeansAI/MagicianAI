@@ -2750,6 +2750,100 @@ describe('UnifiedTaskPanel — the Run act timeline', () => {
 		expect(kinds).not.toContain('step');
 	});
 
+	it('says why a tool failed, clamped to two lines with a disclosure when it overflows', async () => {
+		const reason = 'Command timed out after 120 seconds';
+		const failed: TimelineEntry = {
+			...TIMELINE[0],
+			id: 'tl-tool-failed',
+			kind: 'tool',
+			status: 'failed',
+			title: 'bash failed',
+			body: reason
+		};
+		// jsdom lays nothing out, so the clamp's overflow is stated: the reason is
+		// taller than its two clamped lines. Every other element keeps jsdom's 0.
+		const isReason = (node: HTMLElement) => node.classList.contains('timeline-row__reason');
+		const scrollHeight = vi
+			.spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+			.mockImplementation(function (this: HTMLElement) {
+				return isReason(this) ? 60 : 0;
+			});
+		const clientHeight = vi
+			.spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+			.mockImplementation(function (this: HTMLElement) {
+				return isReason(this) ? 30 : 0;
+			});
+		try {
+			const { container } = renderPanel({ task: withTimeline([failed], { status: 'finished' }) });
+			await openRun();
+
+			const row = rows(container)[0];
+			expect(row.dataset.timelineTone).toBe('failed');
+			const text = row.querySelector<HTMLElement>('.timeline-row__reason');
+			// Plain text, not a rendered report: an error is not markdown.
+			expect(text?.tagName).toBe('P');
+			expect(text?.textContent).toBe(reason);
+			expect(text?.dataset.clamped).toBe('true');
+
+			// The house control, named for what it discloses and pointing at it.
+			const toggle = within(row).getByRole('button', { name: 'Show more of the error' });
+			expect(toggle).toHaveClass('native-button');
+			expect(toggle).toHaveTextContent('Show more');
+			expect(toggle).toHaveAttribute('aria-expanded', 'false');
+			expect(text?.id).toBeTruthy();
+			expect(toggle).toHaveAttribute('aria-controls', text?.id);
+			await fireEvent.click(toggle);
+			expect(toggle).toHaveAttribute('aria-expanded', 'true');
+			expect(toggle).toHaveAccessibleName('Show less of the error');
+			expect(toggle).toHaveTextContent('Show less');
+			expect(text?.dataset.clamped).toBeUndefined();
+			await fireEvent.click(toggle);
+			expect(toggle).toHaveAccessibleName('Show more of the error');
+			expect(text?.dataset.clamped).toBe('true');
+		} finally {
+			scrollHeight.mockRestore();
+			clientHeight.mockRestore();
+		}
+	});
+
+	it('offers no disclosure for a failure reason that fits its two lines', async () => {
+		const failed: TimelineEntry = {
+			...TIMELINE[0],
+			id: 'tl-tool-failed-short',
+			kind: 'tool',
+			status: 'failed',
+			title: 'bash failed',
+			body: 'exit 1'
+		};
+		const { container } = renderPanel({ task: withTimeline([failed], { status: 'finished' }) });
+		await openRun();
+
+		const row = rows(container)[0];
+		expect(row.querySelector('.timeline-row__reason')?.textContent).toBe('exit 1');
+		expect(row.querySelector('.timeline-row__reason-toggle')).toBeNull();
+	});
+
+	it('keeps the report rendering for a failed row that is not a tool call', async () => {
+		const failed: TimelineEntry = {
+			...TIMELINE[0],
+			id: 'tl-llm-failed',
+			kind: 'llm',
+			status: 'failed',
+			title: 'Thinking with claude-opus-4',
+			body: 'Execute: **pack:tool_search**'
+		};
+		const { container } = renderPanel({ task: withTimeline([failed], { status: 'finished' }) });
+		await openRun();
+
+		const row = rows(container)[0];
+		expect(row.dataset.timelineTone).toBe('failed');
+		// No clamp and no disclosure: only a tool's error is plain text.
+		expect(row.querySelector('.timeline-row__reason')).toBeNull();
+		expect(row.querySelector('.timeline-row__reason-toggle')).toBeNull();
+		expect(row.querySelector('.timeline-row__body .task-report')).not.toBeNull();
+		expect(row.querySelector('.timeline-row__body')?.textContent).toContain('pack:tool_search');
+	});
+
 	it('gives every recorded status a mark, and an unrecorded one none', async () => {
 		const { container } = renderPanel({ task: withTimeline(TIMELINE, { status: 'finished' }) });
 		await openRun();

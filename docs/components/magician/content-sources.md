@@ -151,7 +151,12 @@ scratch file (never the URL, stdin bytes or the query).
   fix), and since the manifest is deny-unknown, a new output pointer must not
   reach `SKILL.md` before a binary that knows it.
 - The scratch path is a product-brokered `workspace_path` authority that agents
-  cannot forge; other typed paths stay under the scope's `workdirs/`.
+  cannot forge; other typed paths stay under the scope's `workdirs/`. A reader
+  skill must declare its `input_file_argument` as `type: workspace_path` with
+  `access: read_file`, or the reader is refused when it loads (the runtime binds
+  a brokered path to no other type).
+- The extractor runs in the call's own per-call lease (no task work root), not
+  the scope root, so goal-workspace evidence of other tasks never blocks it.
 - A governed extractor's bounded stderr failure envelope survives as a typed
   code and message.
 

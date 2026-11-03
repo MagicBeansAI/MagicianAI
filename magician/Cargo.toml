@@ -1,6 +1,6 @@
 [package]
 name = "magician"
-version = "0.7.148"
+version = "0.7.151"
 edition = "2021"
 authors = ["MagicBeansAI"]
 description = "Magician service"
@@ -95,7 +95,7 @@ feed-rs = { version = "2.4.0", features = ["sanitize"] }
 # In-memory ZIP bundling for the task Portable Export endpoint. Already in the
 # build graph transitively (Cargo.lock), so this direct dep adds no new C deps.
 # Sync API — driven inside spawn_blocking. `deflate` only (no bzip2/zstd/aes).
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # Logging
 tracing = { workspace = true }

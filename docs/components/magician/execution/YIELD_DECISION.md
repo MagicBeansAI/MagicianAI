@@ -40,6 +40,29 @@ Required `summary: String`. Lists: `completed`, `open`, `blockers`
 `keep_browser_cdp_connection_alive` (alias `keep_browser_session_alive`) and
 `keep_browser_window_open`.
 
+`deliverables: [{ path, title? }]` (a bare path string is also accepted;
+`null`, a non-list and items without a usable `path` are dropped with a
+warning, never failing the yield) declares the files that ARE the
+deliverable, primary first. `path` is
+absolute or relative to the task workdir; `outputs/<name>` (or `<name>`)
+names an `artifacts` item of the same yield. After the yield's artifacts are
+materialized, `execution::agentic::yield_deliverables` resolves each path,
+refuses anything that is not a regular file (symlinks included), is empty,
+exceeds `MAX_DELIVERED_FILE_BYTES` (50 MiB) or canonicalizes outside the task
+workdir / execution outputs / task outputs, copies the rest once into the
+execution outputs, and indexes each as a `tool_output_file` record with
+`declared_deliverable: true`, `deliverable_rank`, `deliverable_title`,
+`deliverable_yield_id`. Two files of one yield that share a name publish as
+`name.ext` and `name (2).ext`. A nested sub-goal segment
+(`is_nested_same_execution_segment`) records none. The terminal collector
+promotes declared files of any type (media included, as `user_attachment`;
+`user_media` skips them) without requiring the summary to name them, newest
+yield first by index position, then rank; the first one promoted is the
+task's primary deliverable. A declared file
+counts as durable output for the success gates, so a yield that delivers by
+path need not paste the text into `artifacts`; its summary names the file
+instead of repeating its contents.
+
 `YieldBlockerKind`: `Auth`, `DataMissing`, `Permission`, `Transient`,
 `External`, `Other`. Only `Transient` is `is_transient()`.
 
@@ -51,7 +74,7 @@ Required `summary: String`. Lists: `completed`, `open`, `blockers`
    blockers as caveats rather than discarding completed work.
 2. Non-empty `blockers`, all transient → `RetryTransient`.
 3. Non-empty `blockers`, any non-transient → `Failed`.
-4. `open` empty AND (`artifacts` or `completed`) non-empty → `Completed`.
+4. `open` empty AND (`artifacts`, `deliverables` or `completed`) non-empty → `Completed`.
 5. Everything empty → `Failed { reason: "yield with no progress, no blockers, no artifacts" }`.
 6. `open` non-empty, `completed` empty, no blockers → `PartialSuccess` (the
    evidence gate can still reject a hollow success).
@@ -134,7 +157,9 @@ Two things loosen it where repeating is reasonable:
   `MAX_IDENTICAL_TRANSIENT_ATTEMPTS` (3) times. The rejection after that says
   it looks like an outage and asks for a different source or a `blockers`
   entry. An unrecognised failure counts as deterministic, so one identical
-  retry is still refused.
+  retry is still refused. The shell tool's own timeout (`Command timed out
+  after N seconds`) is not transient: an identical repeat is refused, while a
+  larger `timeout_secs` or `background=true` is a different call.
 - **A later success in the same pack.** For `pack__action` capabilities, a
   success in the same pack after the failure (a completed `auth_start`, a
   `status` that now finds the login) clears the earlier failures. Bare

@@ -1,6 +1,6 @@
 ---
 name: github-search
-version: 0.4.0
+version: 0.4.1
 description: |
   Search GitHub for recent issues/PRs and repositories matching a
   query. Uses GitHub's REST search-issues + search-repositories APIs.
@@ -76,7 +76,7 @@ metadata:
     skill_type: tool
     user_invocable: true
     requires:
-      bins: ["github-search"]
+      bins: ["github-search", "python3"]
       env: ["GITHUB_TOKEN"]
     install_hint:
       docs: |
@@ -99,7 +99,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [github-search]
+        bins: [github-search, python3]
+        entrypoint: github-search
       runtime:
         protocol: cli
         command_prefix: []

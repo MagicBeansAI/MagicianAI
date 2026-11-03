@@ -25,6 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::PlaneConfig;
 use crate::magician_v2::agents::approval::{ApprovalGate, ApprovalResult, ExecutionPlan};
 use crate::magician_v2::agents::InvocationSurface;
+use crate::magician_v2::artifact_v2::events::bounded_tool_failure_error;
 use crate::magician_v2::execution::actions::{ActionResult, ExecutableAction};
 use crate::magician_v2::execution::agentic::native_lowering::lower_native_tool_call;
 use crate::magician_v2::execution::agentic::native_types::{
@@ -50,7 +51,9 @@ use crate::magician_v2::execution::runtime_boundary::spawn_execution_job;
 use crate::magician_v2::execution::verified_executor::types::ActionCandidate;
 use crate::magician_v2::query_analysis::parent_engine::with_parent_engine;
 use crate::magician_v2::realtime_events::RuntimeTransportBroadcaster;
-use crate::magician_v2::secrets::sanitize_json_for_provider;
+use crate::magician_v2::secrets::{
+    known_value_replacements, sanitize_json_for_provider, KnownSecretValues,
+};
 use crate::magician_v2::RuntimeTransportEvent;
 
 /// MCP `tools/call` for one grant.
@@ -120,18 +123,16 @@ fn plane_run_trust(grant: &PlaneGrant) -> Option<crate::magician_v2::god_mode::R
 }
 
 /// The god-mode session a harness turn's calls ask in: the chat session for
-/// a conversation grant, the run for a run grant. None for terminal grants,
-/// for agents below `local` trust, and for VibeDev coding runs: god mode is
-/// for chat, agent runs and background ops, never VibeDev, whose engines
-/// stay boxed (super god mode's per-launch card is the only way past that).
+/// a conversation grant, the run for a run grant. None for terminal grants
+/// and for agents below `local` trust. A coding run's harness turn gets one
+/// like any run, so a chat's god mode reaches the coding work it starts; the
+/// VibeDev engines themselves stay boxed (super god mode's per-launch card is
+/// the only way past that).
 pub(crate) fn plane_god_session(
     grant: &PlaneGrant,
 ) -> Option<crate::magician_v2::god_mode::GodSession> {
     use crate::magician_v2::god_mode::{trust_allows, GodSession};
     if !grant.live_harness_turn || !trust_allows(grant.ctx.trust_level.as_deref()) {
-        return None;
-    }
-    if crate::magician_v2::execution::agentic::types::is_vibedev_coding_context(&grant.ctx) {
         return None;
     }
     let (principal, workspace) = (
@@ -669,10 +670,8 @@ async fn governed_execute_tail(
         let action_type = action.action_type_name().to_string();
         let target = action_signature(&action);
         let latency_ms = dispatch_started.elapsed().as_millis() as u64;
-        let (success, error) = match &result {
-            Ok(action_result) => (action_result.is_success(), None),
-            Err(err) => (false, Some(format!("{err:#}"))),
-        };
+        let success = result.as_ref().is_ok_and(ActionResult::is_success);
+        let error = action_event_error(&executors.delivered_secret_values, &result);
         executors.emit_event(RuntimeTransportEvent::AgenticActionExecuted {
             execution_id,
             principal: ctx.principal.clone(),
@@ -1569,6 +1568,38 @@ pub fn action_result_text(result: &ActionResult) -> String {
     }
 }
 
+/// The failure text a plane call's `AgenticActionExecuted` carries, as the
+/// native loop's `journal_failed_action` journals it: an executed failure's
+/// own result text, or the dispatch error with its causes. Scrubbed with the
+/// run's delivered set before the cut, so a cut never leaves the head of a
+/// secret behind, then bounded as every `tool.failed` row is. `None` on
+/// success.
+fn action_event_error(
+    delivered: &std::sync::Mutex<KnownSecretValues>,
+    result: &anyhow::Result<ActionResult>,
+) -> Option<String> {
+    let text = match result {
+        Ok(action_result) if action_result.is_success() => return None,
+        Ok(action_result) => action_result_text(action_result),
+        Err(err) => format!("{err:#}"),
+    };
+    Some(bounded_tool_failure_error(&scrub_with_delivered(
+        delivered, text,
+    )))
+}
+
+/// Replace every value this run has delivered with `[REDACTED]` in `text` —
+/// the native loop's scrub for a failure text (a login script that echoes the
+/// password it was fed), which lives private to the loop's executor.
+fn scrub_with_delivered(delivered: &std::sync::Mutex<KnownSecretValues>, text: String) -> String {
+    let Ok(delivered) = delivered.lock() else {
+        return text;
+    };
+    known_value_replacements(&delivered)
+        .iter()
+        .fold(text, |acc, value| acc.replace(value, "[REDACTED]"))
+}
+
 fn mcp_result(is_error: bool, text: impl Into<String>) -> Value {
     json!({
         "isError": is_error,
@@ -1744,11 +1775,11 @@ mod tests {
         );
     }
 
-    /// God mode is never a VibeDev run's: a coding harness turn (the
-    /// engineer, or a coordinator dispatched a Build) gets no god session,
-    /// in a chat or out of one, while a general agent's turn still does.
+    /// God mode reaches a coding harness turn (the engineer, or a
+    /// coordinator dispatched a Build) as it does a general agent's, in a
+    /// chat or out of one.
     #[test]
-    fn a_vibedev_coding_turn_has_no_god_session() {
+    fn a_vibedev_coding_turn_has_a_god_session() {
         let _on = crate::magician_v2::god_mode::test_scope(true);
         let mut general = PlaneGrant::for_test("exec-god-general");
         general.live_harness_turn = true;
@@ -1773,12 +1804,9 @@ mod tests {
         let mut coordinator = general.clone();
         coordinator.ctx.coding_coordinator_run = true;
         for grant in [&mut engineer, &mut coordinator] {
-            assert!(plane_god_session(grant).is_none());
+            assert!(plane_god_session(grant).is_some());
             grant.ctx.chat_session_id = Some("chat-vibedev".to_string());
-            assert!(
-                plane_god_session(grant).is_none(),
-                "not through the chat either"
-            );
+            assert!(plane_god_session(grant).is_some(), "through the chat");
         }
     }
 
@@ -2642,6 +2670,84 @@ mod tests {
             "h",
             "a cut inside a character backs up to its start"
         );
+    }
+
+    fn delivered(pairs: &[(&str, &str)]) -> std::sync::Mutex<KnownSecretValues> {
+        std::sync::Mutex::new(
+            pairs
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        )
+    }
+
+    /// A call that ran and failed names its reason on the action event —
+    /// the result's own text, as the native loop journals it — instead of a
+    /// bare failure; a call that succeeded carries none.
+    #[test]
+    fn an_executed_failure_carries_its_result_text_as_the_action_event_error() {
+        let none = delivered(&[]);
+        assert_eq!(
+            action_event_error(&none, &Ok(ActionResult::http(502, "upstream refused"))),
+            Some("upstream refused".to_string())
+        );
+        assert_eq!(
+            action_event_error(&none, &Ok(ActionResult::http(404, ""))),
+            Some("http 404".to_string())
+        );
+        assert_eq!(
+            action_event_error(&none, &Ok(ActionResult::http(200, "fine"))),
+            None
+        );
+        assert_eq!(action_event_error(&none, &Ok(ActionResult::Success)), None);
+        assert_eq!(
+            action_event_error(
+                &none,
+                &Err(anyhow::anyhow!("no such file").context("read_file failed"))
+            ),
+            Some("read_file failed: no such file".to_string()),
+            "a dispatch error keeps its causes"
+        );
+    }
+
+    /// A failure that dumps a whole log is cut to the action-event bound,
+    /// marked so a reader can see it was cut.
+    #[test]
+    fn a_long_dispatch_error_is_cut_to_the_action_event_bound() {
+        let error = action_event_error(
+            &delivered(&[]),
+            &Err(anyhow::anyhow!("{}", "é".repeat(5_000))),
+        )
+        .expect("a failure names its reason");
+        assert_eq!(error.chars().count(), 2_000);
+        assert!(error.ends_with('…'), "a cut is marked");
+    }
+
+    /// A value the run delivered never rides the action event, from either
+    /// arm — and it is scrubbed before the cut, so a secret straddling the
+    /// bound leaves no head behind.
+    #[test]
+    fn a_delivered_secret_is_redacted_from_the_action_event_error() {
+        let secrets = delivered(&[("password", "hunter2-secret")]);
+        assert_eq!(
+            action_event_error(
+                &secrets,
+                &Err(anyhow::anyhow!("login echoed hunter2-secret and failed"))
+            ),
+            Some("login echoed [REDACTED] and failed".to_string())
+        );
+        assert_eq!(
+            action_event_error(
+                &secrets,
+                &Ok(ActionResult::http(401, "token hunter2-secret rejected"))
+            ),
+            Some("token [REDACTED] rejected".to_string())
+        );
+        let straddling = format!("{}hunter2-secret", "x".repeat(1_995));
+        let error = action_event_error(&secrets, &Err(anyhow::anyhow!("{straddling}")))
+            .expect("a failure names its reason");
+        assert_eq!(error.chars().count(), 2_000);
+        assert!(!error.contains("hunt"), "{error}");
     }
 
     /// An error's content is the status object the chat's tool events

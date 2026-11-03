@@ -1989,7 +1989,8 @@ test-skill-runtime: test-component-runtime test-setup-runtime
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_shared_skill_bins.py'
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_whatsapp_bins.py'
 	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_scope_bin_store.py'
-	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_skill_render.py'
+	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_scope_env.py'
+	@python3 -m unittest discover -s skillshub/scripts/tests -p 'test_officecli_pdf_exporter.py'
 	@WU_TEST_PACKAGE_ROOT="$(CURDIR)/skillshub/node_modules/@ibrahimwithi/wu-cli" skillshub/.node/bin/node --test skillshub/whatsapp/tests/native-mcp.test.mjs
 	@python3 -m unittest discover -s skillshub/media-fetch/tests -p 'test_*.py'
 

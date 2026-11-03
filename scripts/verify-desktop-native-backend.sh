@@ -114,10 +114,15 @@ target="$(manifest_value target)"
 if [[ "$target" == *-windows-* ]]; then
   installer=install.ps1
   binaries=(magician.exe magicutor.exe magic-supervisor.exe)
+  ripgrep=rg.exe
 else
   installer=install.sh
   binaries=(magician.bin magicutor.bin magic-supervisor.bin)
+  ripgrep=rg.bin
 fi
+# The pinned ripgrep the grep and glob tools run. Fixture packages carry no
+# real binaries, so only they may leave it out.
+[[ "$(manifest_value version)" == fixture ]] || binaries+=("$ripgrep")
 
 for required in \
   MANIFEST.yaml SHA256SUMS "$installer" tool-runtime-config.yaml \

@@ -5,7 +5,7 @@
 //!
 //! Frontend → backend
 //! ```text
-//! session.start          { ui_thread_id, thread_id?, chat_session_id? }
+//! session.start          { ui_thread_id, thread_id?, chat_session_id?, new_chat? }
 //! ptt.engage             { }
 //! ptt.release            { }
 //! user.text              { text }
@@ -87,7 +87,9 @@ use magician::magician_v2::execution::runtime_boundary::spawn_execution_job;
 use magician::magician_v2::prompts::{constants as prompt_constants, PromptManager};
 use magician::magician_v2::query_analysis::operation_llm_router::OperationLlmRouter;
 use magician::magician_v2::realtime_events::RuntimeTransportBroadcaster;
-use magician_media::media_rails::voice_orchestrator::provider_supports_turn_context_gate;
+use magician_media::media_rails::voice_orchestrator::{
+    provider_supports_turn_context_gate, CallChat,
+};
 use magician_media::media_rails::{
     start_local_realtime_transcript, voice_downstream_fanout::VoiceDownstreamMessage,
     voice_tool_dispatcher::DEFAULT_VOICE_THREAD, AudioSurface, CascadedHandsFreeProvider,
@@ -2636,6 +2638,10 @@ impl VoiceControlSession {
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(str::to_owned);
+        // A call summoned with no chat behind it (the desktop Orb) asks for
+        // a chat of its own rather than joining the thread's open one.
+        let new_chat = body.get("new_chat").and_then(Value::as_bool).unwrap_or(false);
+        let call_chat = CallChat::from_start(chat_session_id, new_chat);
         let realtime_profile_name = body
             .get("realtime_profile")
             .or_else(|| body.get("profile"))
@@ -2709,7 +2715,7 @@ impl VoiceControlSession {
                     source_surface,
                     ui_thread_id,
                     thread_id,
-                    chat_session_id,
+                    call_chat,
                     realtime_profile_name,
                     hands_free,
                     concurrent_requests,

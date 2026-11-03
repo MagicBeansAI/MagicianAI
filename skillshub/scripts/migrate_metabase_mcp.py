@@ -15,7 +15,7 @@ import time
 import yaml
 
 import install_skill_layer
-import skill_render
+import scope_env
 import uninstall_skill_layer
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,18 +68,18 @@ def _migrate_scope(scope: Path, source: Path) -> str:
         not path.resolve().is_relative_to(skills.resolve()) for path in guarded
     ):
         raise ValueError(f"{scope.name}: package or state leaves its workspace; left intact")
-    values = skill_render.read_scope_env(current)
+    values = scope_env.read_scope_env(current)
     if not values.get("METABASE_BASE_URL"):
-        old = "" if legacy.is_symlink() else skill_render.read_scope_env(legacy).get("METABASE_BASE_URL", "")
+        old = "" if legacy.is_symlink() else scope_env.read_scope_env(legacy).get("METABASE_BASE_URL", "")
         if old:
-            origin = skill_render.validate("https_origin", old)
+            origin = scope_env.https_origin(old)
             if origin is None:
                 raise ValueError(f"{scope.name}: invalid legacy origin; left intact")
             config = current / "config"
             config.mkdir(parents=True, exist_ok=True)
             env = config / ".env"
             previous = env.read_text() if env.is_file() else ""
-            skill_render._write_atomic(env, previous.rstrip() + f"\nMETABASE_BASE_URL={origin}\n", 0o600)
+            scope_env.write_atomic(env, previous.rstrip() + f"\nMETABASE_BASE_URL={origin}\n", 0o600)
     install_skill_layer.install_skill(source / "metabase-mcp", current)
     # Rename first: the catalog can no longer execute the old package. Keep
     # config, auth and any unknown user files; remove only known package code.

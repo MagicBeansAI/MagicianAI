@@ -18,6 +18,7 @@ use fs2::FileExt;
 
 use crate::magician_v2::{artifact_v2::workspace::ArtifactV2Workspace, history::HistoryLane};
 
+use super::service::{is_reserved_thread_key, slugify_legacy_thread_id, RESERVED_THREAD_KEYS};
 use super::types::{UiThreadPage, UiThreadRecord, UiThreadSearchCandidate, UiThreadUpdate};
 
 const BOOTSTRAP_DDL: &str = r#"
@@ -36,7 +37,16 @@ CREATE TABLE IF NOT EXISTS ui_threads (
     plan_mode BOOLEAN NOT NULL DEFAULT FALSE,
     history_lane TEXT NOT NULL DEFAULT 'personal',
     deleted_at BIGINT NULL,
+    slug TEXT NULL,
     PRIMARY KEY (principal, workspace, id)
+);
+CREATE TABLE IF NOT EXISTS ui_thread_slug_aliases (
+    principal TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (principal, workspace, slug)
 );
 CREATE INDEX IF NOT EXISTS idx_ui_threads_scope_order
     ON ui_threads (principal, workspace, deleted_at, archived, sort_order ASC, updated_at DESC, id ASC);
@@ -53,6 +63,15 @@ ALTER TABLE ui_threads ADD COLUMN IF NOT EXISTS display_mode TEXT;
 ALTER TABLE ui_threads ADD COLUMN IF NOT EXISTS plan_mode BOOLEAN;
 ALTER TABLE ui_threads ADD COLUMN IF NOT EXISTS history_lane TEXT;
 ALTER TABLE ui_threads ADD COLUMN IF NOT EXISTS deleted_at BIGINT;
+ALTER TABLE ui_threads ADD COLUMN IF NOT EXISTS slug TEXT;
+CREATE TABLE IF NOT EXISTS ui_thread_slug_aliases (
+    principal TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    created_at BIGINT NOT NULL,
+    PRIMARY KEY (principal, workspace, slug)
+);
 UPDATE ui_threads SET display_mode = 'chat' WHERE display_mode IS NULL;
 UPDATE ui_threads SET plan_mode = FALSE WHERE plan_mode IS NULL;
 UPDATE ui_threads
@@ -64,6 +83,13 @@ WHERE history_lane IS NULL OR history_lane NOT IN ('personal', 'automated');
 CREATE INDEX IF NOT EXISTS idx_ui_threads_scope_history
     ON ui_threads (principal, workspace, deleted_at, history_lane, updated_at DESC, id ASC);
 "#;
+
+/// The columns `map_row` reads, in its order.
+const RECORD_COLUMNS: &str = "principal, workspace, id, name, archived, sort_order, memory_summary, \
+     memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane, slug";
+
+/// Longest slug a name produces before any `-N` collision suffix.
+const MAX_SLUG_BASE_LEN: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct UiThreadStore {
@@ -293,18 +319,34 @@ impl UiThreadStore {
         self.spawn_ui_thread_blocking(principal.clone(), workspace.clone(), "get_thread", move || {
             let inner = store.scope_inner(&principal, &workspace)?;
             let conn = inner.read_connection()?;
-            let mut stmt = conn.prepare(
-                "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                        memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
-                 FROM ui_threads
-                 WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL",
-            )?;
-            let mut rows = stmt.query(params![principal, workspace, id])?;
-            if let Some(row) = rows.next()? {
-                Ok(Some(map_row(row)?))
-            } else {
-                Ok(None)
-            }
+            query_record(
+                &conn,
+                &format!(
+                    "SELECT {RECORD_COLUMNS} FROM ui_threads
+                     WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL"
+                ),
+                params![principal, workspace, id],
+            )
+        })
+        .await
+    }
+
+    /// The live thread a client key names: its id, else its current slug, else
+    /// a slug it had before a rename. A tombstoned thread resolves to nothing.
+    pub async fn resolve_thread_key(
+        &self,
+        principal: &str,
+        workspace: &str,
+        key: &str,
+    ) -> Result<Option<UiThreadRecord>> {
+        let store = self.clone();
+        let principal = principal.to_string();
+        let workspace = workspace.to_string();
+        let key = key.to_string();
+        self.spawn_ui_thread_blocking(principal.clone(), workspace.clone(), "resolve_key", move || {
+            let inner = store.scope_inner(&principal, &workspace)?;
+            let conn = inner.read_connection()?;
+            resolve_key_on(&conn, &principal, &workspace, &key)
         })
         .await
     }
@@ -320,17 +362,16 @@ impl UiThreadStore {
         self.spawn_ui_thread_blocking(principal.clone(), workspace.clone(), "list_threads", move || {
             let inner = store.scope_inner(&principal, &workspace)?;
             let conn = inner.read_connection()?;
-            let mut stmt = conn.prepare(
-                "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                        memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {RECORD_COLUMNS}
                  FROM ui_threads
                  WHERE principal = ? AND workspace = ? AND deleted_at IS NULL
                  ORDER BY CASE WHEN id = 'general' THEN 0 ELSE 1 END,
                           archived ASC,
                           sort_order ASC,
                           updated_at DESC,
-                          id ASC",
-            )?;
+                          id ASC"
+            ))?;
             let mut rows = stmt.query(params![principal, workspace])?;
             let mut records = Vec::new();
             while let Some(row) = rows.next()? {
@@ -383,9 +424,8 @@ impl UiThreadStore {
                 ],
                 |row| row.get::<_, i64>(0),
             )? as usize;
-            let mut stmt = conn.prepare(
-                "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                        memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {RECORD_COLUMNS}
                  FROM ui_threads
                  WHERE principal = ? AND workspace = ? AND deleted_at IS NULL
                    AND id NOT IN ('agent-personal-assistant', 'system-meta-agent')
@@ -397,8 +437,8 @@ impl UiThreadStore {
                           sort_order ASC,
                           updated_at DESC,
                           id ASC
-                 LIMIT ? OFFSET ?",
-            )?;
+                 LIMIT ? OFFSET ?"
+            ))?;
             let lane_filter = lane.clone();
             let mut rows = stmt.query(params![
                 principal,
@@ -496,100 +536,57 @@ impl UiThreadStore {
         let history_lane = history_lane.as_str().to_string();
         self.spawn_ui_thread_blocking(principal.clone(), workspace.clone(), "upsert", move || {
             let inner = store.scope_inner(&principal, &workspace)?;
-            let now = Utc::now().timestamp_millis();
             let _write_guard = inner.acquire_write_guard()?;
             let conn = inner
                 .write_conn
                 .lock()
                 .expect("ui thread write connection mutex poisoned");
-
-            let existing: Option<(i64, i64, Option<i64>)> = {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT sort_order, created_at, deleted_at
-                         FROM ui_threads
-                         WHERE principal = ? AND workspace = ? AND id = ?",
-                    )
-                    .context("preparing ui thread existence query")?;
-                let mut rows = stmt
-                    .query(params![principal.clone(), workspace.clone(), id.clone()])
-                    .context("querying existing ui thread")?;
-                if let Some(row) = rows.next().context("reading existing ui thread row")? {
-                    Some((
-                        row.get::<_, i64>(0)
-                            .context("reading existing sort_order")?,
-                        row.get::<_, i64>(1)
-                            .context("reading existing created_at")?,
-                        row.get::<_, Option<i64>>(2)
-                            .context("reading existing deleted_at")?,
-                    ))
-                } else {
-                    None
-                }
-            };
-
-            if let Some((_, _, deleted_at)) = existing {
-                if deleted_at.is_some() {
-                    conn.execute(
-                        "UPDATE ui_threads
-                         SET name = ?, archived = FALSE, history_lane = ?, deleted_at = NULL, updated_at = ?
-                         WHERE principal = ? AND workspace = ? AND id = ?",
-                        params![name, history_lane, now, principal.clone(), workspace.clone(), id.clone(),],
-                    )
-                    .context("restoring deleted ui thread during upsert")?;
-                } else {
-                    conn.execute(
-                        "UPDATE ui_threads
-                         SET name = ?, updated_at = ?
-                         WHERE principal = ? AND workspace = ? AND id = ?",
-                        params![name, now, principal.clone(), workspace.clone(), id.clone(),],
-                    )
-                    .context("updating existing ui thread during upsert")?;
-                }
-            } else {
-                let sort_order = {
-                    let mut stmt = conn.prepare(
-                        "SELECT COALESCE(MAX(sort_order), -1) + 1
-                         FROM ui_threads
-                         WHERE principal = ? AND workspace = ?",
-                    )?;
-                    stmt.query_row(params![principal.clone(), workspace.clone()], |row| {
-                        row.get::<_, i64>(0)
-                    })?
-                };
-
-                conn.execute(
-                    "INSERT INTO ui_threads (
-                        principal, workspace, id, name, archived, sort_order,
-                        memory_summary, memory_updated_at, created_at, updated_at, history_lane
-                    ) VALUES (?, ?, ?, ?, FALSE, ?, NULL, NULL, ?, ?, ?)",
-                    params![
-                        principal.clone(),
-                        workspace.clone(),
-                        id.clone(),
-                        name,
-                        sort_order,
-                        now,
-                        now,
-                        history_lane,
-                    ],
-                )
-                .context("inserting new ui thread during upsert")?;
-            }
-
+            let record = upsert_row(&conn, &principal, &workspace, &id, &name, &history_lane)?;
             inner
                 .maybe_checkpoint(&conn)
                 .context("checkpointing ui thread upsert")?;
-            let mut stmt = conn.prepare(
-                "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                        memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
-                 FROM ui_threads
-                 WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL",
-            )?;
-            let mut rows = stmt.query(params![principal, workspace, id])?;
-            let row = rows.next()?.context("ui thread missing after upsert")?;
-            map_row(row)
+            Ok(record)
         })
+        .await
+    }
+
+    /// Insert a new thread whose id the store picks from `name`: the name's
+    /// slug, suffixed `-2`, `-3`… until it is free in this scope (no id, live
+    /// slug or alias uses it, and it is not a reserved route word). The slug
+    /// starts equal to the id. Allocation and insert share the write lock, so
+    /// two concurrent creates never pick the same id.
+    pub async fn insert_thread_with_generated_id(
+        &self,
+        principal: &str,
+        workspace: &str,
+        name: &str,
+        history_lane: HistoryLane,
+    ) -> Result<UiThreadRecord> {
+        let store = self.clone();
+        let principal = principal.to_string();
+        let workspace = workspace.to_string();
+        let name = name.to_string();
+        let history_lane = history_lane.as_str().to_string();
+        self.spawn_ui_thread_blocking(
+            principal.clone(),
+            workspace.clone(),
+            "insert_generated",
+            move || {
+                let inner = store.scope_inner(&principal, &workspace)?;
+                let _write_guard = inner.acquire_write_guard()?;
+                let conn = inner
+                    .write_conn
+                    .lock()
+                    .expect("ui thread write connection mutex poisoned");
+                let base = name_slug(&name).unwrap_or_else(|| "thread".to_string());
+                let id = allocate_thread_key(&conn, &principal, &workspace, &base, None)?;
+                let record = upsert_row(&conn, &principal, &workspace, &id, &name, &history_lane)?;
+                inner
+                    .maybe_checkpoint(&conn)
+                    .context("checkpointing ui thread insert")?;
+                Ok(record)
+            },
+        )
         .await
     }
 
@@ -609,18 +606,14 @@ impl UiThreadStore {
             let _write_guard = inner.acquire_write_guard()?;
             let existing = {
                 let conn = inner.read_connection()?;
-                let mut stmt = conn.prepare(
-                    "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                            memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
-                     FROM ui_threads
-                     WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL",
-                )?;
-                let mut rows = stmt.query(params![principal.clone(), workspace.clone(), id.clone()])?;
-                if let Some(row) = rows.next()? {
-                    Some(map_row(row)?)
-                } else {
-                    None
-                }
+                query_record(
+                    &conn,
+                    &format!(
+                        "SELECT {RECORD_COLUMNS} FROM ui_threads
+                         WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL"
+                    ),
+                    params![principal.clone(), workspace.clone(), id.clone()],
+                )?
             };
 
             let Some(existing) = existing else {
@@ -628,6 +621,11 @@ impl UiThreadStore {
             };
 
             let now = Utc::now().timestamp_millis();
+            let name_changed = update
+                .name
+                .as_ref()
+                .is_some_and(|next| next != &existing.name);
+            let current_slug = current_slug_of(&existing);
             let name = update.name.unwrap_or(existing.name);
             let archived = if existing.id == "general" {
                 false
@@ -652,12 +650,26 @@ impl UiThreadStore {
                 .write_conn
                 .lock()
                 .expect("ui thread write connection mutex poisoned");
+            // The URL follows the name: a rename moves the slug and keeps the
+            // old one as an alias of this thread. The id never changes.
+            let slug = if name_changed {
+                match renamed_slug(&conn, &principal, &workspace, &id, &current_slug, &name)? {
+                    Some(next) => {
+                        move_slug(&conn, &principal, &workspace, &id, &current_slug, &next, now)?;
+                        next
+                    },
+                    None => current_slug,
+                }
+            } else {
+                current_slug
+            };
             conn.execute(
                 "UPDATE ui_threads
-                 SET name = ?, archived = ?, sort_order = ?, memory_summary = ?, memory_updated_at = ?, display_mode = ?, plan_mode = ?, history_lane = ?, updated_at = ?
+                 SET name = ?, slug = ?, archived = ?, sort_order = ?, memory_summary = ?, memory_updated_at = ?, display_mode = ?, plan_mode = ?, history_lane = ?, updated_at = ?
                  WHERE principal = ? AND workspace = ? AND id = ?",
                 params![
                     name,
+                    slug,
                     archived,
                     sort_order,
                     memory_summary,
@@ -675,17 +687,16 @@ impl UiThreadStore {
             inner
                 .maybe_checkpoint(&conn)
                 .context("checkpointing ui thread update")?;
-            let mut stmt = conn.prepare(
-                "SELECT principal, workspace, id, name, archived, sort_order, memory_summary,
-                        memory_updated_at, created_at, updated_at, display_mode, plan_mode, history_lane
-                 FROM ui_threads
-                 WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL",
-            )?;
-            let mut rows = stmt.query(params![principal, workspace, id])?;
-            let row = rows
-                .next()?
-                .context("ui thread missing after update")?;
-            Ok(Some(map_row(row)?))
+            let record = query_record(
+                &conn,
+                &format!(
+                    "SELECT {RECORD_COLUMNS} FROM ui_threads
+                     WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL"
+                ),
+                params![principal, workspace, id],
+            )?
+            .context("ui thread missing after update")?;
+            Ok(Some(record))
         })
         .await
     }
@@ -949,6 +960,375 @@ fn apply_schema_and_migrations(conn: &Connection, template_schema: &str) -> Resu
         .context("running ui thread template schema")?;
     conn.execute_batch(MIGRATIONS)
         .context("running ui thread migrations")?;
+    backfill_thread_slugs(conn).context("backfilling ui thread slugs")?;
+    Ok(())
+}
+
+/// Give every row without a slug one. A row's slug starts as its id — every
+/// existing `/t/<id>` link keeps working — except a row whose id is a reserved
+/// route word (`new`, created by the old web "New thread" path): that one gets
+/// a unique slug from its name, so its URL stops colliding with the route.
+/// Idempotent; touches only rows whose slug is still missing.
+fn backfill_thread_slugs(conn: &Connection) -> Result<()> {
+    let reserved = RESERVED_THREAD_KEYS
+        .iter()
+        .map(|key| format!("'{key}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    conn.execute_batch(&format!(
+        "UPDATE ui_threads SET slug = id
+         WHERE (slug IS NULL OR slug = '') AND id NOT IN ({reserved});"
+    ))
+    .context("backfilling ui thread slugs from ids")?;
+    let pending: Vec<(String, String, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT principal, workspace, id, name FROM ui_threads
+             WHERE slug IS NULL OR slug = ''
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let mut rows = stmt.query(params![])?;
+        let mut pending = Vec::new();
+        while let Some(row) = rows.next()? {
+            pending.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?));
+        }
+        pending
+    };
+    for (principal, workspace, id, name) in pending {
+        let base = slug_base_for_name(&name, &id);
+        let slug = allocate_thread_key(conn, &principal, &workspace, &base, Some(&id))?;
+        conn.execute(
+            "UPDATE ui_threads SET slug = ? WHERE principal = ? AND workspace = ? AND id = ?",
+            params![slug, principal, workspace, id],
+        )
+        .context("backfilling a reserved-id ui thread slug")?;
+    }
+    Ok(())
+}
+
+fn query_record(
+    conn: &Connection,
+    sql: &str,
+    params: &[&dyn duckdb::ToSql],
+) -> Result<Option<UiThreadRecord>> {
+    let mut stmt = conn.prepare(sql)?;
+    let mut rows = stmt.query(params)?;
+    match rows.next()? {
+        Some(row) => Ok(Some(map_row(row)?)),
+        None => Ok(None),
+    }
+}
+
+/// id, then current slug, then a former slug (alias) — first live match wins.
+fn resolve_key_on(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    key: &str,
+) -> Result<Option<UiThreadRecord>> {
+    let by_id = format!(
+        "SELECT {RECORD_COLUMNS} FROM ui_threads
+         WHERE principal = ? AND workspace = ? AND deleted_at IS NULL AND id = ?"
+    );
+    if let Some(record) = query_record(conn, &by_id, params![principal, workspace, key])? {
+        return Ok(Some(record));
+    }
+    let by_slug = format!(
+        "SELECT {RECORD_COLUMNS} FROM ui_threads
+         WHERE principal = ? AND workspace = ? AND deleted_at IS NULL AND slug = ?
+         ORDER BY updated_at DESC, id ASC
+         LIMIT 1"
+    );
+    if let Some(record) = query_record(conn, &by_slug, params![principal, workspace, key])? {
+        return Ok(Some(record));
+    }
+    let by_alias = format!(
+        "SELECT {RECORD_COLUMNS} FROM ui_threads
+         WHERE principal = ? AND workspace = ? AND deleted_at IS NULL
+           AND id = (
+               SELECT thread_id FROM ui_thread_slug_aliases
+               WHERE principal = ? AND workspace = ? AND slug = ?
+           )"
+    );
+    query_record(
+        conn,
+        &by_alias,
+        params![principal, workspace, principal, workspace, key],
+    )
+}
+
+/// Create, rename or restore one row. The caller holds the write lock.
+fn upsert_row(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    id: &str,
+    name: &str,
+    history_lane: &str,
+) -> Result<UiThreadRecord> {
+    let now = Utc::now().timestamp_millis();
+    let existing: Option<(String, Option<String>, Option<i64>)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, slug, deleted_at
+                 FROM ui_threads
+                 WHERE principal = ? AND workspace = ? AND id = ?",
+            )
+            .context("preparing ui thread existence query")?;
+        let mut rows = stmt
+            .query(params![principal, workspace, id])
+            .context("querying existing ui thread")?;
+        if let Some(row) = rows.next().context("reading existing ui thread row")? {
+            Some((
+                row.get::<_, String>(0)
+                    .context("reading existing name")?,
+                row.get::<_, Option<String>>(1)
+                    .context("reading existing slug")?,
+                row.get::<_, Option<i64>>(2)
+                    .context("reading existing deleted_at")?,
+            ))
+        } else {
+            None
+        }
+    };
+
+    match existing {
+        Some((_, _, Some(_))) => {
+            // A restored thread earns its slug again: while it was deleted
+            // another thread may have taken the old one.
+            let base = slug_base_for_name(name, id);
+            let slug = allocate_thread_key(conn, principal, workspace, &base, Some(id))?;
+            conn.execute(
+                "UPDATE ui_threads
+                 SET name = ?, slug = ?, archived = FALSE, history_lane = ?, deleted_at = NULL, updated_at = ?
+                 WHERE principal = ? AND workspace = ? AND id = ?",
+                params![name, slug, history_lane, now, principal, workspace, id],
+            )
+            .context("restoring deleted ui thread during upsert")?;
+        },
+        Some((old_name, old_slug, None)) => {
+            let current = old_slug
+                .filter(|slug| !slug.is_empty())
+                .unwrap_or_else(|| id.to_string());
+            let slug = if old_name != name {
+                match renamed_slug(conn, principal, workspace, id, &current, name)? {
+                    Some(next) => {
+                        move_slug(conn, principal, workspace, id, &current, &next, now)?;
+                        next
+                    },
+                    None => current,
+                }
+            } else {
+                current
+            };
+            conn.execute(
+                "UPDATE ui_threads
+                 SET name = ?, slug = ?, updated_at = ?
+                 WHERE principal = ? AND workspace = ? AND id = ?",
+                params![name, slug, now, principal, workspace, id],
+            )
+            .context("updating existing ui thread during upsert")?;
+        },
+        None => {
+            let sort_order = {
+                let mut stmt = conn.prepare(
+                    "SELECT COALESCE(MAX(sort_order), -1) + 1
+                     FROM ui_threads
+                     WHERE principal = ? AND workspace = ?",
+                )?;
+                stmt.query_row(params![principal, workspace], |row| row.get::<_, i64>(0))?
+            };
+            let base = slug_base_for_name(name, id);
+            let slug = allocate_thread_key(conn, principal, workspace, &base, Some(id))?;
+            conn.execute(
+                "INSERT INTO ui_threads (
+                    principal, workspace, id, slug, name, archived, sort_order,
+                    memory_summary, memory_updated_at, created_at, updated_at, history_lane
+                ) VALUES (?, ?, ?, ?, ?, FALSE, ?, NULL, NULL, ?, ?, ?)",
+                params![
+                    principal,
+                    workspace,
+                    id,
+                    slug,
+                    name,
+                    sort_order,
+                    now,
+                    now,
+                    history_lane,
+                ],
+            )
+            .context("inserting new ui thread during upsert")?;
+        },
+    }
+
+    query_record(
+        conn,
+        &format!(
+            "SELECT {RECORD_COLUMNS} FROM ui_threads
+             WHERE principal = ? AND workspace = ? AND id = ? AND deleted_at IS NULL"
+        ),
+        params![principal, workspace, id],
+    )?
+    .context("ui thread missing after upsert")
+}
+
+fn current_slug_of(record: &UiThreadRecord) -> String {
+    if record.slug.is_empty() {
+        record.id.clone()
+    } else {
+        record.slug.clone()
+    }
+}
+
+/// `name` as a slug, bounded, unless it slugs to nothing or a reserved word.
+fn name_slug(name: &str) -> Option<String> {
+    slugify_legacy_thread_id(name)
+        .map(|slug| truncate_slug(&slug))
+        .filter(|slug| !slug.is_empty() && !is_reserved_thread_key(slug))
+}
+
+/// The slug a thread named `name` asks for. A name that gives none falls back
+/// to the id, or to `thread-<id>` when the id is itself a reserved word.
+fn slug_base_for_name(name: &str, id: &str) -> String {
+    name_slug(name).unwrap_or_else(|| {
+        if is_reserved_thread_key(id) {
+            truncate_slug(&format!("thread-{id}"))
+        } else {
+            truncate_slug(id)
+        }
+    })
+}
+
+fn truncate_slug(value: &str) -> String {
+    let mut slug: String = value.chars().take(MAX_SLUG_BASE_LEN).collect();
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug
+}
+
+/// Keys another thread already answers to: every id (a tombstoned thread can
+/// be restored under its id), every live slug and every alias. `owner_id`'s
+/// own id, slug and aliases stay free for it.
+fn taken_thread_keys(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    owner_id: Option<&str>,
+) -> Result<HashSet<String>> {
+    let owner = owner_id.unwrap_or("");
+    let mut taken = HashSet::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, slug, deleted_at IS NULL FROM ui_threads
+             WHERE principal = ? AND workspace = ?",
+        )?;
+        let mut rows = stmt.query(params![principal, workspace])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if id == owner {
+                continue;
+            }
+            let slug: Option<String> = row.get(1)?;
+            let live: bool = row.get(2)?;
+            if live {
+                if let Some(slug) = slug.filter(|slug| !slug.is_empty()) {
+                    taken.insert(slug);
+                }
+            }
+            taken.insert(id);
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT slug FROM ui_thread_slug_aliases
+             WHERE principal = ? AND workspace = ? AND thread_id <> ?",
+        )?;
+        let mut rows = stmt.query(params![principal, workspace, owner])?;
+        while let Some(row) = rows.next()? {
+            taken.insert(row.get::<_, String>(0)?);
+        }
+    }
+    Ok(taken)
+}
+
+fn allocate_thread_key(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    base: &str,
+    owner_id: Option<&str>,
+) -> Result<String> {
+    let taken = taken_thread_keys(conn, principal, workspace, owner_id)?;
+    Ok(first_free_key(base, |candidate| taken.contains(candidate)))
+}
+
+/// `base`, else `base-2`, `base-3`… — the first candidate not taken and not
+/// a reserved route word. An empty or reserved base becomes `thread`.
+fn first_free_key(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = if base.is_empty() || is_reserved_thread_key(base) {
+        "thread"
+    } else {
+        base
+    };
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2_u64..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !taken(candidate) && !is_reserved_thread_key(candidate))
+        .expect("an unbounded suffix search finds a free key")
+}
+
+/// The slug a rename moves `id` to, or `None` to keep `current`. `#general`
+/// keeps `general` whatever it is called.
+fn renamed_slug(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    id: &str,
+    current: &str,
+    new_name: &str,
+) -> Result<Option<String>> {
+    if id == "general" {
+        return Ok(None);
+    }
+    let base = slug_base_for_name(new_name, id);
+    let next = allocate_thread_key(conn, principal, workspace, &base, Some(id))?;
+    Ok((next != current).then_some(next))
+}
+
+/// Keep `old` as an alias of `id` (unless it is the id itself, which always
+/// resolves) and drop any alias row the new slug now supersedes.
+fn move_slug(
+    conn: &Connection,
+    principal: &str,
+    workspace: &str,
+    id: &str,
+    old: &str,
+    new: &str,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM ui_thread_slug_aliases
+         WHERE principal = ? AND workspace = ? AND slug = ? AND thread_id = ?",
+        params![principal, workspace, new, id],
+    )
+    .context("dropping the alias a new ui thread slug supersedes")?;
+    if old.is_empty() || old == id || is_reserved_thread_key(old) {
+        return Ok(());
+    }
+    conn.execute(
+        "DELETE FROM ui_thread_slug_aliases
+         WHERE principal = ? AND workspace = ? AND slug = ?",
+        params![principal, workspace, old],
+    )
+    .context("clearing a stale ui thread slug alias")?;
+    conn.execute(
+        "INSERT INTO ui_thread_slug_aliases (principal, workspace, slug, thread_id, created_at)
+         VALUES (?, ?, ?, ?, ?)",
+        params![principal, workspace, old, id, now],
+    )
+    .context("recording the previous ui thread slug as an alias")?;
     Ok(())
 }
 
@@ -957,13 +1337,22 @@ fn template_schema_is_stale(schema: &str) -> bool {
         || !schema.contains("plan_mode")
         || !schema.contains("deleted_at")
         || !schema.contains("history_lane")
+        || !schema.contains("slug TEXT")
+        || !schema.contains("ui_thread_slug_aliases")
 }
 
 fn map_row(row: &duckdb::Row<'_>) -> Result<UiThreadRecord> {
+    let id: String = row.get(2)?;
+    let slug = row
+        .get::<_, Option<String>>(13)
+        .unwrap_or(None)
+        .filter(|slug| !slug.is_empty())
+        .unwrap_or_else(|| id.clone());
     Ok(UiThreadRecord {
         principal: row.get(0)?,
         workspace: row.get(1)?,
-        id: row.get(2)?,
+        id,
+        slug,
         name: row.get(3)?,
         archived: row.get(4)?,
         sort_order: row.get(5)?,
@@ -1434,6 +1823,228 @@ mod tests {
             assert!(workspace
                 .ui_threads_lock_path("anonymous", "default")
                 .exists());
+        });
+    }
+
+    fn rename(name: &str) -> UiThreadUpdate {
+        UiThreadUpdate {
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    async fn resolved_id(store: &UiThreadStore, key: &str) -> Option<String> {
+        store
+            .resolve_thread_key("alpha", "prod", key)
+            .await
+            .unwrap()
+            .map(|record| record.id)
+    }
+
+    #[test]
+    fn first_free_key_suffixes_collisions_and_never_returns_a_reserved_word() {
+        let taken: HashSet<String> = ["travel", "travel-2", "thread"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let is_taken = |candidate: &str| taken.contains(candidate);
+        assert_eq!(first_free_key("trips", is_taken), "trips");
+        assert_eq!(first_free_key("travel", is_taken), "travel-3");
+        assert_eq!(first_free_key("new", is_taken), "thread-2");
+        assert_eq!(first_free_key("", is_taken), "thread-2");
+        assert_eq!(slug_base_for_name("New", "new"), "thread-new");
+        assert_eq!(slug_base_for_name("  Trip: Japan!  ", "x"), "trip-japan");
+    }
+
+    #[test]
+    fn migration_backfills_slug_from_id_and_reslugs_reserved_ids_from_their_name() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE ui_threads (
+                principal TEXT NOT NULL,
+                workspace TEXT NOT NULL,
+                id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                archived BOOLEAN NOT NULL DEFAULT FALSE,
+                sort_order BIGINT NOT NULL DEFAULT 0,
+                memory_summary TEXT NULL,
+                memory_updated_at BIGINT NULL,
+                created_at BIGINT NOT NULL,
+                updated_at BIGINT NOT NULL,
+                display_mode TEXT,
+                plan_mode BOOLEAN,
+                history_lane TEXT,
+                deleted_at BIGINT NULL,
+                PRIMARY KEY (principal, workspace, id)
+            );
+            INSERT INTO ui_threads (principal, workspace, id, name, created_at, updated_at) VALUES
+                ('alpha', 'prod', 'general', 'general', 1, 1),
+                ('alpha', 'prod', 'research', 'Old research', 2, 2),
+                ('alpha', 'prod', 'new', 'Research', 3, 3),
+                ('beta', 'prod', 'new', 'new', 4, 4);
+            "#,
+        )
+        .unwrap();
+
+        apply_schema_and_migrations(&conn, BOOTSTRAP_DDL).unwrap();
+        // A second bootstrap (next open, or after compaction) changes nothing.
+        apply_schema_and_migrations(&conn, BOOTSTRAP_DDL).unwrap();
+
+        let slug = |principal: &str, id: &str| {
+            conn.query_row(
+                "SELECT slug FROM ui_threads WHERE principal = ? AND workspace = 'prod' AND id = ?",
+                params![principal, id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(slug("alpha", "general"), "general");
+        assert_eq!(slug("alpha", "research"), "research");
+        // The thread the old "New thread" path stored as `new` keeps its id
+        // and gets a slug from its name, suffixed past the id it collides with.
+        assert_eq!(slug("alpha", "new"), "research-2");
+        // A name that slugs to the reserved word falls back to `thread-<id>`.
+        assert_eq!(slug("beta", "new"), "thread-new");
+        let aliases: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ui_thread_slug_aliases", params![], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(aliases, 0);
+    }
+
+    #[test]
+    fn generated_ids_follow_the_name_suffix_on_collision_and_skip_reserved_words() {
+        run_store_test(async {
+            let tmp = TempDir::new().unwrap();
+            let store = UiThreadStore::open(tmp.path()).unwrap();
+            let first = store
+                .insert_thread_with_generated_id("alpha", "prod", "Travel", HistoryLane::Personal)
+                .await
+                .unwrap();
+            let second = store
+                .insert_thread_with_generated_id("alpha", "prod", "Travel", HistoryLane::Personal)
+                .await
+                .unwrap();
+            let reserved = store
+                .insert_thread_with_generated_id("alpha", "prod", "New", HistoryLane::Personal)
+                .await
+                .unwrap();
+            assert_eq!((first.id.as_str(), first.slug.as_str()), ("travel", "travel"));
+            assert_eq!((second.id.as_str(), second.slug.as_str()), ("travel-2", "travel-2"));
+            assert_eq!(second.name, "Travel");
+            assert_ne!(reserved.id, "new");
+            assert_ne!(reserved.slug, "new");
+            assert_eq!(reserved.id, reserved.slug);
+        });
+    }
+
+    #[test]
+    fn rename_moves_the_slug_keeps_the_id_and_old_slugs_resolve_as_aliases() {
+        run_store_test(async {
+            let tmp = TempDir::new().unwrap();
+            let store = UiThreadStore::open(tmp.path()).unwrap();
+            let created = store
+                .insert_thread_with_generated_id("alpha", "prod", "Research", HistoryLane::Personal)
+                .await
+                .unwrap();
+            assert_eq!(created.slug, "research");
+
+            let renamed = store
+                .update_thread("alpha", "prod", "research", rename("Trip planning"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(renamed.id, "research");
+            assert_eq!(renamed.slug, "trip-planning");
+
+            let again = store
+                .update_thread("alpha", "prod", "research", rename("Japan 2027"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(again.slug, "japan-2027");
+
+            // id, current slug and every former slug name the same thread.
+            for key in ["research", "japan-2027", "trip-planning"] {
+                assert_eq!(resolved_id(&store, key).await.as_deref(), Some("research"));
+            }
+            assert_eq!(resolved_id(&store, "unknown").await, None);
+
+            // Same name again (or one that slugs the same): the slug stays.
+            let unchanged = store
+                .update_thread("alpha", "prod", "research", rename("japan 2027"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(unchanged.slug, "japan-2027");
+
+            // A deleted thread's keys stop resolving.
+            store.delete_thread("alpha", "prod", "research").await.unwrap();
+            assert_eq!(resolved_id(&store, "trip-planning").await, None);
+            assert_eq!(resolved_id(&store, "japan-2027").await, None);
+        });
+    }
+
+    #[test]
+    fn rename_suffixes_past_other_threads_ids_slugs_and_aliases() {
+        run_store_test(async {
+            let tmp = TempDir::new().unwrap();
+            let store = UiThreadStore::open(tmp.path()).unwrap();
+            store.upsert_thread("alpha", "prod", "alpha-one", "Alpha").await.unwrap();
+            store.upsert_thread("alpha", "prod", "other", "Other").await.unwrap();
+            store.upsert_thread("alpha", "prod", "third", "Third").await.unwrap();
+            // `alpha-one` was inserted with an explicit id: its slug follows its name.
+            assert_eq!(
+                store.get_thread("alpha", "prod", "alpha-one").await.unwrap().unwrap().slug,
+                "alpha"
+            );
+
+            // Another thread's live slug.
+            let other = store
+                .update_thread("alpha", "prod", "other", rename("Alpha"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(other.slug, "alpha-2");
+
+            // Another thread's id.
+            let third = store
+                .update_thread("alpha", "prod", "third", rename("Alpha one"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(third.slug, "alpha-one-2");
+
+            // Another thread's alias: `other` gave up `alpha-2`.
+            store
+                .update_thread("alpha", "prod", "other", rename("Beta"))
+                .await
+                .unwrap();
+            let third = store
+                .update_thread("alpha", "prod", "third", rename("Alpha 2"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(third.slug, "alpha-2-2");
+            assert_eq!(resolved_id(&store, "alpha-2").await.as_deref(), Some("other"));
+        });
+    }
+
+    #[test]
+    fn general_keeps_its_slug_through_a_rename() {
+        run_store_test(async {
+            let tmp = TempDir::new().unwrap();
+            let store = UiThreadStore::open(tmp.path()).unwrap();
+            store.upsert_thread("alpha", "prod", "general", "general").await.unwrap();
+            let renamed = store
+                .update_thread("alpha", "prod", "general", rename("Everything"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(renamed.name, "Everything");
+            assert_eq!(renamed.slug, "general");
         });
     }
 }

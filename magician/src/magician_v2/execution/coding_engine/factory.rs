@@ -58,7 +58,6 @@ pub struct PiTurnOptions {
     pub model: Option<String>,
     pub thinking_level: Option<String>,
     pub extension_paths: Vec<PathBuf>,
-    pub append_system_prompt: Vec<PathBuf>,
     pub images: Vec<Value>,
     /// Plane runs strip Pi's native resources and use only the explicit
     /// Magician bridge extension. Coding turns keep Pi's normal posture.

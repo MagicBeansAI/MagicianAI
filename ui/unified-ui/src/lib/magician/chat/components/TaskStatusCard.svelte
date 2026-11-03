@@ -7,6 +7,8 @@
 	import { splitAnswerVerification } from '../answerVerification';
 	import RequestActivityCard from '$lib/magician/components/RequestActivityCard.svelte';
 	import ExecutionControls from '$lib/magician/components/execution/ExecutionControls.svelte';
+	import { cardTimesLabel } from '$lib/shared/cardTimes';
+	import { minuteTick } from '$lib/magician/chat/next/liveClock';
 	import {
 		getMessageContentBlocks,
 		type ChatMessage,
@@ -20,8 +22,10 @@
 		isTerminalTaskStatus,
 		taskExecutionLabel,
 		taskRunCollapsedLine,
+		taskCardTimes,
 		taskStatusReason,
-		taskStatusVisual
+		taskStatusVisual,
+		type TaskRecordTimes
 	} from '$lib/magician/chat/components/taskStatus';
 
 	export let message: ChatMessage;
@@ -43,6 +47,12 @@
 	) => void;
 	export let onWatchLive: (sessionId: string, taskId: string) => void;
 	export let onStopWatching: (sessionId: string) => void;
+	/** The task's record times as the task store has them, for "Created … ·
+	 *  Updated …"; without them the card's own updates give the times. */
+	export let taskTimes: TaskRecordTimes | undefined = undefined;
+
+	// The age ("Updated 2m ago") moves with the shared minute clock.
+	$: times = cardTimesLabel(taskCardTimes(message, taskExecutionGroups, taskTimes), $minuteTick);
 </script>
 
 {#if message.content.type === 'task_status_update'}
@@ -77,6 +87,9 @@
 				{taskVisual.verb}: {content.display_label ?? content.task_id}
 				{#if answerDisplay.verification}<AnswerVerificationInfo verification={answerDisplay.verification} />{/if}
 			</span>
+			{#if times}
+				<span class="chat-status-times" title={times.title}>{times.text}</span>
+			{/if}
 			{#if taskStatusReason(content)}
 				<div class="chat-status-summary">
 					<TaskReport content={answerDisplay.body} sessionId={message.session_id}
@@ -355,6 +368,12 @@
 		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--text-primary, #2d3436);
+	}
+
+	.chat-status-times {
+		font-size: var(--text-2xs);
+		color: var(--text-muted, #7b8588);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.chat-status-summary {

@@ -377,6 +377,18 @@ pub struct TaskRefs {
     /// written; cleared on the next terminal reducer commit.
     pub default_task_agent_output_id: Option<String>,
     pub primary_user_output_id: Option<String>,
+    /// The delivered file (`user_attachment` output) the latest terminal
+    /// root run declared first in `yield.deliverables` — the file that IS the
+    /// answer, beside the written summary. `None` when the run declared no
+    /// deliverable. Defaulted so task_refs.json written before it still loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_deliverable_output_id: Option<String>,
+    /// The delivered files (`user_attachment` output ids) the latest terminal
+    /// root run attached beside its answer, primary first. Earlier runs'
+    /// attachments stay in `outputs` but are not this answer's files. Empty
+    /// for runs that delivered none and for refs written before the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub latest_delivered_output_ids: Vec<String>,
     pub updated_at: Option<String>,
 }
 
@@ -867,6 +879,9 @@ pub struct TaskOutputsRecord {
     /// retired; the field stays in the response shape for older clients.
     pub default_task_agent_output_id: Option<String>,
     pub primary_user_output_id: Option<String>,
+    /// See `TaskRefs::primary_deliverable_output_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_deliverable_output_id: Option<String>,
     pub outputs: Vec<OutputRef>,
 }
 
@@ -900,6 +915,16 @@ pub struct TaskOutputView {
     /// missing file, a path that escapes the outputs directory, or an
     /// absolute / `..`-bearing `relative_path`.
     pub absolute_path: Option<String>,
+    /// `true` on the one delivered file that is the run's primary
+    /// deliverable (`TaskOutputsView::primary_deliverable_output_id`).
+    /// Omitted when `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub primary: bool,
+    /// Served URL of a deliverable output
+    /// (`/api/magician/v3/tasks/{task_id}/outputs/<path>`); `null` for
+    /// internal outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
 }
 
 /// Which non-`OutputRef` sidecar a task keeps beside its outputs.
@@ -928,6 +953,11 @@ pub struct TaskOutputsView {
     /// Deprecated: always `null` (the agent-audience task output was retired).
     pub default_task_agent_output_id: Option<String>,
     pub primary_user_output_id: Option<String>,
+    /// The delivered file that is the run's primary deliverable, when it
+    /// declared one (`yield.deliverables[0]`). Its entry in `outputs` also
+    /// carries `primary: true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_deliverable_output_id: Option<String>,
     pub outputs: Vec<TaskOutputView>,
     #[serde(default)]
     pub internal_files: Vec<TaskInternalFileView>,
@@ -1446,6 +1476,11 @@ pub struct FinalizedOutputs {
     /// lists them. Empty when the run delivered no named file.
     #[serde(default)]
     pub delivered_file_outputs: Vec<OutputRef>,
+    /// Which of `delivered_file_outputs` is the primary deliverable (the
+    /// first file the run declared in `yield.deliverables`). The reducer
+    /// copies it onto `TaskRefs::primary_deliverable_output_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_deliverable_output_id: Option<String>,
     pub task_output_mode: TaskOutputMode,
 }
 
@@ -1455,6 +1490,37 @@ pub const CONTINUATION_CONTEXT_OUTPUT_ROLE: &str = "continuation_context";
 pub const PRECOMPUTED_EXECUTION_OUTPUT_ROLE: &str = "primary_execution_precomputed";
 /// A file the run wrote and named as delivered, attached beside the answer.
 pub const DELIVERED_FILE_OUTPUT_ROLE: &str = "user_attachment";
+/// Largest file the runtime promotes to the user as a delivered file: a
+/// declared `yield.deliverables` entry or a task-workdir file the run named.
+pub const MAX_DELIVERED_FILE_BYTES: u64 = 50 * 1024 * 1024;
+
+/// The URL `GET /api/magician/v3/tasks/{task_id}/outputs/{path}` serves a
+/// task output's `relative_path` (`outputs/<rel>` or
+/// `executions/<id>/outputs/<rel>`) under. Each path segment is
+/// percent-encoded so a file name with spaces or `#` stays one link.
+pub fn task_output_served_url(task_id: &str, relative_path: &str) -> String {
+    let relative = relative_path.trim_start_matches('/');
+    let relative = relative.strip_prefix("outputs/").unwrap_or(relative);
+    let encoded: Vec<String> = relative
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            segment
+                .bytes()
+                .map(|byte| match byte {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                        (byte as char).to_string()
+                    },
+                    other => format!("%{other:02X}"),
+                })
+                .collect::<String>()
+        })
+        .collect();
+    format!(
+        "/api/magician/v3/tasks/{task_id}/outputs/{}",
+        encoded.join("/")
+    )
+}
 
 /// Trusted controller ownership of a root's output, installed before runtime
 /// creation. Ordinary callbacks and startup recovery may not synthesize it.
@@ -1631,4 +1697,52 @@ pub struct TaskListItemV3 {
 pub struct ExecutionRecord {
     pub state: ExecutionState,
     pub refs: ExecutionRefs,
+}
+
+#[cfg(test)]
+mod delivered_file_model_tests {
+    use super::*;
+
+    /// task_refs.json written before the primary deliverable existed still
+    /// loads, and a ref without one serializes without the key.
+    #[test]
+    fn task_refs_without_a_primary_deliverable_still_load() {
+        let legacy = serde_json::json!({
+            "task_id": "task-1",
+            "outputs": [],
+            "default_task_agent_output_id": null,
+            "primary_user_output_id": "out_task_user_task-1",
+            "updated_at": "2026-10-01T00:00:00Z"
+        });
+        let refs: TaskRefs = serde_json::from_value(legacy).expect("legacy task refs load");
+        assert_eq!(refs.primary_deliverable_output_id, None);
+        let encoded = serde_json::to_value(&refs).expect("encode");
+        assert!(encoded.get("primary_deliverable_output_id").is_none());
+
+        let current = serde_json::json!({
+            "task_id": "task-1",
+            "outputs": [],
+            "default_task_agent_output_id": null,
+            "primary_user_output_id": null,
+            "primary_deliverable_output_id": "out_task_user_attachment:tool_output_file:x",
+            "updated_at": null
+        });
+        let refs: TaskRefs = serde_json::from_value(current).expect("current task refs load");
+        assert_eq!(
+            refs.primary_deliverable_output_id.as_deref(),
+            Some("out_task_user_attachment:tool_output_file:x")
+        );
+    }
+
+    #[test]
+    fn served_urls_strip_the_outputs_prefix_and_encode_segments() {
+        assert_eq!(
+            task_output_served_url("task-1", "outputs/delivered/exec-1/Q3 report#2.md"),
+            "/api/magician/v3/tasks/task-1/outputs/delivered/exec-1/Q3%20report%232.md"
+        );
+        assert_eq!(
+            task_output_served_url("task-1", "executions/exec-1/outputs/a.csv"),
+            "/api/magician/v3/tasks/task-1/outputs/executions/exec-1/outputs/a.csv"
+        );
+    }
 }

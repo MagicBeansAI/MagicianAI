@@ -24,6 +24,7 @@
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount } from 'svelte';
 	import { get } from 'svelte/store';
+	import { threadLabels } from '$lib/threads/threadLinks';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
 	import { canonicalEventLine, eventHub, subscribeWithBackfill } from '$lib/realtime/eventHub';
 	import {
@@ -265,11 +266,8 @@
 	$: activeSession = chatState.sessions?.find((s) => s.id === activeSessionId) ?? null;
 	// UUID thread ids get shortened — `#f7b33632` reads as a tag,
 	// `#f7b33632-c1d3-47f6-…` reads as debris.
-	$: threadTag = activeSession
-		? activeSession.ui_thread_id.length > 16
-			? activeSession.ui_thread_id.slice(0, 8)
-			: activeSession.ui_thread_id
-		: '';
+	$: threadName = activeSession ? $threadLabels(activeSession.ui_thread_id) : '';
+	$: threadTag = threadName.length > 16 ? `${threadName.slice(0, 15)}…` : threadName;
 	$: sessionLabel = activeSession
 		? `#${threadTag} · ${activeSession.title?.trim() || 'untitled session'}`
 		: '';

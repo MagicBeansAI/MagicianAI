@@ -380,6 +380,16 @@ public enum ComposerCommands {
         return ComposerCommandId(rawValue: name)
     }
 
+    /// A top-level draft the picker still lists a command for (`/eng`,
+    /// `/budget defa`): every word of it appears in the command's name, as the
+    /// web picker matches. Send opens that command, the picker's first row.
+    /// Anything else (`/budget please help`, `/usr/bin …`) is ordinary text.
+    public static func partialCommand(_ text: String, state: ComposerCommandState) -> ComposerCommandId? {
+        guard state.stack.isEmpty, let query = trigger(text.trimmingCharacters(in: .whitespaces)) else { return nil }
+        let words = query.lowercased().split(separator: " ").map(String.init)
+        return all.first { command in words.allSatisfy { command.name.contains($0) } }?.id
+    }
+
     // MARK: Picker state
 
     /// Enter a command's options. Returns the text the composer should hold.
@@ -444,7 +454,7 @@ public enum ComposerCommands {
     /// Send must not post this text: it is a command, or an open level's
     /// prefix and filter (`/engine pi son`). Commands never reach the model.
     public static func holdsSend(_ text: String, state: ComposerCommandState) -> Bool {
-        if exactCommand(text) != nil { return true }
+        if exactCommand(text) != nil || partialCommand(text, state: state) != nil { return true }
         guard !state.stack.isEmpty else { return false }
         let prefix = state.prefix.trimmingCharacters(in: .whitespaces).lowercased()
         return !prefix.isEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix(prefix)

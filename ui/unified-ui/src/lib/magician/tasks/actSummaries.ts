@@ -63,6 +63,16 @@ export type OutputKind = 'document' | 'image' | 'other';
 export interface OutputFile {
 	name: string;
 	kind: OutputKind;
+	/**
+	 * What the file is called on screen when that is not its name — `Summary`
+	 * for the task's generated `out_task_user_…` output. Absent means `name`.
+	 */
+	label?: string | null;
+}
+
+/** The name a reader sees for this file. */
+export function outputDisplayName(file: OutputFile): string {
+	return file.label?.trim() || file.name;
 }
 
 /**
@@ -171,8 +181,8 @@ export function runSummary(input: RunSummaryInput): string {
 
 export function outputSummary(files: readonly OutputFile[]): string {
 	if (files.length === 0) return 'no output';
-	if (files.length === 1) return files[0].name;
-	if (files.length === 2) return `${files[0].name} and ${files[1].name}`;
+	if (files.length === 1) return outputDisplayName(files[0]);
+	if (files.length === 2) return `${outputDisplayName(files[0])} and ${outputDisplayName(files[1])}`;
 
 	// The named file is the first, so the header names whatever the act body
 	// lists first; the ordering is the caller's decision, not this module's.
@@ -180,5 +190,5 @@ export function outputSummary(files: readonly OutputFile[]): string {
 	const kinds = new Set(rest.map((file) => file.kind));
 	// Never singular: three or more files leave at least two in the remainder.
 	const plural = kinds.size === 1 ? KIND_PLURAL[rest[0].kind] : KIND_PLURAL.other;
-	return `${files[0].name} and ${rest.length} ${plural}`;
+	return `${outputDisplayName(files[0])} and ${rest.length} ${plural}`;
 }

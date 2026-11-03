@@ -7,6 +7,7 @@ Settings search and About version rows use the shared product and backend labels
 Empty chats mirror Web's local greeting, four editable prompt starters and three recent conversations, using themed compact cards, scrolling and a single column at accessibility text sizes; starter taps focus a draft without sending.
 
 History session rows show a compact Working badge for current chat/task activity, refreshed only while the panel is visible in the foreground.
+In a task's deep panel, a failed tool row shows why it failed under its title (two lines, Show more when cut; `TaskActivityFailure` in `DeepWorkPanel.swift`).
 
 Live calls occupy the Chat and VibeDev composer slot, retaining queue/ask controls and a Type message option; ending a call restores its previous voice/text mode and draft.
 
@@ -71,7 +72,9 @@ Attention and Plan Inspector screens. New work keeps the ordinary task form.
 Native pushed details add Crew controls and version-checked definition editing,
 playbook history/restore and version-checked owner editing (a conflict keeps the
 draft), per-focus-area shared documents, guided Quality and advanced policies, exact artifact
-review and local captures, Autopilot reviews and Team routines controls.
+review and local captures, Autopilot reviews and Team routines controls. Team routines dispatch one
+stage per focus area of each harness agent, read from `GET /api/magician/v2/agents` when the sequence
+starts (`WorkOperationsView.teamRoutineTargets`), never a hard-coded list.
 All use ThemeManager tokens and themed typography. Frozen connection snapshots,
 lifetime invalidation and late-response guards protect reads and confirmations.
 Crew definition editing freezes the opened version and scope in its sheet
@@ -276,6 +279,25 @@ live-test runbook.
   in chat, task summaries, Attention and notes open that note natively (`NoteLinks.swift`); a link
   for a workspace held by exactly one other paired machine switches to it, otherwise it says
   "This note is in another workspace" without loading anything.
+- Every other chat link (Markdown replies, structured `text`/`callout`/summary copy, structured
+  actions and source rows, activity details) goes through one router, `ChatLinkRouter`
+  (`NoteLinks.swift`), over the shared rule set `classifyActivityLink` (`Shared/ChatTurnActivity.swift`,
+  the Swift twin of web `classifyRef`). `file://` reads as its absolute path; a path inside a task's
+  `outputs/` (absolute, `file://` or `/api/magician/v3/tasks/{id}/outputs/…`) opens in the
+  authenticated `ArtifactViewer`, as does any other `/api/…` resource and an absolute link on the
+  paired origin; other host paths and workspace-relative files open on the machine (chat-session
+  `outputs/open-file`); chat links (`/chat?session=…`, `/t/<thread>[/chat|files|settings|models][?session=…]`,
+  `/history`) open that conversation, or the thread's latest one; `/t/<thread>?selected=…`, `/work…`,
+  `/tasks…`, `/crew…` go to Work; Attention, Today, Settings, Observe, `/notes` and `/vibe` open their
+  screens; only other app routes load in the authenticated web view; http(s)/mailto/tel go to the system.
+  A link it cannot open shows "Can't open link". Links are drawn in the accent colour, underlined, and
+  paths a reply only mentions (inline code, bare `/…/file.ext` in prose, `file://`) become links
+  (`ChatPathLinkifier`).
+- A thread's URL slug follows its name; its id never changes. A `/t/<key>` link (slug, old slug or
+  id) resolves to the canonical id through `GET /api/magician/v2/ui-threads/{key}` before opening
+  (`ThreadDirectory`, cached; the key is used as the id when the lookup fails). Thread chips show the
+  thread's name, falling back to its id. New Thread asks for the name first (Create stays off while it
+  is empty), posts only the name — the server derives id and slug — and opens the new thread.
   Terminal task cards expose **Publish to Notes** (card and Actions sheet; the task view keeps a top-bar
   action) using scoped server-owned defaults, serialized taps, and in-place success/failure.
   An archived task is terminal too ("Archived", muted, no polling), so a card whose last status update
@@ -400,8 +422,11 @@ is the only peer.
   engine/model/voice design): `/` as the
   composer's first character opens `/budget`, `/budget default`, `/engine`, `/run-engine`,
   `/voice-mode` in the `@` picker's card, filtered as you type; a command opens its options there
-  with a Back row, and sending a composer that holds exactly a command, or an open level's prefix
-  (`/engine pi son`), opens or keeps the picker. Options run client-side (never a chat message),
+  with a Back row, and sending a composer that holds exactly a command, a partial one whose every
+  word is in a single command's name (`/eng`, `/budget defa`), or an open level's prefix
+  (`/engine pi son`), opens or keeps the picker; any other text after `/` (`/budget please help`)
+  is sent as a message. Send options are hidden while the picker holds the send. Options run
+  client-side (never a chat message),
   clear the composer and post a short toast over it (the server's `message`/`error` on failure):
   - `/engine`: a **Now:** note (this device's engine · model, and the server's engine
     everywhere), the scope row, one row per installed engine. Magician/Pi, and an engine with
@@ -462,8 +487,9 @@ is the only peer.
   rather than submitting a synthetic label. **Keep Trying** calls the continuation endpoint. Historical
   cards without authoritative option actions open their Attention request.
 - **History:** Sessions and Threads tabs with Personal/Automated lanes, 15-item server pages per tab and
-  lane; search uses the mixed-history endpoint (120-char cap) with an explicit all-scope. A thread opens
-  its newest usable session. `#general` (`is_default_session`) is locked with no archive/delete.
+  lane; search uses the mixed-history endpoint (120-char cap) with an explicit all-scope. A thread tap
+  opens its newest usable session and keeps History on Sessions filtered to that thread (`ui_thread_id`,
+  both lanes) behind a `#name ×` label; New Session there creates in that thread. `#general` (`is_default_session`) is locked with no archive/delete.
   A thread name stays on one line; the full name is the row tooltip and the first line of the
   long-press menu. Archive, restore, and delete hold that row with "Archiving…" / "Restoring…" /
   "Deleting…" until the server answers (the request waits up to 10 minutes), one change at a time.

@@ -1,6 +1,6 @@
 ---
 name: whatsgoingon2
-version: 0.2.0
+version: 0.2.1
 description: 'Catch-up and situation-awareness research — what''s happening now,
 
   what happened recently, where a topic stands, what people are
@@ -39,6 +39,7 @@ metadata:
     requires:
       bins:
       - whatsgoingon2
+      - python3
     install_hint:
       docs: 'Requires Python 3.9+. No credentials. Pure data-transform tool;
 
@@ -60,6 +61,8 @@ metadata:
       requires:
         bins:
         - whatsgoingon2
+        - python3
+        entrypoint: whatsgoingon2
       runtime:
         protocol: cli
         command_prefix: []

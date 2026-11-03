@@ -176,9 +176,10 @@ pub struct CapturedRunTaskLocals {
 /// coordinator (server-stamped `coding_coordinator_run`), any VibeDev run
 /// including a Discuss coordinator (`vibedev_run`), or an agent that
 /// itself holds a coding tool (`run_coding_task`, `apply_code_proposal`,
-/// `run_project_checks`; inherited from a delegate does not count). God mode
-/// does not apply to these runs ([`god_session_for`], the plane's
-/// `plane_god_session`), and they run on the coding budgets.
+/// `run_project_checks`; inherited from a delegate does not count). These
+/// runs use the coding budgets. God mode applies to them as to any run
+/// ([`god_session_for`]); their engines stay boxed unless super god mode
+/// lifts them.
 pub fn is_vibedev_coding_context(ctx: &AgenticContext) -> bool {
     ctx.coding_coordinator_run
         || ctx.vibedev_run
@@ -192,12 +193,11 @@ pub fn is_vibedev_coding_context(ctx: &AgenticContext) -> bool {
 }
 
 /// A run's god-mode session: the run itself, for trusted agents only, when
-/// god mode is on for it (its chat's choice, else the default). Never for a
-/// VibeDev coding run: god mode does not apply to VibeDev.
+/// god mode is on for it (its chat's choice, else the default). A coding run
+/// gets one too, so a chat's god mode reaches the engineers and coordinators
+/// it starts.
 pub fn god_session_for(ctx: &AgenticContext) -> Option<crate::magician_v2::god_mode::GodSession> {
-    if !crate::magician_v2::god_mode::trust_allows(ctx.trust_level.as_deref())
-        || is_vibedev_coding_context(ctx)
-    {
+    if !crate::magician_v2::god_mode::trust_allows(ctx.trust_level.as_deref()) {
         return None;
     }
     let mut session = crate::magician_v2::god_mode::GodSession::for_run(
@@ -1698,7 +1698,8 @@ pub struct AgenticContextOverrides {
     /// `false` (default, via `#[derive(Default)]`) for every other caller.
     pub coding_coordinator_run: bool,
     /// Any VibeDev run, Build or Discuss (`is_vibedev_cockpit_run`), and the
-    /// engineers it delegates to. God mode never applies to one.
+    /// engineers it delegates to. God mode applies to it like any run (its
+    /// engines stay boxed unless super god mode lifts them).
     pub vibedev_run: bool,
     /// A read-only plan run (`is_vibedev_plan_run`, the Discuss mode) and the
     /// engineers it delegates to: only what `execution::plan_run_policy`
@@ -2630,6 +2631,30 @@ impl Default for AgenticContext {
 }
 
 impl AgenticContext {
+    /// True when this loop runs nested inside a parent loop of the **same**
+    /// runtime execution: an inline sub-goal or an in-context delegation, live
+    /// or resumed from a nested pause.
+    ///
+    /// `continuation_frames` is the authority because it is the only field
+    /// both nesting sites (`handle_spawn_sub_goal_decision`,
+    /// `run_single_delegate_in_context`) push before they re-enter
+    /// `execute_agentically` on a context that keeps the parent's execution
+    /// id, and the only one a nested pause persists and its resume restores.
+    /// `execute_with_durable_continuations_inner` pops a frame before it runs
+    /// the parent again, so the root loop always runs with none, fresh or
+    /// resumed. `depth` cannot decide this: a spawned child execution is a
+    /// top-level run with a non-zero depth and its own execution id.
+    ///
+    /// A nested loop's FINAL outcome is an observation for its parent, not
+    /// the execution's ending, so every root-only terminal effect (runtime
+    /// settlement receipt, operator-steer terminal fence, terminal task-state
+    /// close/projection, task completion result, `AgenticExecutionCompleted`,
+    /// work-ledger record, execution summary) is skipped for it. Pauses still
+    /// own the execution and keep all of theirs.
+    pub fn is_nested_same_execution_segment(&self) -> bool {
+        !self.continuation_frames.is_empty()
+    }
+
     /// The engagement whose **roster ceiling** applies to this execution.
     ///
     /// Answers one question and only that one: *which engagement's tool
@@ -8347,11 +8372,11 @@ mod tests {
         }
     }
 
-    /// God mode does not apply to VibeDev: the Build coordinator and an
-    /// engineer holding a coding tool get no session; an ordinary run, or one
-    /// that only reaches a coding tool through a delegate, does.
+    /// God mode reaches coding runs: the Build and Discuss coordinators and an
+    /// engineer holding a coding tool get a session like an ordinary run, and
+    /// none once god mode is off.
     #[test]
-    fn a_vibedev_coding_run_gets_no_god_session() {
+    fn a_vibedev_coding_run_gets_a_god_session() {
         let _scope = crate::magician_v2::god_mode::test_scope(true);
         let run = || {
             let mut ctx = AgenticContext::new("goal", "criteria");
@@ -8366,7 +8391,7 @@ mod tests {
         coordinator.coding_coordinator_run = true;
         assert!(is_vibedev_coding_context(&coordinator));
         assert!(
-            god_session_for(&coordinator).is_none(),
+            god_session_for(&coordinator).is_some(),
             "the Build coordinator"
         );
 
@@ -8376,7 +8401,7 @@ mod tests {
         discuss.vibedev_run = true;
         assert!(is_vibedev_coding_context(&discuss));
         assert!(
-            god_session_for(&discuss).is_none(),
+            god_session_for(&discuss).is_some(),
             "the Discuss coordinator"
         );
 
@@ -8387,7 +8412,8 @@ mod tests {
         ] {
             let mut engineer = run();
             engineer.merged_agent_tools = vec![coding_tool(tool, None)];
-            assert!(god_session_for(&engineer).is_none(), "{tool}");
+            assert!(is_vibedev_coding_context(&engineer));
+            assert!(god_session_for(&engineer).is_some(), "{tool}");
         }
 
         let mut delegator = run();
@@ -8397,6 +8423,10 @@ mod tests {
             god_session_for(&delegator).is_some(),
             "an inherited coding tool"
         );
+
+        drop(_scope);
+        let _off = crate::magician_v2::god_mode::test_scope(false);
+        assert!(god_session_for(&coordinator).is_none(), "god mode off");
     }
 
     #[tokio::test]

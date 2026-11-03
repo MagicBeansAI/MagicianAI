@@ -4,6 +4,7 @@
 	import type { Task } from '$lib/stores/taskStore';
 	import { normalizeThreadId } from './normalizeThreadId';
 	import { workThreadHref } from '$lib/work/routes';
+	import { threadHrefs, threadLabels } from './threadLinks';
 
 	export let threadId = 'general';
 	export let live = false;
@@ -16,7 +17,9 @@
 	export let tasks: Pick<Task, 'uiThreadId' | 'status'>[] = [];
 	export let showNavigation = true;
 	$: normalizedId = normalizeThreadId(threadId);
-	$: base = `/t/${encodeURIComponent(normalizedId)}`;
+	// Tabs link by slug (the URL follows the name); the id stays the filter.
+	$: base = $threadHrefs(normalizedId);
+	$: title = threadName || $threadLabels(normalizedId);
 	$: sessionQuery = sessionId ? `?session=${encodeURIComponent(sessionId)}` : '';
 	$: threadTasks = tasks.filter(task => normalizeThreadId(task.uiThreadId) === normalizedId);
 	$: running = threadTasks.filter(task => task.status === 'running' || task.status === 'planning').length;
@@ -26,7 +29,7 @@
 
 <nav class="thread-session-bar" aria-label={showNavigation ? 'Thread workspace' : 'Chat session details'}>
 	{#if showNavigation}
-		<span class="thread-session-bar__title" title={`#${threadName || normalizedId}`}>#{threadName || normalizedId}</span>
+		<span class="thread-session-bar__title" title={`#${title}`}>#{title}</span>
 		<a class="thread-session-bar__tab" class:active={activeTab === 'chat'} aria-current={activeTab === 'chat' ? 'page' : undefined} href={chatHref || `${base}/chat${sessionQuery}`}>Chat</a>
 		<a class="thread-session-bar__tab" class:active={activeTab === 'tasks'} aria-current={activeTab === 'tasks' ? 'page' : undefined} href={workThreadHref(normalizedId)}>Tasks <span class="thread-session-bar__count">{threadTasks.length}</span></a>
 		<a class="thread-session-bar__tab" class:active={activeTab === 'settings'} aria-current={activeTab === 'settings' ? 'page' : undefined} href={`${base}/settings${sessionQuery}`}>Settings</a>

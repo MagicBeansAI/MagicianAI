@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicholasgasior/tauri-schema/v2/schema.json",
   "productName": "Magican",
-  "version": "0.3.29",
+  "version": "0.3.30",
   "identifier": "ai.magicbeans.magican.desktop",
   "build": {
     "frontendDist": "../dist",

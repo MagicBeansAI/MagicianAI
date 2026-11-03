@@ -47,7 +47,11 @@ Neither touches the LLM's own `yield`.
 
 Internal same-owner sub-goals use the parent's remaining iteration allowance;
 `budget_iterations` is a planning estimate, not a separate approval cap. Their
-iterations are still charged back to the parent.
+iterations are still charged back to the parent. A sub-goal's (or in-context
+delegate's) own terminal — success, partial, failure — ends only that nested
+loop and returns to the parent as its observation; it never completes the task
+or settles the execution (see "Nested segments" in
+[FLAT_LOOP.md](execution/FLAT_LOOP.md)).
 
 Shell calls honor explicit positive `timeout_secs` in both dispatch and child
 execution (foreground default: 60 s). Task-owned `background=true` jobs instead
@@ -211,6 +215,24 @@ terminal is policy-checked as usual; a model's own yield is still refused for
 an owner with no allowed action types (a yield lowers to `Pack{"yield"}`,
 typed `tool`).
 
+### Platform faults end the run at once
+
+A `run_coding_task` result whose top-level payload says `"fault": "platform"`
+(see [pi-coding-engine-contract.md](pi-coding-engine-contract.md) → Platform
+faults) failed on Magician's side, or on a project repository only the owner
+can fix, so no retry, steer or later decision can fix it. The direct path
+checks that handler's results before handling them
+(`agentic::platform_fault::coding_platform_fault_summary`; an HTTP body, a
+file or any other tool's output saying the same is data) and ends the run
+`Failed` on the first one, with the owner-facing summary "Magician couldn't
+run this because of a problem on its side, not with your request: <reason>.
+<fix>" ("Magician couldn't start work in the project's repository: …" for a
+project fault). In an in-context delegate that ends only the nested segment,
+which records the fault for its execution
+(`record_nested_platform_fault`); the parent's delegate handler takes the
+record and ends on it too, so the fault reaches the owner instead of being
+delegated again. Any other error stays an ordinary result the model acts on.
+
 ### Disposition of a synthesized no-progress yield
 
 The synthesized `YieldDecision`'s `completed[]` decides whether
@@ -259,17 +281,43 @@ owner-answerable input (`Text`, `Password`, `Choice`, `MultiChoice`,
 `FilePath`, `Form`) stays suspended
 (`delegated_waiting_for_user_should_suspend`): its HITL card is on the task,
 the answer resumes the child by execution id, and the parent stays in
-`WaitingChildren`. Coordinator-only decisions (`ToolAuthorization`,
-`SandboxOverride`, a `DiffApproval` with no staged id) force-fail. Three sites
-share the predicate: the live disposition
-(`classify_delegated_child_outcome`), the receipt stamped when the pause
-commits (`TerminalSettlementDescriptor::waiting_for_user_diff_approval`, a
-name older than the wider set), and terminal-outbox settlement
-(`accept_terminal_loop_settlement` via
-`stateless_terminal_receipt_is_delegated_diff_approval`). They must agree,
-because the outbox projector publishes the pause's `input.requested` later
-than the live arm; a disagreement would force-fail the child before its card
-exists.
+`WaitingChildren`. An approval gate inside delegated work (an approval rule or
+a confirmation-gated tool, `WaitingForConfirmation`) is the owner's too: the
+coordinator has no way to approve it, so the child parks on `WaitingUser`, the
+approval card is published to the owner, and the parent stays in
+`WaitingChildren` until the owner answers. Approving resumes the child by
+execution id; denying settles it as failed ("User rejected confirmation
+request"), as for any run, and the parent then collects it. A root or parent
+cancel still cascades to a child parked on a gate; only a canonical diff
+approval is spared. A cascade that meets a child whose pause (a gate or any
+owner question) is still staged skips it after committing `Cancelled` on the
+parent and root, so terminal settlement reads that trace
+(`delegated_pause_under_cancelled_tree`; a canonical diff approval is exempt):
+the lock chooser then takes the agent-only fence and acceptance force-fails
+the child without publishing its card; under the full fence acceptance
+returns `delegated_pause_tree_cancelled_retry` for the next pass. An
+unreadable ancestor or pause body is logged and read as not cancelled, so it
+never wedges settlement. The live arm cancels such a child itself, through
+the callable-agent owner (`ParentCancelled`) for an app-agent child.
+Coordinator-only decisions (`ToolAuthorization`, `SandboxOverride`,
+a `DiffApproval` with no staged id) force-fail: the coordinator set the child's
+tools and sandbox when it delegated. These sites share the predicate: the live
+disposition (`classify_delegated_child_outcome`), the receipt stamped when the
+pause commits (`TerminalSettlementDescriptor::waiting_for_user_diff_approval`,
+a name older than the wider set; it is set for an owner-answerable
+`waiting_for_user` and for every `waiting_for_confirmation`), terminal-outbox
+settlement and publication (`accept_terminal_loop_settlement` and
+`publish_terminal_loop_pause`, via `delegated_child_may_suspend_on_terminal`
+and `stateless_terminal_receipt_is_delegated_diff_approval`), and exact-retry
+recovery of a paused child (`delegated_owner_answerable` on the pause
+admission, which counts only user-input, escalation and approval-gate pause
+kinds: an iteration-limit, budget or manual pause carries a `Confirmation`
+body too and still force-fails). They must agree, because the outbox
+projector publishes the pause's `input.requested` later than the live arm; a
+disagreement would force-fail the child before its card exists. A binary
+older than this rule rejects a newly sealed gate receipt
+(`stateless_terminal_settlement_descriptor_invalid`), so rolling back across
+it needs the terminal outbox drained first.
 
 **Pause publication latency.** A receipt-backed terminal (an approval or input
 pause, a non-resumable end) is never projected by the run itself, since

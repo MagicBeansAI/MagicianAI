@@ -65,6 +65,34 @@ paste the setup token from `/vault`, **Install**. The page still offers a
 empty. Per-row **Promote** / **Demote** buttons POST routes that are not
 registered — install into the destination workspace instead.
 
+## 3b. Ask Magician to do it
+
+For a skill in the repo's `skillshub/`, the VibeDev coding agents
+(senior-software-developer, principal-software-engineer) have three compiled
+tools (`execution/compiled_handlers/skillshub_skill.rs`):
+
+- `validate_skill {name}` runs `skillshub/scripts/validate_skill_md.py` on it.
+  It only reads files, so it does not ask.
+- `test_skill {name}` runs `skillshub/<name>/tests/` and
+  `skillshub/scripts/tests/test_<name>.py` (dashes as underscores) with
+  `unittest discover`, after the owner approves. The tests run code from the
+  checkout.
+- `install_skill {name}` installs it into the caller's workspace after the
+  owner approves: the linked install `POST /skills/install` does with
+  `skillshub:<name>`, after the same loader check.
+
+The approval is an "Approve Once / Deny" card; no answer in 5 minutes counts
+as Deny. Python is `skillshub/.venv/bin/python` when it exists, else
+`python3`, run with only `PATH`, `HOME`, `USER`, locale and `TMPDIR` from the
+environment (no provider keys or tokens). Inside a coding run the commands are
+sandboxed with the repo read-only. The tools read the live checkout: a skill a
+coding run wrote in an isolated workspace is there once its change is applied.
+The coding engine inside `run_coding_task` does not get these tools; the agent
+that called it runs them after the run. All three are on the
+`NEVER_ON_THE_PLANE` floor, so a Claude Code or Codex plane consumer cannot
+call them, and `install_skill` refuses in a container (`SKILLSHUB_ROOT_ENV`
+set), where the scope tree belongs to the host.
+
 ## 4. Verify the skill is visible
 
 ```bash

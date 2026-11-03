@@ -4189,6 +4189,26 @@ fn action_event_detail(action: &ExecutableAction) -> Option<String> {
     }
 }
 
+/// Characters of a failure's text the action event keeps. Long enough for a
+/// tool's whole explanation (a shell timeout names its remedies), short
+/// enough that a failure dumping a full log stays a bounded event.
+const MAX_JOURNALED_ERROR_CHARS: usize = 2_000;
+
+/// A failure's text as the action event carries it: whole when it fits,
+/// otherwise cut to `MAX_JOURNALED_ERROR_CHARS` with a trailing `…` so a
+/// reader can see it was cut.
+fn journaled_error_text(error: String) -> String {
+    if error.chars().count() <= MAX_JOURNALED_ERROR_CHARS {
+        return error;
+    }
+    let mut cut = error
+        .chars()
+        .take(MAX_JOURNALED_ERROR_CHARS - 1)
+        .collect::<String>();
+    cut.push('…');
+    cut
+}
+
 /// The failure-side twin of the per-action event the success arm journals.
 /// A tool call that fails is a fact the timeline has to carry: without it the
 /// UI, analytics, and any engine-parity gate see a call that never happened,
@@ -4210,7 +4230,7 @@ fn journal_failed_action(
     emit_agent_execution_mapping(ctx, executors, at);
     let (action_type, target) = action_event_identity(action);
     let detail = action_event_detail(action);
-    let error = error.chars().take(240).collect::<String>();
+    let error = journaled_error_text(error);
     journal_and_emit_at(
         ctx,
         executors,
@@ -7036,6 +7056,20 @@ pub(super) async fn emit_and_persist_agentic_completion(
         }
         return;
     }
+    // An inline sub-goal / in-context delegation shares the root's execution
+    // id, so every consumer below would read its ending as the EXECUTION's:
+    // `AgenticExecutionCompleted` is persisted as the execution's terminal
+    // marker (`artifact_v2/events.rs`), resolves its pending escalations
+    // (`chat/escalation_listener.rs`), fills its progress gauge and settles
+    // crew/chat status; the ledger record and `latest_summary.json` are keyed
+    // by execution id alone; and memory-temperature credit reads
+    // `scratch.injected_memory_candidate_keys`, an `Arc` the parent shares, so
+    // it would be credited twice. The nested ending reaches the parent as its
+    // observation (`SubGoalOutcome` / the delegate deliverable), and the
+    // parent's own terminal emits and persists all of these once.
+    if ctx.is_nested_same_execution_segment() {
+        return;
+    }
     if ctx.has_observability() {
         let (principal, workspace) = transport_scope(ctx);
         emit_agent_execution_mapping(ctx, executors, at);
@@ -7658,6 +7692,26 @@ pub(super) async fn persist_paused_execution_summary(
 }
 
 async fn task_execution_updates_apply_to_root(
+    executors: &ActionExecutors,
+    ctx: &AgenticContext,
+    task_id: &str,
+) -> bool {
+    // An inline sub-goal / in-context delegation keeps the root's execution
+    // id, so the id comparison below would accept it. Its terminal is an
+    // observation for the parent loop; the parent's own terminal is the one
+    // that writes the task's root state.
+    if ctx.is_nested_same_execution_segment() {
+        return false;
+    }
+    execution_is_task_root(executors, ctx, task_id).await
+}
+
+/// Whether this context's execution id is the task's active root execution,
+/// ignoring same-execution nesting. [`task_execution_updates_apply_to_root`]
+/// adds the nesting rule; [`prepare_terminal_task_state_transition`] needs the
+/// two apart, because a nested segment of the root execution may still make
+/// ordinary durable-state edits that a delegated child execution may not.
+async fn execution_is_task_root(
     executors: &ActionExecutors,
     ctx: &AgenticContext,
     task_id: &str,
@@ -22918,10 +22972,31 @@ pub(super) async fn prepare_terminal_task_state_transition(
     // rather than attempting a write it does not own. Writing here would be
     // worse than failing — it would let a child mutate the parent's task state.
     if let Some(task_id) = ctx.task_id.as_deref() {
-        if !task_execution_updates_apply_to_root(executors, ctx, task_id).await {
+        if !execution_is_task_root(executors, ctx, task_id).await {
             return Ok(PreparedTerminalTaskState {
                 state: None,
                 changed: false,
+            });
+        }
+        // An inline sub-goal / in-context delegation of the ROOT execution
+        // shares the root's durable state. Its terminal is not the task's, so
+        // the terminal projection below (evidence-gated close, partial-yield
+        // projection, synthesized state) is the parent's to make. The child's
+        // own ordinary edits (`create` / `patch`) still apply — the same edits
+        // `apply_outer_task_state_action` persists on its non-terminal turns —
+        // and the success gates judge that state, so neither its content nor
+        // its gate input is dropped. A `close` would close the root task and
+        // is not applied; the gates see the current state instead.
+        if ctx.is_nested_same_execution_segment() {
+            let current = load_persisted_durable_task_state(ctx, executors).await?;
+            let prospective = if action.action == TaskStateActionKind::Close {
+                current.clone()
+            } else {
+                prospective_outer_task_state_from_current(ctx, action, current.clone())?
+            };
+            return Ok(PreparedTerminalTaskState {
+                changed: prospective != current,
+                state: prospective,
             });
         }
     }
@@ -23990,6 +24065,11 @@ fn pack_family(capability_name: &str) -> Option<&str> {
 /// stays strict by default.
 fn is_transient_failure(error: &str) -> bool {
     let error = error.to_ascii_lowercase();
+    // A shell call that ran out of its own limit ("command timed out after N
+    // seconds") times out again when repeated with the same limit.
+    if is_shell_timeout(&error) {
+        return false;
+    }
     const TRANSIENT_MARKERS: &[&str] = &[
         "timed out",
         "timeout",
@@ -24013,6 +24093,20 @@ fn is_transient_failure(error: &str) -> bool {
     TRANSIENT_MARKERS
         .iter()
         .any(|marker| error.contains(marker))
+}
+
+/// Whether lowercased failure text carries the shell tool's own timeout
+/// (`command timed out after <N> seconds`). The browser and CLI-template
+/// timeouts (`… command timed out after <N>s`) are a different failure: a
+/// slow page or remote can answer the next identical call.
+fn is_shell_timeout(error: &str) -> bool {
+    error
+        .split("command timed out after ")
+        .skip(1)
+        .any(|rest| {
+            let after_digits = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+            after_digits.len() < rest.len() && after_digits.starts_with(" seconds")
+        })
 }
 
 pub(super) fn repeated_failed_action_rejection(
@@ -29604,6 +29698,322 @@ fn handle_path_access_denied<'a>(
     })
 }
 
+/// The folder an `ExecutionError::WorkLocationRequired` names, when this
+/// dispatch failed with one.
+fn work_location_required_folder(dispatched: &Result<ActionResult>) -> Option<String> {
+    use crate::magician_v2::execution::error::ExecutionError;
+    match dispatched.as_ref().err()?.downcast_ref::<ExecutionError>() {
+        Some(ExecutionError::WorkLocationRequired { folder }) => Some(folder.clone()),
+        _ => None,
+    }
+}
+
+/// What the owner's work-location answer left a call to do.
+enum WorkLocationSettled {
+    /// The task is bound to a project that owns the folder: run the call again.
+    Bound,
+    /// The call is refused with this reason, which the model sees.
+    Refused(String),
+    /// The execution was cancelled while the owner was being asked.
+    Cancelled,
+}
+
+/// Settle where this task works on `folder` (`vibedev::work_location`). A
+/// task that belongs to a project keeps it: the call runs again when that
+/// project owns the folder and is refused otherwise. A task with no project
+/// is bound to the live project that owns the folder, else the owner is asked
+/// once — isolated workspace (the default), isolated branch, original folder
+/// or cancel — and the task is bound to the project the answer creates.
+/// Parallel calls of the task on one folder ask once (`ask_lock`); a Cancel
+/// is remembered for the execution, so the run is not asked again. The ask
+/// races the cancellation token. Modelled on the sandbox-override ask, and
+/// boxed for the same reason: the question's state stays out of the
+/// direct-action future.
+fn settle_work_location<'a>(
+    ctx: &'a AgenticContext,
+    executors: &'a ActionExecutors,
+    folder: String,
+    cancellation_token: Option<CancellationToken>,
+) -> Pin<Box<dyn Future<Output = WorkLocationSettled> + Send + 'a>> {
+    Box::pin(async move {
+        use crate::magician_v2::vibedev::work_location as location;
+        let folder = std::path::PathBuf::from(folder);
+        // The task id the dispatch stamped as `__task_id` (the run identity),
+        // so the binding is the one the re-run's handler reads.
+        let run_task_id = executors.run_identity.get().task_id.clone();
+        let scope = (
+            ctx.principal.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+            ctx.workspace.as_deref().map(str::trim).filter(|v| !v.is_empty()),
+            run_task_id
+                .as_deref()
+                .or(ctx.task_id.as_deref())
+                .map(str::trim)
+                .filter(|v| !v.is_empty()),
+        );
+        let (Some(principal), Some(workspace), Some(task_id)) = scope else {
+            return WorkLocationSettled::Refused(format!(
+                "{} is outside Magician's workspace and this call has no task to remember \
+                 where to work there. Ask the owner to add the folder as a VibeDev project.",
+                folder.display()
+            ));
+        };
+        let scope_root = executors
+            .artifact_v2_workspace
+            .scope_root(principal, workspace);
+        let workspace_root = executors
+            .artifact_v2_workspace
+            .capability_home_root(principal, workspace);
+        let lock = location::ask_lock(task_id, &folder);
+        let _asking = match cancellation_token.as_ref() {
+            Some(token) => tokio::select! {
+                biased;
+                _ = token.cancelled() => return WorkLocationSettled::Cancelled,
+                guard = std::sync::Arc::clone(&lock).lock_owned() => guard,
+            },
+            None => std::sync::Arc::clone(&lock).lock_owned().await,
+        };
+        // Decided under the lock, so a parallel call's answer is seen.
+        if let Some(project) = location::project_of_task(&scope_root, task_id) {
+            return if location::project_owns(&project, &workspace_root, &folder) {
+                WorkLocationSettled::Bound
+            } else {
+                WorkLocationSettled::Refused(location::belongs_elsewhere_refusal(
+                    &project,
+                    &workspace_root,
+                    &folder,
+                ))
+            };
+        }
+        if let Some(project) = location::live_project_owning(&scope_root, &workspace_root, &folder)
+        {
+            return match location::bind_task_to_project(
+                &scope_root,
+                &workspace_root,
+                &project,
+                task_id,
+            )
+            .await
+            {
+                Ok(_) => WorkLocationSettled::Bound,
+                Err(error) => WorkLocationSettled::Refused(error.to_string()),
+            };
+        }
+        let execution_id = runtime_execution_id(ctx);
+        let declined = || {
+            WorkLocationSettled::Refused(format!(
+                "The owner did not choose a way to work on {}, so nothing ran there. Do not \
+                 retry or work around it; report this to the owner.",
+                folder.display()
+            ))
+        };
+        if location::was_declined(&execution_id, task_id, &folder) {
+            return declined();
+        }
+        let Some((service, principal, workspace, request_execution_id)) =
+            executor_user_request_scope(ctx, executors)
+        else {
+            return WorkLocationSettled::Refused(format!(
+                "{} is outside Magician's workspace and the owner has not said where to work on \
+                 it. Do not retry: tell the owner, who can add the folder as a VibeDev project.",
+                folder.display()
+            ));
+        };
+        let options: Vec<RequestOption> = location::WORK_LOCATION_CHOICES
+            .iter()
+            .map(|(id, label)| RequestOption {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
+                requires_input: false,
+            })
+            .collect();
+        let ask = service.ask(UserRequest {
+            id: String::new(),
+            request_type: "work_location".to_string(),
+            question: location::work_location_question(
+                &folder,
+                location::is_magician_source(&folder),
+            ),
+            options: options.clone(),
+            principal,
+            workspace,
+            // A plain choice: `input_type` is the canonical HITL contract every
+            // surface renders, and an unknown one left the ask unanswerable on
+            // the web. `request_type` names it.
+            context: json!({
+                "input_type": "choice",
+                "folder": folder.display().to_string(),
+            }),
+            source: "executor".to_string(),
+            execution_id: Some(request_execution_id),
+            task_id: Some(task_id.to_string()),
+            timeout_secs: USER_REQUEST_TIMEOUT_SECS,
+            default_on_timeout: "cancel".to_string(),
+            created_at: 0,
+            sensitive: None,
+        });
+        let response = match cancellation_token.as_ref() {
+            Some(token) => tokio::select! {
+                biased;
+                _ = token.cancelled() => return WorkLocationSettled::Cancelled,
+                response = ask => response,
+            },
+            None => ask.await,
+        };
+        // A client may send the pick as its label in `input` (iOS answered
+        // `provide_input` + "Original folder"), so read the option it chose.
+        let Some(trust) = response
+            .chosen_option(&options)
+            .and_then(location::trust_for_choice)
+        else {
+            location::remember_declined(&execution_id, task_id, &folder);
+            return declined();
+        };
+        match location::bind_task_to_folder(&scope_root, &workspace_root, &folder, trust, task_id)
+            .await
+        {
+            Ok(project) => {
+                info!(
+                    project_id = %project.project_id,
+                    folder = %folder.display(),
+                    trust = ?project.trust,
+                    "[EXECUTOR] Owner chose a work location; task bound to its project"
+                );
+                WorkLocationSettled::Bound
+            },
+            Err(error) => WorkLocationSettled::Refused(error.to_string()),
+        }
+    })
+}
+
+/// Dispatch the same action again once its work location is settled, under
+/// the same cancellation the first dispatch had: nothing starts once the run
+/// is cancelled, a cooperative handler (`run_coding_task`) gets its grace
+/// window, and a dispatch that must reach its settle boundary
+/// (`hold_through_cancel`, an app workflow) is not dropped. Boxed so the
+/// second dispatch adds nothing to the direct-action future's frame.
+#[allow(clippy::too_many_arguments)]
+fn rerun_action_job(
+    executors: Arc<ActionExecutors>,
+    action: Arc<ExecutableAction>,
+    session_id: String,
+    tool_index: Option<Arc<crate::magician_v2::execution::flat_loop::ToolIndex>>,
+    ctx: Arc<AgenticContext>,
+    trust_guard: Option<TrustDispatchGuard>,
+    cancellation_token: Option<CancellationToken>,
+    effect_id: Option<String>,
+    coding_invocation_id: Option<String>,
+    coding_resume_session_id: Option<String>,
+    action_invocation_ref: String,
+    cooperative_cancel: bool,
+    hold_through_cancel: bool,
+) -> Pin<Box<dyn Future<Output = Result<ActionResult>> + Send>> {
+    Box::pin(async move {
+        if cancellation_token
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(anyhow!("execution cancelled"));
+        }
+        let token = cancellation_token.clone();
+        let job = schedule_action_execution_job(
+            executors,
+            action,
+            session_id,
+            tool_index,
+            ctx,
+            trust_guard,
+            cancellation_token,
+            effect_id,
+            coding_invocation_id,
+            coding_resume_session_id,
+            action_invocation_ref,
+        )?;
+        let action_future = async { job.await? };
+        match token {
+            Some(token) if !hold_through_cancel => {
+                tokio::pin!(action_future);
+                if cooperative_cancel {
+                    tokio::select! {
+                        biased;
+                        result = &mut action_future => result,
+                        _ = token.cancelled() => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(3),
+                                &mut action_future,
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => Err(anyhow!("execution cancelled")),
+                            }
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+                        _ = token.cancelled() => Err(anyhow!("execution cancelled")),
+                        result = &mut action_future => result,
+                    }
+                }
+            },
+            _ => action_future.await,
+        }
+    })
+}
+
+/// End the run failed on a platform fault, with `reason` (the owner-facing
+/// summary) as its completion. A nested segment ends only itself here (its
+/// completion is the parent's to emit) and records the fault for its
+/// execution, which the parent's delegate handler takes and ends on in turn.
+#[allow(clippy::too_many_arguments)]
+fn end_on_platform_fault<'a>(
+    ctx: &'a AgenticContext,
+    executors: &'a ActionExecutors,
+    at: PhaseAddress,
+    history: &'a ExecutionHistory,
+    observed_state: &'a EnvironmentState,
+    execution_start: &'a Instant,
+    iteration: usize,
+    reason: String,
+) -> Pin<Box<dyn Future<Output = ExecutePathControl> + Send + 'a>> {
+    Box::pin(async move {
+        // Recorded for the in-context delegate handler that takes it; a
+        // sub-goal's parent reads its failure as an ordinary observation.
+        if ctx.continuation_frames.last().is_some_and(|frame| {
+            matches!(frame.kind, AgenticContinuationKind::InContextDelegation)
+        }) {
+            super::platform_fault::record_nested_platform_fault(
+                &runtime_execution_id(ctx),
+                &reason,
+            );
+        }
+        let completion_summary = build_agentic_execution_summary(
+            ctx,
+            executors,
+            "failed",
+            iteration,
+            Vec::new(),
+            execution_start.elapsed().as_millis() as u64,
+            format!("Failed: {reason}"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        emit_and_persist_agentic_completion(ctx, executors, at, completion_summary, Some(history))
+            .await;
+        return_outcome(AgenticOutcome::Failed {
+            reason,
+            last_state: observed_state.clone(),
+            iterations_used: iteration,
+        })
+    })
+}
+
 fn execute_direct_path_post_setup_tail<'a>(
     ctx: &'a AgenticContext,
     observed_state: &'a EnvironmentState,
@@ -29743,7 +30153,7 @@ fn execute_direct_path_post_setup_tail<'a>(
         }
         let prepared_execution_action = Arc::new(prepared_execution_action);
 
-        let result = async {
+        let dispatched = async {
             if let Some(reason) = one_time_refusal {
                 return Err(anyhow!(reason));
             }
@@ -29827,8 +30237,50 @@ fn execute_direct_path_post_setup_tail<'a>(
                 action_future.await
             }
         }
-        .await
-        .map(|action_result| {
+        .await;
+        // A call that needs a folder outside the workspace, on a task with no
+        // project there, asks the owner where to work. Once the answer binds
+        // the task to a project, the same call runs again; nothing ran the
+        // first time. Cancel (or no way to ask) refuses the call.
+        let dispatched = match work_location_required_folder(&dispatched) {
+            Some(folder) => match settle_work_location(
+                ctx,
+                executors,
+                folder,
+                cancellation_token.clone(),
+            )
+            .await
+            {
+                WorkLocationSettled::Bound => {
+                    rerun_action_job(
+                        Arc::clone(executors),
+                        Arc::clone(&prepared_execution_action),
+                        session_id.to_string(),
+                        ctx.tool_index.clone(),
+                        Arc::clone(&scheduler_ctx),
+                        trust_dispatch_guard.cloned(),
+                        cancellation_token.clone(),
+                        effect_id.map(str::to_string),
+                        coding_invocation_id.map(str::to_string),
+                        coding_resume_session_id.map(str::to_string),
+                        action_invocation_ref.clone(),
+                        matches!(
+                            prepared_execution_action.as_ref(),
+                            ExecutableAction::Pack { capability_name, .. }
+                                if capability_name.as_str() == "run_coding_task"
+                        ),
+                        ctx.app_disclosure_guard.is_some(),
+                    )
+                    .await
+                },
+                WorkLocationSettled::Refused(reason) => Err(anyhow::Error::new(
+                    crate::magician_v2::execution::error::ExecutionError::Refused(reason),
+                )),
+                WorkLocationSettled::Cancelled => Err(anyhow!("execution cancelled")),
+            },
+            None => dispatched,
+        };
+        let result = dispatched.map(|action_result| {
             if let (Some(secret_store), Some(credential_id)) = (
                 executors.secret_store.as_ref(),
                 prepared_credential_id.as_deref(),
@@ -29923,6 +30375,72 @@ fn execute_direct_path_post_setup_tail<'a>(
         // entity I/O. It follows the governed, content-free failure-feedback
         // path below. Every other terminal error remains fail-closed above,
         // including an uncertain write or failure publishing its receipt.
+
+        // A platform fault (`"fault": "platform"` in `run_coding_task`'s own
+        // result; no other tool's output counts) is Magician's own failure,
+        // not the model's: the run ends on the first one, with the owner told
+        // what to fix, instead of the model retrying it.
+        if let Some(reason) = result
+            .as_ref()
+            .ok()
+            .and_then(|action_result| action_result.as_text())
+            .and_then(|text| {
+                super::platform_fault::coding_platform_fault_summary(
+                    action_for_history.as_ref(),
+                    text,
+                )
+            })
+        {
+            warn!(
+                "[EXECUTOR] Platform fault at iteration {}; ending the run: {}",
+                iteration, reason
+            );
+            journal_failed_action(
+                ctx,
+                executors,
+                at,
+                iteration,
+                action_for_history.as_ref(),
+                duration_ms,
+                reason.clone(),
+                Some(action_call_id.as_str()),
+            );
+            history.iterations.push(IterationRecord {
+                iteration,
+                state_before: EnvironmentState::Uninitialized,
+                action: action_for_history.as_ref().clone_for_retention(),
+                result: ActionResultRecord {
+                    success: false,
+                    output: result
+                        .as_ref()
+                        .ok()
+                        .and_then(|action_result| action_result.as_text())
+                        .map(str::to_string),
+                    error: Some(reason.clone()),
+                    duration_ms,
+                    outcome_category: Some(ActionOutcomeCategory::Failed),
+                    api_replay_used: None,
+                    api_replay_time_ms: None,
+                    browser_fallback_reason: None,
+                    tool_result_projection: None,
+                },
+                state_after: EnvironmentState::Uninitialized,
+                timestamp: Utc::now(),
+                verification: None,
+                llm_reasoning: Some(thinking.clone()),
+            });
+            return Ok(end_on_platform_fault(
+                ctx,
+                executors,
+                at,
+                history,
+                observed_state,
+                execution_start,
+                iteration,
+                reason,
+            )
+            .await);
+        }
 
         match &result {
             Ok(action_result)
@@ -31305,7 +31823,7 @@ pub(super) async fn handle_delegate_to_agent_decision(
     // skip the delegation.
     if targets.len() == 1 && ctx.delegate_single_in_context {
         if let Some(ownership_runtime) = executors.ownership_runtime.clone() {
-            return run_single_delegate_in_context(
+            let control = run_single_delegate_in_context(
                 ctx,
                 observed_state,
                 history,
@@ -31318,6 +31836,28 @@ pub(super) async fn handle_delegate_to_agent_decision(
                 targets[0].clone(),
             )
             .await;
+            // A delegate that ended on a platform fault recorded it for this
+            // execution. Delegating the work again would meet the same fault,
+            // so this run ends on it too, with its completion emitted here
+            // like any other run-ending failure. Taken before an error
+            // propagates, so no stale record outlives the delegation.
+            let nested_fault =
+                super::platform_fault::take_nested_platform_fault(&runtime_execution_id(ctx));
+            let control = control?;
+            if let Some(reason) = nested_fault {
+                return Ok(end_on_platform_fault(
+                    ctx,
+                    executors,
+                    at,
+                    history,
+                    observed_state,
+                    execution_start,
+                    iteration,
+                    reason,
+                )
+                .await);
+            }
+            return Ok(control);
         }
         warn!(
             "[DELEGATION/in-context] flag ON + single target but no ownership_runtime wired; \
@@ -37281,7 +37821,27 @@ impl StatelessArm {
             self.key.execution_id(),
         )
         .map_err(|reason| anyhow!("execution_driver_stateless: {reason}"))?;
+        // Parent frames are unwound only by a caller that holds them: the
+        // inline sub-goal / delegation awaiting this loop, or
+        // `execute_with_durable_continuations_inner`, which restores them onto
+        // its outer context before it runs the segment. A caller entering with
+        // none (a cold recovery composed from launch overrides) will never run
+        // the parent, so a nested checkpoint restored here must not make this
+        // segment's final ending a parent observation
+        // (`is_nested_same_execution_segment`): it would mint no receipt and
+        // the execution would never settle. Run it as the execution's root.
+        let caller_unwinds_nesting = ctx.is_nested_same_execution_segment();
         overlay_exact_continuation_context_before_setup(ctx, &pause, &committed.state.identity);
+        if !caller_unwinds_nesting && ctx.is_nested_same_execution_segment() {
+            warn!(
+                execution = %self.key,
+                frames = ctx.continuation_frames.len(),
+                "[LOOP_WORKER] exact recovery restored a nested segment with no caller to \
+                 unwind its parent frames; running it as the execution root so its ending \
+                 settles the execution"
+            );
+            ctx.continuation_frames.clear();
+        }
         self.seeded = true;
         Ok(())
     }
@@ -40816,6 +41376,13 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
         if identity.task_id.is_none() && identity.execution_id.is_none() {
             return Ok(None);
         }
+        // A nested segment's final ending is its parent's observation, not the
+        // execution's outcome; the driver does not ask for its receipt
+        // (`retires_into_parent_segment`), and this host never mints one that
+        // would settle the shared runtime execution with the child's result.
+        if self.ctx.is_nested_same_execution_segment() && !outcome.requires_continuation() {
+            return Ok(None);
+        }
         // A `Success` the refinement wrapper is about to refine is not this
         // execution's outcome: the refinement pass continues the same run. A
         // receipt here would settle the execution Completed (and release a
@@ -41113,6 +41680,14 @@ impl<'h> super::run_loop::driver_worker::WorkerHost for InProcessWorkerHost<'h> 
             iteration,
         )
         .await
+    }
+
+    fn retires_into_parent_segment(&self, outcome: &AgenticOutcome) -> bool {
+        // A final ending of an inline sub-goal / in-context delegation goes back
+        // to the parent loop that awaits it (or, after a nested pause, to the
+        // frame unwind in `execute_with_durable_continuations_inner`). Only a
+        // continuation-bearing ending owns the execution from here.
+        self.ctx.is_nested_same_execution_segment() && !outcome.requires_continuation()
     }
 
     /// Run exactly one phase, assembling its argument list from this host.
@@ -43223,6 +43798,10 @@ fn agentic_tool_failure_code(success: bool, error: Option<&str>) -> Option<&'sta
         Some("action_not_allowed")
     } else if normalized.contains("resource authority") || normalized.contains("spend") {
         Some("resource_authority_denied")
+    } else if is_shell_timeout(&normalized) {
+        // The shell's own timeout kills its process; that is a timeout, not a
+        // cancellation, whatever else its remedy text mentions.
+        Some("runtime_timeout")
     } else if normalized.contains("cancel") || normalized.contains("stopped") {
         Some("execution_cancelled")
     } else if normalized.contains("timeout") || normalized.contains("timed out") {
@@ -50192,8 +50771,9 @@ pub(super) fn browser_observation_history_action() -> ExecutableAction {
 
 /// A flat dispatch error as the executor's `anyhow` error: a policy refusal
 /// stays typed, so the error chokepoint logs it as the agent's to act on (a
-/// warning) instead of a fault; every other variant is rendered to text as
-/// before. The text is identical either way.
+/// warning) instead of a fault, and so does a work-location ask, which the
+/// chokepoint turns into the owner's question; every other variant is
+/// rendered to text as before. The text is identical either way.
 fn flat_dispatch_error(
     error: crate::magician_v2::execution::error::ExecutionError,
 ) -> anyhow::Error {
@@ -50201,7 +50781,8 @@ fn flat_dispatch_error(
     match error {
         typed @ (ExecutionError::Refused(_)
         | ExecutionError::AgentActionable(_)
-        | ExecutionError::CapabilityFailure { .. }) => anyhow::Error::new(typed),
+        | ExecutionError::CapabilityFailure { .. }
+        | ExecutionError::WorkLocationRequired { .. }) => anyhow::Error::new(typed),
         other => anyhow!("{other}"),
     }
 }
@@ -50323,6 +50904,13 @@ fn classify_pack_dispatch_outcome(
             );
             AttemptOutcome::PermanentFailure(Err(anyhow::Error::new(path_denied)))
         },
+        // The owner has not said where to work on a folder: retrying cannot
+        // change that, and the typed error is what the chokepoint asks on.
+        Err(
+            needs_location @ crate::magician_v2::execution::error::ExecutionError::WorkLocationRequired {
+                ..
+            },
+        ) => AttemptOutcome::PermanentFailure(Err(anyhow::Error::new(needs_location))),
         // A policy refusal is answered the same way on every attempt, so it is
         // not retried, and it stays typed so the executor chokepoint logs it
         // as the agent's to act on (a warning) rather than a fault.
@@ -54288,6 +54876,11 @@ async fn execute_pack_dispatch(
                             path_denied @ crate::magician_v2::execution::error::ExecutionError::PathAccessDenied {
                                 ..
                             } => anyhow::Error::new(path_denied),
+                            // The work-location ask stays typed for the
+                            // chokepoint that asks the owner.
+                            needs_location @ crate::magician_v2::execution::error::ExecutionError::WorkLocationRequired {
+                                ..
+                            } => anyhow::Error::new(needs_location),
                             // A policy refusal stays typed (logged as the
                             // agent's to act on, not as a fault).
                             refused @ crate::magician_v2::execution::error::ExecutionError::Refused(
@@ -57729,6 +58322,130 @@ fn declared_output_file_params(
         .collect()
 }
 
+/// Top-level fields of a tool result that name the file the call wrote:
+/// a shell script's `{"artifact": "x.md", "path": "<workdir>/x.md"}`,
+/// `export_result`'s `path` / `workspace_path`. Nested, these keys are too
+/// generic to mean "an output"; at the top of a result they are the
+/// result's own file.
+const TOP_LEVEL_TOOL_OUTPUT_FILE_KEYS: [&str; 4] = ["path", "file", "artifact", "workspace_path"];
+
+/// Keys that make a top-level object a READ of a file (it carries the
+/// file's contents), not a report of one the call wrote.
+const TOP_LEVEL_FILE_CONTENT_KEYS: [&str; 5] = ["content", "contents", "text", "lines", "data"];
+
+/// Whether `action` is a call whose result reports a file it WROTE at the
+/// top level: `export_result`, a shell call, or a capability whose name says
+/// it writes/saves/exports. A search, stat or hash result also carries a
+/// top-level `path`, and that file is not this call's output.
+fn tool_reports_its_written_file(action: &ExecutableAction) -> bool {
+    match action {
+        ExecutableAction::Bash(_) => true,
+        ExecutableAction::Pack {
+            capability_name, ..
+        } => {
+            let name = capability_name.to_ascii_lowercase();
+            name == super::value_refs::EXPORT_RESULT_TOOL
+                || name == "shell"
+                || name.ends_with("__shell")
+                || name.ends_with("_shell")
+                || ["write", "save", "export"]
+                    .iter()
+                    .any(|verb| name.contains(verb))
+        },
+        _ => false,
+    }
+}
+
+/// The top-level file fields of `value` (see
+/// [`TOP_LEVEL_TOOL_OUTPUT_FILE_KEYS`]) that resolve to an existing regular
+/// file — not a symlink — inside `task_roots`, which the caller limits to
+/// this task's own workdir and execution outputs. Narrower than the nested
+/// discovery: the broad cwd/temp/scope-workdir allowance does not apply, and
+/// a result that carries file contents is a read, never a capture. A
+/// relative `workspace_path` resolves against the result's own
+/// `workspace_root` when it gives one. Each file is added once however many
+/// of its fields name it, and never when `paths` already holds it. Returns
+/// how many paths it added.
+fn collect_top_level_tool_output_file_paths(
+    value: &Value,
+    seen: &mut HashSet<String>,
+    paths: &mut Vec<String>,
+    task_roots: &[std::path::PathBuf],
+    working_dir: Option<&std::path::Path>,
+) -> usize {
+    let Some(object) = value.as_object() else {
+        return 0;
+    };
+    if TOP_LEVEL_FILE_CONTENT_KEYS
+        .iter()
+        .any(|key| object.contains_key(*key))
+    {
+        return 0;
+    }
+    let canonical_roots: Vec<std::path::PathBuf> = task_roots
+        .iter()
+        .filter(|root| {
+            std::fs::symlink_metadata(root)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        })
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .collect();
+    if canonical_roots.is_empty() {
+        return 0;
+    }
+    let canonical_of = |raw: &str| -> Option<std::path::PathBuf> {
+        let resolved = resolve_tool_output_path(raw, working_dir).ok()?;
+        let metadata = std::fs::symlink_metadata(&resolved).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        std::fs::canonicalize(&resolved).ok()
+    };
+    let mut known: Vec<std::path::PathBuf> =
+        paths.iter().filter_map(|path| canonical_of(path)).collect();
+    let mut added = 0usize;
+    for key in TOP_LEVEL_TOOL_OUTPUT_FILE_KEYS {
+        if paths.len() >= MAX_CAPTURED_TOOL_OUTPUT_FILES_PER_ACTION {
+            break;
+        }
+        let Some(raw) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty() && !raw.contains('\n'))
+        else {
+            continue;
+        };
+        let workspace_root = object
+            .get("workspace_root")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|root| !root.is_empty());
+        let resolved = match workspace_root {
+            Some(root) if key == "workspace_path" && !std::path::Path::new(raw).is_absolute() => {
+                let joined = std::path::Path::new(root).join(raw);
+                canonical_of(&joined.to_string_lossy())
+            },
+            _ => canonical_of(raw),
+        };
+        let Some(canonical) = resolved else {
+            continue;
+        };
+        if !canonical_roots.iter().any(|root| canonical.starts_with(root))
+            || known.contains(&canonical)
+        {
+            continue;
+        }
+        if !seen.insert(raw.to_string()) {
+            continue;
+        }
+        known.push(canonical);
+        paths.push(raw.to_string());
+        added += 1;
+    }
+    added
+}
+
 async fn capture_pack_action_artifacts_projection(
     action: &ExecutableAction,
     action_result: &ActionResult,
@@ -57803,6 +58520,35 @@ async fn capture_pack_action_artifacts_projection(
         working_dir.as_deref(),
         &mut declared_types,
     );
+    // The result's own top-level file field (a shell script's `{"path": …}`,
+    // `export_result`'s `path` / `workspace_path`) names the file this call
+    // wrote. Those fields are left as written in the result the model sees,
+    // so it keeps working on its workdir file.
+    let own_task_roots: Vec<std::path::PathBuf> = task_filesystem_root(ctx, executors)
+        .map(|task_dir| {
+            vec![
+                task_dir.join("workdir"),
+                executors.artifact_v2_workspace.execution_outputs_dir(
+                    &target.scope.principal(),
+                    &target.scope.workspace(),
+                    &target.task_id,
+                    &target.execution_id,
+                ),
+            ]
+        })
+        .unwrap_or_default();
+    let discovered_path_count = if tool_reports_its_written_file(action) {
+        discovered_path_count
+            + collect_top_level_tool_output_file_paths(
+                &parsed_output.value,
+                &mut seen_paths,
+                &mut discovered_paths,
+                &own_task_roots,
+                working_dir.as_deref(),
+            )
+    } else {
+        discovered_path_count
+    };
     // Files the call was told to write (`file`, `output`, `-o …`). Many CLI
     // tools only echo "Created: <path>" or nothing, so a workbook or HTML
     // export they produced never reached the task's evidence and the final
@@ -66212,6 +66958,238 @@ mod tests {
         );
     }
 
+    /// The nesting predicate reads the parent frames and nothing else: a
+    /// delegated child execution is top-level at `depth > 0`, and the frame
+    /// unwind after a nested pause leaves the root with none.
+    #[test]
+    fn only_a_context_carrying_a_parent_frame_is_a_nested_segment() {
+        let mut root = AgenticContext::new("parent goal", "parent success");
+        root.execution_id = Some("exec-1".to_string());
+        assert!(!root.is_nested_same_execution_segment());
+
+        let mut spawned_child = root.clone();
+        spawned_child.depth = 1;
+        assert!(
+            !spawned_child.is_nested_same_execution_segment(),
+            "a spawned child execution owns its own execution; depth is not nesting"
+        );
+
+        let sub_goal = nested_by_sub_goal(&root, 3);
+        assert!(sub_goal.is_nested_same_execution_segment());
+        assert!(nested_by_sub_goal(&sub_goal, 2).is_nested_same_execution_segment());
+
+        let mut unwound = sub_goal.clone();
+        unwound.continuation_frames.pop();
+        assert!(
+            !unwound.is_nested_same_execution_segment(),
+            "the parent resumed by the frame unwind is the root again"
+        );
+    }
+
+    // The parent goal, the sub-goal it spawns, and the marker each terminal
+    // carries. The sub-goal is worded unlike the parent so
+    // `sub_goal_paraphrases_parent` admits it.
+    const NESTED_PARENT_GOAL: &str = "Publish the quarterly vendor report";
+    const NESTED_PARENT_STEP: &str = "step-nested-parent";
+    const NESTED_CHILD_GOAL: &str = "Collect invoice totals from the ledger export";
+    const NESTED_PARENT_MARKER: &str = "PARENT_TERMINAL_MARKER report published";
+    const NESTED_CHILD_MARKER: &str = "CHILD_TERMINAL_MARKER invoice totals collected";
+
+    /// An inline sub-goal on the stateless driver ends with `child_terminal`;
+    /// the parent must take its next decision and end the run itself.
+    ///
+    /// Regression for a live run: the child's final terminal minted a
+    /// settlement receipt bound to the shared runtime execution, so the
+    /// projector completed the whole task with "Goal partially achieved:
+    /// <sub-goal>" as the answer; it also fenced the operator-steer inbox under
+    /// its own segment, so the parent's next non-terminal boundary failed with
+    /// `operator_steer_inbox_terminal_fence_binding_mismatch` and the parent
+    /// never resumed.
+    async fn a_sub_goal_final_returns_to_its_parent_inner(
+        child_terminal: ExecutionNativeResponse,
+    ) {
+        use crate::magician_v2::execution::agentic::run_loop::store::{
+            fs::FsLoopStateStore, ExecutionKey, LoopStateStore,
+        };
+
+        let mut run = scoped_loop_run(
+            NESTED_PARENT_GOAL,
+            "The vendor report is published",
+            Vec::<&str>::new(),
+        )
+        .heap_boxed()
+        .await;
+        let spawn = native_response_from_decision_fixture(format!(
+            r#"{{"decision":"spawn_sub_goal","goal":"{NESTED_CHILD_GOAL}","unblocks":"the report needs the invoice totals","budget_iterations":3}}"#
+        ));
+        let parent_terminal = native_response_from_decision_fixture(format!(
+            r#"{{"decision":"goal_reached","evidence":"{NESTED_PARENT_MARKER}","artifacts":[]}}"#
+        ));
+        let queue = Arc::new(crate::magician_v2::execution::TestNativeResponseQueue::new(
+            vec![spawn, child_terminal, parent_terminal],
+        ));
+        run.executors = run.executors.with_native_adapter(Arc::new(
+            crate::magician_v2::execution::MultiLlmAgentAdapter::new_with_test_native_queue(
+                Arc::clone(&queue),
+            ),
+        ));
+        let broadcaster =
+            Arc::new(crate::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(4096));
+        let mut events = broadcaster.subscribe();
+        run.executors.event_broadcaster = Some(Arc::clone(&broadcaster));
+        run.ctx.plan_id = Some("plan-nested-sub-goal".to_string());
+        run.ctx.step_id = Some(NESTED_PARENT_STEP.to_string());
+        let execution_id = run
+            .ctx
+            .execution_id
+            .clone()
+            .expect("a scoped run has an execution id");
+
+        let outcome = execute_agentically(
+            &run.ctx,
+            EnvironmentState::Shell(ShellState::default()),
+            &run.executors,
+            None,
+        )
+        .await
+        .expect("the parent run must finish, not fail on a steer-fence mismatch");
+
+        // The run's outcome is the PARENT's terminal, reached by its own next
+        // decision after the sub-goal returned.
+        assert!(
+            matches!(
+                outcome,
+                AgenticOutcome::Success {
+                    completion: crate::magician_v2::execution::agentic::types::CompletionKind::Full,
+                    ..
+                }
+            ),
+            "the parent's goal_reached must end the run, got {outcome:?}"
+        );
+        let prompts = queue.prompts();
+        assert_eq!(
+            prompts.len(),
+            3,
+            "parent spawn, child terminal, parent terminal — exactly three decisions"
+        );
+        assert!(prompts[1].contains(NESTED_CHILD_GOAL), "decision 2 is the sub-goal's");
+        assert!(
+            prompts[2].contains(NESTED_PARENT_GOAL),
+            "decision 3 is the parent's own, after the sub-goal returned"
+        );
+
+        // `agentic.execution_completed` is a journalled record on the
+        // stateless driver: the terminal outbox projects it after commit, not
+        // this broadcaster, so the completion is checked through the durable
+        // settlement below rather than as a live event.
+        let mut sub_goal_outcomes = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(RuntimeTransportEvent::SubGoalOutcome {
+                    sub_goal, outcome, ..
+                }) => sub_goal_outcomes.push((sub_goal, outcome)),
+                Ok(_) => {},
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {},
+                Err(_) => break,
+            }
+        }
+        assert_eq!(
+            sub_goal_outcomes,
+            vec![(NESTED_CHILD_GOAL.to_string(), "success".to_string())],
+            "the child's ending reached the parent as its sub-goal observation"
+        );
+
+        // Durable state: the sub-goal's segment retired into its parent with
+        // no settlement receipt; the root segment settles with its own ending.
+        let store = FsLoopStateStore::new(run.executors.artifact_v2_workspace.base_root());
+        // The sub-goal spawned at the parent's first iteration: resume
+        // generation 1, nested under frame offset 1 (`{exec}-r1-n1`).
+        let child_segment = loop_state_execution_id(&execution_id, 1, &[1], 0);
+        let child_key = ExecutionKey::new(
+            SCOPED_LOOP_PRINCIPAL,
+            SCOPED_LOOP_WORKSPACE,
+            child_segment.as_str(),
+        )
+        .expect("child segment key");
+        let child = store
+            .load(&child_key)
+            .await
+            .expect("load the sub-goal segment")
+            .expect("the sub-goal committed its own segment");
+        assert!(
+            child.state.terminal_settlement_receipt.is_none(),
+            "a nested final must not mint a receipt that settles the shared execution"
+        );
+        assert!(child.state.retired_into_parent_segment);
+
+        let root_key = ExecutionKey::new(
+            SCOPED_LOOP_PRINCIPAL,
+            SCOPED_LOOP_WORKSPACE,
+            execution_id.as_str(),
+        )
+        .expect("root segment key");
+        let root = store
+            .load(&root_key)
+            .await
+            .expect("load the root segment")
+            .expect("the parent committed its segment");
+        assert!(!root.state.retired_into_parent_segment);
+        let receipt = root
+            .state
+            .terminal_settlement_receipt
+            .as_ref()
+            .expect("the parent's own ending settles the execution");
+        assert_eq!(receipt.descriptor.terminal_kind, "success");
+        let settled_summary = &receipt.descriptor.outcome.outcome_summary;
+        assert!(
+            !settled_summary.contains("Goal partially achieved")
+                && !settled_summary.contains(NESTED_CHILD_MARKER),
+            "the execution must settle with the parent's answer, got {settled_summary:?}"
+        );
+    }
+
+    #[test]
+    fn a_sub_goal_partial_yield_returns_to_its_parent_on_the_stateless_driver() {
+        let child_partial = native_response(
+            "yield",
+            serde_json::json!({
+                "summary": NESTED_CHILD_MARKER,
+                "completed": ["Collected invoice totals for vendors A and B"],
+                "open": ["Vendor C's ledger export is missing"],
+            })
+            .as_object()
+            .expect("yield arguments are an object")
+            .clone(),
+        );
+        let runtime = delegation_decision_runtime();
+        runtime.block_on(async {
+            tokio::spawn(async move {
+                a_sub_goal_final_returns_to_its_parent_inner(child_partial)
+                    .heap_boxed()
+                    .await;
+            })
+            .await
+            .expect("nested sub-goal execution worker");
+        });
+    }
+
+    #[test]
+    fn a_sub_goal_success_returns_to_its_parent_on_the_stateless_driver() {
+        let child_success = native_response_from_decision_fixture(format!(
+            r#"{{"decision":"goal_reached","evidence":"{NESTED_CHILD_MARKER}","artifacts":[]}}"#
+        ));
+        let runtime = delegation_decision_runtime();
+        runtime.block_on(async {
+            tokio::spawn(async move {
+                a_sub_goal_final_returns_to_its_parent_inner(child_success)
+                    .heap_boxed()
+                    .await;
+            })
+            .await
+            .expect("nested sub-goal execution worker");
+        });
+    }
+
     #[test]
     fn nested_pause_outcomes_do_not_advance_the_parent_frame() {
         let waiting = AgenticOutcome::WaitingForUser {
@@ -71558,6 +72536,145 @@ trust_policies:
             capture_pack_action_artifacts(&action, &mut result, &ctx, &executors, None, 0).await;
 
         assert!(artifacts.is_empty());
+    }
+
+    fn top_level_capture_fixture() -> (
+        tempfile::TempDir,
+        ActionExecutors,
+        AgenticContext,
+        std::path::PathBuf,
+    ) {
+        let cwd = std::env::current_dir().unwrap();
+        let storage = tempfile::tempdir_in(cwd.parent().unwrap()).unwrap();
+        let executors =
+            ActionExecutors::new(Arc::new(MockLlmService::new(vec![])), test_prompt_manager())
+                .with_taskplan_base_path(storage.path().join("storage"));
+        let root = executors
+            .artifact_v2_workspace
+            .internal_task_dir("principal-a", "workspace-a", "task-1");
+        let workdir = root.join("workdir");
+        std::fs::create_dir_all(workdir.join("exports")).unwrap();
+        let mut ctx = AgenticContext::new("Write the report", "report delivered");
+        ctx.principal = Some("principal-a".to_string());
+        ctx.workspace = Some("workspace-a".to_string());
+        ctx.task_id = Some("task-1".to_string());
+        ctx.execution_id = Some("exec-1".to_string());
+        ctx.agent_id = Some("writer".to_string());
+        (storage, executors, ctx, workdir)
+    }
+
+    async fn captured_records(
+        executors: &ActionExecutors,
+    ) -> Vec<crate::magician_v2::artifact_v2::PersistedExecutionArtifactRecord> {
+        FilesystemExecutionArtifactIndexStore::new(executors.artifact_v2_workspace.clone())
+            .list_artifacts(
+                &ScopeRef::system_internal_unauthenticated("principal-a", "workspace-a"),
+                "task-1",
+                "exec-1",
+            )
+            .await
+            .unwrap_or_default()
+    }
+
+    /// `export_result` reports its file at the top level (`path`,
+    /// `workspace_path`); that file is captured once as a tool output, and
+    /// the result keeps the workdir path the model passes on with `$file`.
+    #[tokio::test]
+    async fn export_result_capture_records_its_written_file() {
+        let (_storage, executors, ctx, workdir) = top_level_capture_fixture();
+        let exported = workdir.join("exports/result-abc.json");
+        std::fs::write(&exported, r#"{"rows":[1,2,3]}"#).unwrap();
+        let action = ExecutableAction::Pack {
+            capability_name: super::super::value_refs::EXPORT_RESULT_TOOL.to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "export_result".to_string(),
+                },
+            resolved_params: HashMap::new(),
+        };
+        let mut result = ActionResult::text(
+            json!({
+                "status": "ok",
+                "path": exported.to_string_lossy(),
+                "workspace_path": "exports/result-abc.json",
+                "workspace_root": workdir,
+                "bytes": 16,
+                "preview": "{\"rows\":[1,2,3]}",
+            })
+            .to_string(),
+        );
+        let artifacts =
+            capture_pack_action_artifacts(&action, &mut result, &ctx, &executors, None, 4).await;
+        assert_eq!(artifacts.len(), 1, "both fields name one file");
+        let records = captured_records(&executors).await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].artifact_type, TOOL_OUTPUT_FILE_ARTIFACT_TYPE);
+        assert_eq!(records[0].payload["display_name"], "result-abc.json");
+        let ActionResult::Text { content } = &result else {
+            panic!("text result");
+        };
+        assert!(
+            content.contains(exported.to_string_lossy().as_ref()),
+            "the top-level path stays the workdir file: {content}"
+        );
+    }
+
+    /// A shell result's own top-level `path`/`artifact` is captured when it
+    /// is a regular task file; a read (it carries contents), a file outside
+    /// the task, and a symlink are not.
+    #[tokio::test]
+    async fn top_level_result_paths_capture_only_task_files_the_call_wrote() {
+        let (storage, executors, ctx, workdir) = top_level_capture_fixture();
+        std::fs::write(workdir.join("report.md"), "# Report").unwrap();
+        let action = ExecutableAction::Pack {
+            capability_name: "shell".to_string(),
+            implementation:
+                crate::magician_v2::execution::capability::ImplementationType::Compiled {
+                    provider_name: "shell".to_string(),
+                },
+            resolved_params: HashMap::new(),
+        };
+        let mut wrote = ActionResult::text(
+            json!({"artifact": "report.md", "path": workdir.join("report.md")}).to_string(),
+        );
+        let artifacts =
+            capture_pack_action_artifacts(&action, &mut wrote, &ctx, &executors, None, 1).await;
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(captured_records(&executors).await.len(), 1);
+
+        let mut read = ActionResult::text(
+            json!({"path": workdir.join("report.md"), "content": "# Report"}).to_string(),
+        );
+        assert!(
+            capture_pack_action_artifacts(&action, &mut read, &ctx, &executors, None, 2)
+                .await
+                .is_empty(),
+            "a read of a file is not an output"
+        );
+
+        let foreign = storage.path().join("foreign.md");
+        std::fs::write(&foreign, "not this task's").unwrap();
+        let mut outside = ActionResult::text(json!({"path": foreign}).to_string());
+        assert!(
+            capture_pack_action_artifacts(&action, &mut outside, &ctx, &executors, None, 3)
+                .await
+                .is_empty(),
+            "a top-level path outside the task is not captured"
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&foreign, workdir.join("link.md")).unwrap();
+            let mut linked =
+                ActionResult::text(json!({"path": workdir.join("link.md")}).to_string());
+            assert!(
+                capture_pack_action_artifacts(&action, &mut linked, &ctx, &executors, None, 5)
+                    .await
+                    .is_empty(),
+                "a symlink is not captured"
+            );
+        }
+        assert_eq!(captured_records(&executors).await.len(), 1);
     }
 
     #[test]
@@ -76945,6 +78062,67 @@ execution:
             .expect("a deterministic failure is evidence the call is wrong");
         assert!(rejection.contains("evidence about the CALL"));
         assert!(!is_transient_failure("permission denied for collection 12"));
+    }
+
+    /// A shell call that ran out of its own `timeout_secs` times out again
+    /// with the same limit, so it is not a blip; a request or remote timeout
+    /// still is.
+    #[test]
+    fn shell_timeout_is_not_transient_but_request_timeouts_are() {
+        let shell_timeout = "step execution failed: Command timed out after 120 seconds and \
+                             its process was killed; any partial work it left may be incomplete.";
+        assert!(!is_transient_failure(shell_timeout));
+        assert!(!is_transient_failure(
+            "step execution failed: Command timed out after 120 seconds"
+        ));
+        assert!(is_transient_failure("request timed out after 30s"));
+        assert!(is_transient_failure("agent-browser command timed out after 30s: [\"open\"]"));
+        assert!(is_transient_failure("CLI command timed out after 45s: [\"gh\"]"));
+
+        let call = guard_pack_action("shell", "{\"command\":\"pip install pymupdf\"}");
+        let mut history = ExecutionHistory::new();
+        history.iterations.push(guard_record(&call, Some(shell_timeout)));
+        let rejection = repeated_failed_action_rejection(&history, &call)
+            .expect("an identical shell call that timed out is not retried as a blip");
+        assert!(rejection.contains("evidence about the CALL"));
+    }
+
+    /// Tool lineage files a shell timeout as a timeout: its "process was
+    /// killed" wording and remedy text must not read as a cancellation.
+    #[test]
+    fn shell_timeout_lineage_code_is_runtime_timeout() {
+        let shell_timeout = "Command timed out after 120 seconds and its process was killed; any \
+                             partial work it left may be incomplete. If it needs longer, rerun \
+                             it with a larger timeout_secs. For package installs, large \
+                             downloads and builds inside a task, run it with background=true \
+                             and check it with action=status.";
+        assert_eq!(
+            agentic_tool_failure_code(false, Some(shell_timeout)),
+            Some("runtime_timeout")
+        );
+        assert_eq!(
+            agentic_tool_failure_code(false, Some("Command timed out after 120 seconds")),
+            Some("runtime_timeout")
+        );
+        assert_eq!(
+            agentic_tool_failure_code(false, Some("execution cancelled by owner")),
+            Some("execution_cancelled")
+        );
+    }
+
+    /// The failure event keeps a tool's whole explanation and marks a cut.
+    #[test]
+    fn journaled_error_text_keeps_short_errors_and_marks_a_cut() {
+        let short = "Command timed out after 120 seconds".to_string();
+        assert_eq!(journaled_error_text(short.clone()), short);
+
+        let long = "x".repeat(3_000);
+        let cut = journaled_error_text(long);
+        assert_eq!(cut.chars().count(), MAX_JOURNALED_ERROR_CHARS);
+        assert!(cut.ends_with('…'));
+
+        let exact = "y".repeat(MAX_JOURNALED_ERROR_CHARS);
+        assert_eq!(journaled_error_text(exact.clone()), exact);
     }
 
     /// The owner finishing a login is exactly the change that makes a failed

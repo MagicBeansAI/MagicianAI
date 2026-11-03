@@ -30,6 +30,8 @@ data class ChatHistoryState(
     val openingThreadId: String? = null,
     val activeSessionId: String? = null,
     val activeThreadId: String = "general",
+    /** The thread a tap picked; Sessions shows only its sessions, from both lanes. */
+    val sessionThreadFilter: UiThreadRecord? = null,
 ) {
     val searchActive: Boolean get() = appliedSearch.isNotBlank()
     val currentEmpty: Boolean
@@ -42,7 +44,12 @@ data class ChatHistoryState(
     val pageEnd: Int get() = minOf(offset + ChatHistoryViewModel.PAGE_SIZE, total)
     val canLoadPrevious: Boolean get() = offset > 0 && !loading
     val canLoadNext: Boolean get() = offset + ChatHistoryViewModel.PAGE_SIZE < total && !loading
-    val canCreate: Boolean get() = historyLane == ChatHistoryLane.Personal && !searchActive
+    /** A thread-filtered Sessions list hides the lane, so it can always add a session. */
+    val canCreate: Boolean
+        get() = !searchActive && (
+            historyLane == ChatHistoryLane.Personal ||
+                (activeTab == ChatHistoryTab.Sessions && sessionThreadFilter != null)
+            )
 
     /** The change being saved for this session's row, if any. */
     fun sessionMutation(sessionId: String): HistoryMutation? =
@@ -52,6 +59,36 @@ data class ChatHistoryState(
     fun threadMutation(threadId: String): HistoryMutation? =
         mutationKind.takeIf { mutationInFlight == threadMutationKey(threadId) }
 }
+
+/** What the Sessions tab asks the server for: a picked thread wins over the lane. */
+internal data class SessionsQuery(val historyLane: ChatHistoryLane?, val uiThreadId: String?)
+
+internal fun ChatHistoryState.sessionsQuery(): SessionsQuery =
+    sessionThreadFilter?.let { SessionsQuery(historyLane = null, uiThreadId = it.id) }
+        ?: SessionsQuery(historyLane = historyLane, uiThreadId = null)
+
+/**
+ * A thread tap: Sessions, filtered to that thread (`#general` too), search
+ * cleared and back on page 1. Another tap replaces the filter.
+ */
+internal fun ChatHistoryState.showingSessionsOf(thread: UiThreadRecord): ChatHistoryState =
+    copy(
+        sessionThreadFilter = thread,
+        activeTab = ChatHistoryTab.Sessions,
+        searchText = "",
+        appliedSearch = "",
+        offset = 0,
+    )
+
+internal fun ChatHistoryState.withoutThreadFilter(): ChatHistoryState = copy(sessionThreadFilter = null)
+
+/** The lane a thread's new sessions go in: its own, else Personal. */
+internal fun UiThreadRecord.sessionLane(): ChatHistoryLane =
+    ChatHistoryLane.entries.firstOrNull { it.wire == historyLane } ?: ChatHistoryLane.Personal
+
+/** Where New Session creates: in the filtered thread, else `#general` (Personal). */
+internal fun ChatHistoryState.newSessionTarget(): Pair<String, ChatHistoryLane> =
+    sessionThreadFilter?.let { it.id to it.sessionLane() } ?: ("general" to ChatHistoryLane.Personal)
 
 internal fun sessionMutationKey(sessionId: String) = "session:$sessionId"
 internal fun threadMutationKey(threadId: String) = "thread:$threadId"
@@ -197,6 +234,17 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
         resetAndFetch(_state.value.copy(historyLane = lane))
     }
 
+    /** Keep the panel on Sessions, showing only [thread]'s sessions until cleared. */
+    fun showSessionsOf(thread: UiThreadRecord) {
+        searchJob?.cancel()
+        resetAndFetch(_state.value.showingSessionsOf(thread))
+    }
+
+    fun clearThreadFilter() {
+        if (_state.value.sessionThreadFilter == null) return
+        resetAndFetch(_state.value.withoutThreadFilter())
+    }
+
     fun updateSearchText(value: String) {
         val bounded = boundedHistoryQuery(value)
         _state.value = _state.value.copy(searchText = bounded)
@@ -278,11 +326,14 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
                             offset = page.offset,
                         )
                     }
-                    request.activeTab == ChatHistoryTab.Sessions -> repository.sessionsPage(
-                        historyLane = request.historyLane,
-                        limit = PAGE_SIZE,
-                        offset = request.offset,
-                    ).let { page ->
+                    request.activeTab == ChatHistoryTab.Sessions -> request.sessionsQuery().let { query ->
+                        repository.sessionsPage(
+                            historyLane = query.historyLane,
+                            uiThreadId = query.uiThreadId,
+                            limit = PAGE_SIZE,
+                            offset = request.offset,
+                        )
+                    }.let { page ->
                         if (generation != fetchGeneration) return@launch
                         _state.value = _state.value.copy(
                             sessions = page.items,
@@ -333,7 +384,11 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openSession(session: SessionSummary, onReady: (String) -> Unit) {
         val id = session.identifier()
+        // A session picked from a thread's list while that thread is still
+        // resolving wins: the pending thread open is dropped.
+        threadOpenGeneration++
         _state.value = _state.value.copy(
+            openingThreadId = null,
             activeSessionId = id,
             activeThreadId = session.uiThreadId ?: _state.value.activeThreadId,
         )
@@ -364,19 +419,22 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
                     if (active != null || page.items.isEmpty() || offset >= page.total) break
                 } while (true)
 
-                val sessionId = active?.identifier()
-                    ?: fallback?.identifier()
-                    ?: repository.createSession(
-                        uiThreadId = thread.id,
-                        historyLane = ChatHistoryLane.entries.firstOrNull { it.wire == thread.historyLane }
-                            ?: ChatHistoryLane.Personal,
-                    )
+                val existing = active?.identifier() ?: fallback?.identifier()
+                val sessionId = existing
+                    ?: repository.createSession(uiThreadId = thread.id, historyLane = thread.sessionLane())
                 if (generation != threadOpenGeneration) return@launch
                 _state.value = _state.value.copy(
                     openingThreadId = null,
                     activeSessionId = sessionId,
                     activeThreadId = thread.id,
                 )
+                // A thread with no sessions got one just now; the list filtered
+                // to it was read before, so read it again to show the new row.
+                if (existing == null && _state.value.sessionThreadFilter?.id == thread.id &&
+                    _state.value.activeTab == ChatHistoryTab.Sessions
+                ) {
+                    fetchCurrentPage(quiet = true)
+                }
                 onReady(sessionId)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -393,18 +451,22 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun createSession(onReady: (String) -> Unit) {
         mutate("create:session") {
-            val id = repository.createSession()
-            _state.value = _state.value.copy(activeSessionId = id, activeThreadId = "general")
+            // The new session wins over a thread still resolving.
+            threadOpenGeneration++
+            _state.value = _state.value.copy(openingThreadId = null)
+            val (threadId, lane) = _state.value.newSessionTarget()
+            val id = repository.createSession(uiThreadId = threadId, historyLane = lane)
+            _state.value = _state.value.copy(activeSessionId = id, activeThreadId = threadId)
             onReady(id)
         }
     }
 
-    fun createThread(name: String, onCreated: () -> Unit) {
+    /** Creates a named thread (no id: the server derives id and slug) and hands it back to open. */
+    fun createThread(name: String, onCreated: (UiThreadRecord) -> Unit) {
         val clean = name.trim()
         if (clean.isEmpty()) return
         mutate("create:thread") {
-            repository.createThread(clean)
-            onCreated()
+            onCreated(repository.createThread(clean))
         }
     }
 
@@ -430,6 +492,10 @@ class ChatHistoryViewModel(app: Application) : AndroidViewModel(app) {
                 HistoryMutation.Archive -> repository.setThreadArchived(thread.id, true)
                 HistoryMutation.Restore -> repository.setThreadArchived(thread.id, false)
                 HistoryMutation.Delete -> repository.deleteThread(thread.id)
+            }
+            // A deleted or archived thread leaves the filter with nothing to show.
+            if (mutation != HistoryMutation.Restore && _state.value.sessionThreadFilter?.id == thread.id) {
+                _state.value = _state.value.withoutThreadFilter()
             }
             if (thread.id == _state.value.activeThreadId && mutation != HistoryMutation.Restore) {
                 onRemovedActive()

@@ -1,6 +1,6 @@
 ---
 name: web-search-via-minimax
-version: 0.2.2
+version: 0.2.3
 description: Web search via MiniMax's search API (`mmx search query`). A direct MiniMax diagnostic or
   explicitly requested provider path. Returns organic results (title, link, snippet, date) as normalized
   JSON; ordinary research should use `content_search` and `content_read`.
@@ -35,6 +35,7 @@ metadata:
       # without it loses these calls with the CLI's own message rather than
       # losing the skill.
       - node
+      - python3
     install_hint:
       docs: ships with the runtime — set the MiniMax API secret in the vault before activating. The `mmx`
         CLI is vendored via `skillshub/web-search-via-minimax/package.json` (npm workspace), installed
@@ -63,6 +64,7 @@ metadata:
         - minimax-websearch
         - mmx
         - node
+        - python3
         entrypoint: minimax-websearch
       runtime:
         protocol: cli

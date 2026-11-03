@@ -1,6 +1,6 @@
 ---
 name: "telegram"
-version: 0.2.2
+version: 0.2.3
 description: "Telegram Bot API — send messages, get chat info, and manage bot operations through a governed scoped-credential adapter"
 metadata:
   magician:
@@ -10,7 +10,7 @@ metadata:
       schema_version: 1
       destination: api.telegram.org
     requires:
-      bins: ["telegram-bot-adapter"]
+      bins: ["telegram-bot-adapter", "python3"]
       env: ["TELEGRAM_TOKEN"]
     install_hint:
       docs: "requires TELEGRAM_TOKEN in the scoped secret vault"
@@ -23,7 +23,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [telegram-bot-adapter]
+        bins: [telegram-bot-adapter, python3]
+        entrypoint: telegram-bot-adapter
       runtime:
         protocol: cli
         command_prefix: []

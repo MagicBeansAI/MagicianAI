@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 0.2.42: Re-arm chat delivery for chat-spawned runs resumed at startup.
+
 - 0.2.41: Flush write-behind memory temperature counters on shutdown and CLI exit.
 
 - Shutdown (and every CLI exit) flushes the memory temperature counters held for write-behind, bounded to 10 s.

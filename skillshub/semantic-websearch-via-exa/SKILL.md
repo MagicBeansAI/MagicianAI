@@ -1,6 +1,6 @@
 ---
 name: "semantic-websearch-via-exa"
-version: 0.2.1
+version: 0.2.2
 description: "Neural / semantic web search via Exa AI. This is a provider adapter used by the `content_search` controller and a direct diagnostic tool when Exa itself is explicitly requested. Best for discovery by meaning, similar pages, academic, or niche research."
 metadata:
   magician:
@@ -91,7 +91,7 @@ metadata:
           commodity: usd
           encoding: decimal_major_units
     requires:
-      bins: ["exa-search"]
+      bins: ["exa-search", "python3"]
       env: ["EXA_API_KEY"]
     install_hint:
       docs: "requires env: EXA_API_KEY — set in vault before activating"
@@ -115,7 +115,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [exa-search]
+        bins: [exa-search, python3]
+        entrypoint: exa-search
       runtime:
         protocol: cli
         command_prefix: []

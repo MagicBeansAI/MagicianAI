@@ -155,6 +155,13 @@ struct ActivityTimelineView: View {
 
             if expanded {
                 VStack(alignment: .leading, spacing: 8) {
+                    // "Started 14:28 · Updated 2 min. ago"; a long-press shows the exact times.
+                    let times = ActivityLiveClock.cardTimes(rows)
+                    CardTimesLine(
+                        started: times.started, updated: times.updated,
+                        startWord: "Started", live: isLive, theme: theme
+                    )
+                    .accessibilityIdentifier("activity-times")
                     if rows.isEmpty, isLive {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.mini)
@@ -280,45 +287,20 @@ struct ActivityTimelineView: View {
         if let openTaskDetail { openTaskDetail(route) } else { fallbackRunRoute = route }
     }
 
+    /// Activity-detail links open through the one chat link router; a run this
+    /// card already inspects opens in place.
     private func openActivityURL(_ url: URL) -> OpenURLAction.Result {
-        if NoteLinkRouter.open(url) { return .handled }
-        switch classifyActivityLink(url.absoluteString) {
-        case .external(let raw):
-            guard let target = URL(string: raw) else { return .discarded }
-            UIApplication.shared.open(target)
-        case .task(let id):
-            AppActions.shared.requestTask(id)
-        case .execution(let executionId):
-            if inspectTarget?.executionId == executionId {
+        ChatLinkRouter(
+            sessionId: sessionId,
+            present: { openedArtifact = $0 },
+            fail: { actionError = $0 },
+            openTask: { AppActions.shared.requestTask($0) },
+            openExecution: { executionId in
+                guard inspectTarget?.executionId == executionId else { return false }
                 openRun()
-            } else {
-                let encoded = executionId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
-                    ?? executionId
-                openedArtifact = .direct(
-                    url: "/debug?execution_id=\(encoded)", mime: "text/html", name: "Run"
-                )
+                return true
             }
-        case .thread(let id):
-            AppActions.shared.requestThread(id)
-        case .attention(let id):
-            AppActions.shared.requestAttention(itemID: id)
-        case .today(let rawSection):
-            AppActions.shared.requestToday(section: rawSection.flatMap(TodaySection.init(rawValue:)))
-        case .settings:
-            AppActions.shared.requestSettings()
-        case .observe:
-            AppActions.shared.requestObserve()
-        case .taskOutput(let taskId, let relativePath):
-            openedArtifact = .taskOutput(taskId: taskId, relativePath: relativePath, mime: nil)
-        case .artifact(let raw):
-            openedArtifact = .direct(url: raw, mime: nil, name: URL(string: raw)?.lastPathComponent)
-        case .file(let path):
-            performPathAction(path, .file)
-        case .webRoute(let route):
-            openedArtifact = .direct(url: route, mime: "text/html", name: MagicianAccess.productName)
-        case .unknown:
-            return .discarded
-        }
+        ).open(url)
         return .handled
     }
 
@@ -382,6 +364,19 @@ enum ActivityLiveClock {
         return TaskTimelineFormatting.elapsed(
             since: Date(timeIntervalSince1970: startedAtMs / 1_000), now: now
         )
+    }
+
+    /// The card's times line: the first row's start, and the latest row start
+    /// or end (`startedAtMs + durationMs`). Rows without a start time are not
+    /// counted; nil when no row has one.
+    static func cardTimes(_ rows: [ActivityRow]) -> (started: Date?, updated: Date?) {
+        let stamped = rows.compactMap { row -> (start: Double, end: Double)? in
+            guard let start = row.startedAtMs, start.isFinite, start > 0 else { return nil }
+            let duration = row.durationMs.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 0
+            return (start, start + duration)
+        }
+        let date = { (ms: Double) in Date(timeIntervalSince1970: ms / 1_000) }
+        return (stamped.map { $0.start }.min().map(date), stamped.map { $0.end }.max().map(date))
     }
 }
 

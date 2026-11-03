@@ -304,6 +304,10 @@ internal fun AppShell(
     }
     LaunchedEffect(Unit) {
         ai.magicbeans.magdroid.access.MagicianAccess.activeMachine.collect {
+            // Thread names and slug aliases belong to one machine.
+            ai.magicbeans.magdroid.chat.ThreadDirectory.useOrigin(
+                runCatching { ai.magicbeans.magdroid.access.MagicianAccess.activeOrigin(context) }.getOrNull(),
+            )
             pushedTask = null
             chatContextTarget = null
             // VibeDev read the old machine: its screens, view models and
@@ -338,6 +342,48 @@ internal fun AppShell(
     // A task link already on Tasks requests its thread here and pushes the
     // task's detail itself; that detail stays.
     LaunchedEffect(workDeepLink) { if (workDeepLink != null) showTab(Destination.Tasks, keepTask = true) }
+
+    // A chat link (`/chat?session=…`, `/t/<thread>[/chat][?session=…]`,
+    // `/history`, `/settings`, `/notes`) lands here: the named conversation,
+    // else the thread's latest one (as a History thread tap does), else the
+    // chat tab; History opens the drawer.
+    val chatDeepLink by ChatDeepLinks.target.collectAsStateWithLifecycle()
+    LaunchedEffect(chatDeepLink) {
+        when (val target = chatDeepLink) {
+            is ChatDeepLinkTarget.Chat -> {
+                showTab(Destination.Chat)
+                val sessionId = target.sessionId
+                val threadId = target.threadId
+                when {
+                    sessionId != null -> viewModel.openSession(sessionId)
+                    threadId != null -> historyViewModel.openThread(
+                        ai.magicbeans.magdroid.chat.UiThreadRecord(
+                            id = threadId,
+                            name = ai.magicbeans.magdroid.chat.ThreadDirectory.entries.value[threadId]?.name ?: threadId,
+                        ),
+                    ) { id -> viewModel.openSession(id) }
+                    else -> Unit
+                }
+            }
+            is ChatDeepLinkTarget.History -> {
+                showTab(Destination.Chat)
+                scope.launch { history.open() }
+            }
+            is ChatDeepLinkTarget.Settings -> {
+                settingsPage = SettingsPage.Root
+                showSettings = true
+            }
+            is ChatDeepLinkTarget.Notes -> {
+                showSettings = false
+                showVibeDev = false
+                linkedNote = null
+                notesChrome.explorerOpen = true
+                showNotes = true
+            }
+            null -> Unit
+        }
+        chatDeepLink?.let(ChatDeepLinks::consume)
+    }
 
     // A note link (chat Markdown, a task summary, an ask, `magican://notes`)
     // opens the native Notes screen on that document over the current tab;
@@ -540,21 +586,27 @@ internal fun AppShell(
                             scope.launch { history.close() }
                         }
                     },
+                    // The chat opens the thread's newest session; History stays
+                    // open on Sessions, filtered to that thread.
                     onOpenThread = { thread ->
-                        historyViewModel.openThread(thread) { id ->
-                            viewModel.openSession(id)
-                            scope.launch { history.close() }
-                        }
+                        historyViewModel.showSessionsOf(thread)
+                        historyViewModel.openThread(thread) { id -> viewModel.openSession(id) }
                     },
+                    onClearThreadFilter = historyViewModel::clearThreadFilter,
                     onNewSession = {
                         historyViewModel.createSession { id ->
                             viewModel.openSession(id)
                             scope.launch { history.close() }
                         }
                     },
+                    // The prompt named it; the server derives id and slug. The new
+                    // thread opens at once, on its first conversation.
                     onNewThread = { name ->
-                        historyViewModel.createThread(name) {
-                            scope.launch { history.close() }
+                        historyViewModel.createThread(name) { thread ->
+                            historyViewModel.openThread(thread) { id ->
+                                viewModel.openSession(id)
+                                scope.launch { history.close() }
+                            }
                         }
                     },
                     onSessionMutation = { session, mutation ->
@@ -1126,6 +1178,7 @@ private fun HistoryPanel(
     onNext: () -> Unit,
     onOpenSession: (SessionSummary) -> Unit,
     onOpenThread: (UiThreadRecord) -> Unit,
+    onClearThreadFilter: () -> Unit,
     onNewSession: () -> Unit,
     onNewThread: (String) -> Unit,
     onSessionMutation: (SessionSummary, HistoryMutation) -> Unit,
@@ -1180,17 +1233,48 @@ private fun HistoryPanel(
                         ) { onSelectTab(tab) }
                     }
                 }
-                Row(
-                    Modifier.padding(horizontal = 14.dp).fillMaxWidth()
-                        .background(Control, RoundedCornerShape(8.dp)).padding(3.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    ChatHistoryLane.entries.forEach { lane ->
-                        HistorySegment(
-                            text = lane.title,
-                            selected = state.historyLane == lane,
+                val threadFilter = state.sessionThreadFilter
+                    .takeIf { state.activeTab == ChatHistoryTab.Sessions && !state.searchActive }
+                if (threadFilter != null) {
+                    // A picked thread shows its sessions from both lanes, so its
+                    // label stands where the lane switch was.
+                    Row(
+                        Modifier.padding(horizontal = 14.dp).fillMaxWidth()
+                            .background(Control, RoundedCornerShape(8.dp))
+                            .padding(start = 10.dp, top = 3.dp, end = 3.dp, bottom = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "#${threadFilter.name.ifBlank { threadFilter.id }}",
+                            color = Ink,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
-                        ) { onSelectLane(lane) }
+                        )
+                        IconButton(onClick = onClearThreadFilter, modifier = Modifier.size(30.dp)) {
+                            Icon(
+                                Icons.Outlined.Close,
+                                contentDescription = "Show sessions from all threads",
+                                tint = Muted,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                    }
+                } else {
+                    Row(
+                        Modifier.padding(horizontal = 14.dp).fillMaxWidth()
+                            .background(Control, RoundedCornerShape(8.dp)).padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        ChatHistoryLane.entries.forEach { lane ->
+                            HistorySegment(
+                                text = lane.title,
+                                selected = state.historyLane == lane,
+                                modifier = Modifier.weight(1f),
+                            ) { onSelectLane(lane) }
+                        }
                     }
                 }
                 Spacer(Modifier.height(7.dp))
@@ -1466,6 +1550,7 @@ private fun HistorySessionRow(
     onMutation: (HistoryMutation) -> Unit,
 ) {
     var menu by remember(session.identifier()) { mutableStateOf(false) }
+    val threadEntries by ai.magicbeans.magdroid.chat.ThreadDirectory.entries.collectAsStateWithLifecycle()
     val protected = session.isDefaultSession || session.internalVoice != null
     Box {
         Surface(
@@ -1508,7 +1593,8 @@ private fun HistorySessionRow(
                     }
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(
-                            "#${session.uiThreadId?.takeIf { it.isNotBlank() } ?: "general"}",
+                            // The thread's name; its id only until threads have loaded.
+                            ai.magicbeans.magdroid.chat.ThreadDirectory.label(session.uiThreadId, threadEntries),
                             color = Ink,
                             fontSize = HISTORY_ROW_META_SP.sp,
                             maxLines = 1,

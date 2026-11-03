@@ -97,6 +97,16 @@ activity**; otherwise flat. The server also sends
 Mobile: iOS `PlanStepActivity` (`PlanProgressModel.swift`), Android
 `PlanStepActivity.kt`.
 
+### Why a tool call failed
+
+A failed tool row (`kind: 'tool'`, `tool.failed`) shows the reason under its
+`<tool> failed` title: the row's `summary`, else `metadata.error` without the
+runtime's `step execution failed:` / `compiled-pack dispatch failed:` prefixes.
+It is plain text clamped to two lines, with a Show more / Show less button when
+it overflows; other failed rows keep their report rendering. iOS
+(`TaskActivityFailure`, `DeepWorkPanel.swift`) and Android
+(`TaskActivityCalls.failureDetail`) do the same.
+
 ### Plan steps and the Plan header
 
 List rows carry no steps (`convertV3Task` sets `planSteps: []`);
@@ -279,7 +289,12 @@ renders in full, never clamped (owner decision 2026-10-01). `TaskPanelFile` carr
 `taskOutputUrl` (`null` removes affordances). Execution file links keep their
 segment (`/api/magician/v3/tasks/<task>/outputs/executions/<exec>/outputs/<file>`;
 `lib/magician/links/classifyRef.ts`, `classifyRef.test.ts`; task-level
-`outputs/<file>` 404s).
+`outputs/<file>` 404s). A served route link — e.g. a delivered file,
+`/api/magician/v3/tasks/<task>/outputs/delivered/<exec>/<name>`, any task id —
+classifies as `taskOutput` with its path decoded (re-encoded once by
+`resolveHref`) and opens through the authenticated fetch; a host path under
+`…/[internal_]tasks/<task>/workdir/…` stays `filePath` (host open), since only
+`outputs/` is served.
 
 ### `id`, and which act is open
 
@@ -323,6 +338,19 @@ verification stays behind the info icon. The source is `primary_user_output_id`,
 else the first `audience: "user"` ref;
 `fetchTaskOutputFiles` marks that file `reportSource` (`reportSourcePath`), and
 it renders above `.output-summary` without `Preview`, not repeated below.
+
+**The primary deliverable leads** (`deliverableOrder.ts`, shared with the chat
+card). The outputs row's `primary: true` — or the top-level
+`primary_deliverable_output_id` (`withPrimaryDeliverable`; internal tasks read
+it off `refs`) — sets `TaskPanelFile.primary`. `orderTaskDeliverables` sorts
+task deliverables primary, other delivered files (`user_attachment`,
+`user_media`), then the summary (`taskSummary`: role `primary_task_user` or the
+generated `out_task_user_…` name), inside the slots deliverables already held,
+so non-deliverable indexes do not move. With a primary, the deliverable list
+renders **above** the report row and report, the primary row tagged `Main
+deliverable`; without one (older tasks) the report stays first. The generated
+`out_task_user_…` file is shown as `Summary` (`label`, also used by
+`outputSummary`); `name` stays the real file name for downloads.
 
 ### Deliverables and other artifacts
 

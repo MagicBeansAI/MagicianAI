@@ -76,6 +76,10 @@ struct LiveTaskCardInput: Equatable {
     /// host; the card counts outputs per run, as the web does).
     var outputCount: Int = 0
     var runs: [LiveTaskRunInput] = []
+    /// The task record's created and latest updated times
+    /// (`TaskStoreRecord`), when the host fetched them.
+    var recordCreatedAt: Date? = nil
+    var recordUpdatedAt: Date? = nil
 }
 
 extension LiveTaskCardInput {
@@ -128,6 +132,12 @@ struct LiveTaskCardState: Equatable {
     let currentStep: String?
     let startedAt: Date?
     let finishedAt: Date?
+    /// The card's "Created": the task record's created time when known, else
+    /// the card's first update.
+    let createdAt: Date?
+    /// The card's "Updated": the later of the task record's update time and
+    /// the card's latest update.
+    let updatedAt: Date?
     /// Why the task is where it is (markdown): the trimmed `summary`. Dropped
     /// when the store's status replaced the message's, since the summary then
     /// describes a state the task left.
@@ -202,8 +212,12 @@ struct LiveTaskCardState: Equatable {
         self.startable = !synthesisPending && contentStatus == "ready"
         self.steps = steps
         self.currentStep = currentStep
-        self.startedAt = times.min().map { Date(timeIntervalSince1970: $0) }
-        self.finishedAt = terminal ? times.max().map { Date(timeIntervalSince1970: $0) } : nil
+        let firstUpdate = times.min().map { Date(timeIntervalSince1970: $0) }
+        let latestUpdate = times.max().map { Date(timeIntervalSince1970: $0) }
+        self.startedAt = firstUpdate
+        self.finishedAt = terminal ? latestUpdate : nil
+        self.createdAt = input.recordCreatedAt ?? firstUpdate
+        self.updatedAt = [input.recordUpdatedAt, latestUpdate].compactMap { $0 }.max()
         self.reason = reason
         self.outputs = outputs
     }

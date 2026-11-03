@@ -1,8 +1,0 @@
-# Per-scope manifest: setup writes <scope>/skills/metabase-mcp/SKILL.md from
-# SKILL.md here, replacing the reserved placeholder origin with the scope's own
-# METABASE_BASE_URL (see skillshub/scripts/skill_render.py).
-schema_version: magician.skill-render.v1
-substitutions:
-  - placeholder: https://metabase.invalid
-    input: METABASE_BASE_URL
-    kind: https_origin

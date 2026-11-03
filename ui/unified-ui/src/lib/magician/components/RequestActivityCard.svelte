@@ -26,10 +26,12 @@
 	import { onDestroy, onMount, createEventDispatcher } from 'svelte';
 	import { get } from 'svelte/store';
 	import { scopeIdentityStore } from '$lib/stores/scopeIdentityStore';
+	import { recordStopOfTurnWithNoServerRun } from '$lib/magician/chat/turnState';
 	import {
 		chatTurnEventsStore,
 		chatTurnUsageBaselineStore,
 		eventDedupeKey,
+		eventTimestampMs,
 		subscribeToChatTurn,
 		fetchEventsPage,
 		type RawTurnEvent,
@@ -60,7 +62,8 @@
 		routedModelLabel,
 		THINKING_LABEL
 	} from './llmModelLabel';
-	import { liveClock, runningElapsed } from '$lib/magician/chat/next/liveClock';
+	import { liveClock, minuteTick, runningElapsed } from '$lib/magician/chat/next/liveClock';
+	import { cardTimesLabel, timeSpan } from '$lib/shared/cardTimes';
 	import { tutorOverlayTransitionForEvent } from './tutorOverlayLifecycle';
 	import {
 		parseCompleteResultOwner,
@@ -103,6 +106,11 @@
 	export let controlExecutionId: string | null = null;
 	export let controlTaskId: string | null = null;
 	export let showExecutionStop = true;
+	/** Set by the chat panel when this card's turn is live only by the
+	 *  client's guess (the newest unanswered message): no send in flight, no
+	 *  running task, and no running turn on the server. A Stop whose run has
+	 *  nothing left to cancel then settles the turn here. */
+	export let stopsTurnWhenRunEnded = false;
 	/**
 	 * Presentation only. `'next'` swaps the inline row list of a LIVE card
 	 * for the chat-next `TurnStage` (working chip + settled dots); the
@@ -193,6 +201,14 @@
 	// backend cancel is best-effort + tolerant of an already-gone execution.
 	let cancelling = false;
 	let cancelled = false;
+	/** The cancel endpoint's own answer that the run is not active: 400 with
+	 *  `details.cancelled: false`. Any other refusal (auth, a 404 a scope
+	 *  check may give, a governed run, a malformed id) is not that. */
+	async function runHasNothingToCancel(res: Response): Promise<boolean> {
+		if (res.status !== 400) return false;
+		const body = await res.json().catch(() => null);
+		return body?.details?.cancelled === false;
+	}
 	async function cancelRun(): Promise<void> {
 		const executionId = inspectTarget?.executionId;
 		if (!executionId || cancelling || $executionControlBusy.has(executionId)) return;
@@ -204,7 +220,15 @@
 					{ method: 'POST', headers: { 'Content-Type': 'application/json' } }
 				)
 			);
-			if (res.ok) cancelled = true;
+			if (res.ok) {
+				cancelled = true;
+			} else if (stopsTurnWhenRunEnded && live && sessionId && (await runHasNothingToCancel(res))) {
+				// The run ended (or a restart took it), and the server reports
+				// no running turn, yet this turn shows as live: only this client
+				// thinks it runs, so settle it here.
+				recordStopOfTurnWithNoServerRun(sessionId, chatTurnId);
+				cancelled = true;
+			}
 		} catch {
 			// Best-effort — the user can click again.
 		} finally {
@@ -580,6 +604,14 @@
 	let now = Date.now();
 	const clock = liveClock((tick) => (now = tick));
 	$: clock.sync(anyRunning);
+	/** "Started … · Updated …" from the first and latest event that carries a
+	 *  time (an event without one is left out, not dated "now"). The age moves
+	 *  with the running clock, and with the shared minute clock once settled. */
+	$: activityTimes = cardTimesLabel(
+		timeSpan(rawEvents.map(eventTimestampMs)),
+		Math.max(now, $minuteTick),
+		'Started'
+	);
 	/** "Complete" = the request has emitted at least one event, nothing
 	 *  is currently running, and the card is no longer subscribed live.
 	 *  Used to flip the embedded card's accent border from "still
@@ -2488,6 +2520,13 @@
 		{/if}
 	</button>
 
+	{#if expanded && activityTimes}
+		<!-- Under the header, not in it: the header row is full with the usage
+		     chip, Show all, Stop and Inspect. Collapsed, the message's own
+		     time says when it started. -->
+		<p class="request-activity__times" title={activityTimes.title}>{activityTimes.text}</p>
+	{/if}
+
 	{#if expanded && variant === 'next' && live && stageRows.length > 0}
 		<!-- chat-next: the live turn as a stage (working chip + dots).
 		     Nothing renders before the first row, so the host's typing
@@ -2926,6 +2965,14 @@
 	}
 	@keyframes request-activity-spin {
 		to { transform: rotate(360deg); }
+	}
+	/* "Started 14:28 · Updated 2m ago": its own muted line at the top of
+	 * the open steps, like the phones. */
+	.request-activity__times {
+		margin: 0 0 0.15rem;
+		opacity: 0.55;
+		font-size: 0.72em;
+		font-variant-numeric: tabular-nums;
 	}
 	/* Prompt-cache chip in the header. Subtle by default — same accent
 	 * family as the title so it reads as part of the section identity

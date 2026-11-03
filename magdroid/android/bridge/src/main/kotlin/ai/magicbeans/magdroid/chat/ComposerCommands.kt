@@ -366,6 +366,19 @@ object ComposerCommands {
         return ComposerCommandId.fromWire(name)
     }
 
+    /**
+     * A top-level draft the picker still lists a command for (`/eng`,
+     * `/budget defa`): every word of it appears in the command's name, as the
+     * web picker matches. Send opens that command, the picker's first row.
+     * Anything else (`/budget please help`, `/usr/bin …`) is ordinary text.
+     */
+    fun partialCommand(text: String, state: ComposerCommandState): ComposerCommandId? {
+        if (state.stack.isNotEmpty()) return null
+        val query = trigger(text.trim()) ?: return null
+        val words = query.lowercase().split(' ').filter { it.isNotEmpty() }
+        return all.firstOrNull { command -> words.all { command.name.contains(it) } }?.id
+    }
+
     fun open(id: ComposerCommandId): ComposerCommandStep {
         val prefix = "/${id.wire} "
         return ComposerCommandStep(ComposerCommandState(listOf(ComposerCommandLevel.Command(id)), false, prefix), prefix)
@@ -415,7 +428,7 @@ object ComposerCommands {
      * prefix and filter (`/engine pi son`). Commands never reach the model.
      */
     fun holdsSend(text: String, state: ComposerCommandState): Boolean {
-        if (exactCommand(text) != null) return true
+        if (exactCommand(text) != null || partialCommand(text, state) != null) return true
         if (state.stack.isEmpty()) return false
         val prefix = state.prefix.trim().lowercase()
         return prefix.isNotEmpty() && text.trim().lowercase().startsWith(prefix)

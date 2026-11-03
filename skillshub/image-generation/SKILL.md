@@ -1,6 +1,6 @@
 ---
 name: image-generation
-version: 0.2.1
+version: 0.2.2
 description: Generate or edit still images via Google Gemini "Nano Banana" models. Use when the user wants to create, modify, or stylize an image — photoreal scenes, art, logos with legible text, mockups, infographics, stickers, multi-image composites, or natural-language edits to an existing image. Not for video (use video-generation) or template-driven meme overlays (meme-generation).
 compatibility: Requires NANOBANANA2_API_KEY in the secret vault and the runtime nano-banana facade installed.
 metadata:
@@ -11,7 +11,7 @@ metadata:
       schema_version: 1
       destination: generativelanguage.googleapis.com
     requires:
-      bins: ["nanobanana2"]
+      bins: ["nanobanana2", "python3"]
       env: ["NANOBANANA2_API_KEY"]
       python_packages: ["Pillow", "google-genai"]
     install_hint:
@@ -26,7 +26,8 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [nanobanana2]
+        bins: [nanobanana2, python3]
+        entrypoint: nanobanana2
       runtime:
         protocol: cli
         command_prefix: []

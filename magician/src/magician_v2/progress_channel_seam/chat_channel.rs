@@ -524,6 +524,26 @@ impl ProgressChannel for ChatChannel {
                 } else {
                     summary.clone()
                 };
+                // No host path or `file://` link reaches the chat: paths into
+                // the task become the delivered files' served URLs.
+                let present_scope = crate::magician_v2::artifact_v2::ScopeRef::system_internal_unauthenticated(
+                    &subscription.principal,
+                    &subscription.workspace,
+                );
+                let summary = match summary {
+                    Some(text)
+                        if !task_id.is_empty()
+                            && matches!(status.as_str(), "completed" | "failed" | "cancelled") =>
+                    {
+                        Some(
+                        self.v3_service
+                            .present_text_for_user(&present_scope, &task_id, &text, false)
+                            .await,
+                        )
+                    },
+                    other => other,
+                };
+                let presented_task_id = task_id.clone();
                 // Phase 3.5 — `inline_pack` arm removed. Chat-pack
                 // dispatch now creates real V3 tasks (see
                 // `dispatch_capability_pack` in chat/service.rs), so
@@ -625,6 +645,20 @@ impl ProgressChannel for ChatChannel {
                                 format!("Agent '{agent_id}' ended with {other}. {summary}")
                             })
                             .unwrap_or_else(|| format!("Agent '{agent_id}' ended with {other}.")),
+                    };
+                    // The terminal message the mouth reads next turn names
+                    // each delivered file by its served URL.
+                    let text = if presented_task_id.is_empty() {
+                        text
+                    } else {
+                        self.v3_service
+                            .present_text_for_user(
+                                &present_scope,
+                                &presented_task_id,
+                                &text,
+                                status == "completed",
+                            )
+                            .await
                     };
                     self.append_message(
                         session_id,
@@ -1858,6 +1892,7 @@ mod tests {
                         absolute_path,
                         label,
                         size,
+                        ..
                     } => {
                         assert_eq!(source, &ContentFileSource::SessionOutput);
                         assert!(relative_path.starts_with("task_output_preview_"));

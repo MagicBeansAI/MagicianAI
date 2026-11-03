@@ -9,7 +9,7 @@ import yaml
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 import migrate_metabase_mcp as migration
-import skill_render
+import scope_env
 
 
 class MetabaseMcpTests(unittest.TestCase):
@@ -35,9 +35,12 @@ class MetabaseMcpTests(unittest.TestCase):
             scope = self.legacy(name, origin)
             migration.migrate_scope(scope, self.source)
             new = scope / "skills/metabase-mcp"
-            self.assertEqual(skill_render.read_scope_env(new), {"METABASE_BASE_URL": origin})
+            self.assertEqual(scope_env.read_scope_env(new), {"METABASE_BASE_URL": origin})
+            # One shared manifest: the origin is resolved from the env at load.
+            self.assertTrue((new / "SKILL.md").is_symlink())
             manifest = (new / "SKILL.md").read_text()
-            self.assertIn(origin + "/api/metabase-mcp", manifest)
+            self.assertIn("${METABASE_BASE_URL}/api/metabase-mcp", manifest)
+            self.assertNotIn(origin, manifest)
             self.assertNotIn("private-fixture", manifest)
             self.assertFalse((scope / "skills/metabase").exists())
             state = scope / "skills/.skill-state/metabase"
@@ -52,7 +55,7 @@ class MetabaseMcpTests(unittest.TestCase):
         config.mkdir(parents=True)
         (config / ".env").write_text("METABASE_BASE_URL=https://current.example\n")
         migration.migrate_scope(scope, self.source)
-        self.assertIn("https://current.example/api/metabase-mcp", (config.parent / "SKILL.md").read_text())
+        self.assertEqual(scope_env.read_scope_env(config.parent), {"METABASE_BASE_URL": "https://current.example"})
 
     def test_invalid_origin_keeps_legacy_intact(self):
         scope = self.legacy("alice/work", "https://user:secret@outside.example")
@@ -68,7 +71,7 @@ class MetabaseMcpTests(unittest.TestCase):
         migration.migrate_scope(scope, self.source)
         self.assertTrue((shared / "bin/metabase-pp-cli").is_file())
         self.assertFalse((scope / "skills/metabase").exists())
-        self.assertEqual(skill_render.read_scope_env(scope / "skills/metabase-mcp"), {})
+        self.assertEqual(scope_env.read_scope_env(scope / "skills/metabase-mcp"), {})
 
     def test_sql_and_delivery_are_approval_gated(self):
         text = (self.source / "metabase-mcp/SKILL.md").read_text()
@@ -85,6 +88,13 @@ class MetabaseMcpTests(unittest.TestCase):
             self.assertEqual(policies[name]["risk"], "read_only")
         self.assertNotIn("execute_question", policies)
         self.assertNotIn("read_resource", policies)
+
+    def test_endpoint_and_issuer_are_scope_env_references(self):
+        text = (self.source / "metabase-mcp/SKILL.md").read_text()
+        runtime = yaml.safe_load(text.split("---", 2)[1])["metadata"]["magician"]["runtime_contract"]["runtime"]
+        self.assertEqual(runtime["transport"]["endpoint"], "${METABASE_BASE_URL}/api/metabase-mcp")
+        self.assertEqual(runtime["discovery"]["oauth"]["authorization_issuer"], "${METABASE_BASE_URL}")
+        self.assertFalse((self.source / "metabase-mcp/render.yaml").exists())
 
     def test_binary_cleanup_keeps_other_tools(self):
         store = self.root / "system/skill-bin/pin"

@@ -221,6 +221,7 @@
 		isVibeDevThread,
 		isVibeDevSession
 	} from '$lib/threads/normalizeThreadId';
+	import { threadHref, threadHrefs, threadLabels } from '$lib/threads/threadLinks';
 	import { derivePresence } from '$lib/magician/chat/next/presence';
 	import ChatTurnProgress from '$lib/magician/components/ChatTurnProgress.svelte';
 	import PlannerDock from '$lib/magician/chat/components/PlannerDock.svelte';
@@ -258,6 +259,7 @@
 		turnStatusNotice
 	} from '$lib/magician/chat/turnState';
 	import { storeStatusForCard } from '$lib/magician/chat/next/liveTask';
+	import { formatClockTime } from '$lib/shared/cardTimes';
 	import { taskHasPlan } from '$lib/magician/tasks/taskHasPlan';
 	/*
 	 * Both chat gestures open **the** task panel, in the shared drawer.
@@ -1369,6 +1371,11 @@
 	);
 	$: liveTurnId =
 		inFlightChatTurnId ?? serverRunningTurnId ?? activeTaskTurnId ?? openUserTurnId;
+	// The live turn only this client's guess keeps live (the newest
+	// unanswered message): nothing is being sent, no task runs for it, and the
+	// server reports no running turn. A card's Stop may settle it locally.
+	$: turnStoppableWithNoServerRun =
+		!inFlightChatTurnId && !serverRunningTurnId && !activeTaskTurnId ? openUserTurnId : null;
 
 	// Chat-next presence orb: needs-you (a pending HITL on any turn in this
 	// session) > working (reply text streaming, or a spawned task running) >
@@ -2161,7 +2168,7 @@
 
 	function buildCurrentThreadTaskHref(taskId: string): string {
 		const params = new URLSearchParams({ selected: taskId });
-		return `/t/${encodeURIComponent(currentThreadId)}?${params.toString()}`;
+		return threadHref(currentThreadId, `?${params.toString()}`);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -3269,6 +3276,17 @@
 			return;
 		}
 
+		// A task output (a delivered file's served URL among them) needs the
+		// scoped bearer, which a plain new-tab navigation never sends.
+		if (ref.kind === 'taskOutput') {
+			try {
+				await openAuthenticatedTaskOutput(target);
+			} catch (error) {
+				showError(error instanceof Error ? error.message : `Couldn't open ${trimmed}`);
+			}
+			return;
+		}
+
 		if (mode === 'newTab' || mode === 'download') {
 			window.open(target, '_blank', 'noopener,noreferrer');
 			return;
@@ -3876,7 +3894,7 @@
         }
         if (sourceThreadId !== targetThreadId) {
             const query = new URLSearchParams($page.url.searchParams);
-            await goto(`/t/${encodeURIComponent(sourceThreadId)}/chat?${query}`);
+            await goto(threadHref(sourceThreadId, `/chat?${query}`));
             return;
         }
         if (!target) {
@@ -3923,7 +3941,7 @@
 			if (openedThread !== targetThreadId) {
 				const query = new URLSearchParams($page.url.searchParams);
 				query.set('session', sessionId);
-				await goto(`/t/${encodeURIComponent(openedThread)}/chat?${query}`);
+				await goto(threadHref(openedThread, `/chat?${query}`));
 				return;
 			}
 			replaceSessionDeepLink(sessionId);
@@ -4726,20 +4744,9 @@
 		}
 	}
 
+	/** A message's time: `14:28` today, else `Oct 31, 14:28` (the task cards' format). */
 	function formatTimestamp(ts: number): string {
-		const date = new Date(ts);
-		const now = new Date();
-		const isToday =
-			date.getDate() === now.getDate() &&
-			date.getMonth() === now.getMonth() &&
-			date.getFullYear() === now.getFullYear();
-
-		if (isToday) {
-			return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-		}
-		return date.toLocaleDateString([], { month: 'short', day: 'numeric' }) +
-			' ' +
-			date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+		return formatClockTime(ts);
 	}
 
 	async function reloadChatScope(): Promise<void> {
@@ -5023,6 +5030,11 @@
 	}
 
 	/** A chat task card's task, as the task store currently has it. */
+	function liveTaskRecord(tasks: Task[], taskId: string | undefined): Task | undefined {
+		const id = taskId?.trim();
+		return id ? tasks.find((task) => task.id === id) : undefined;
+	}
+
 	/** The task store's status for a task card, unless it is a terminal
 	 *  status of an earlier run than the one the card shows. */
 	function liveTaskStoreStatus(
@@ -5275,6 +5287,7 @@
 										storeStatus={liveTaskStoreStatus($taskStore.tasks, message.content)}
 										activeExecutionId={$taskStore.tasks.find((task) => task.id === message.content.task_id)?.activeExecutionId}
 										plan={liveTaskPlan($taskStore.tasks, message.content.task_id)}
+										taskTimes={liveTaskRecord($taskStore.tasks, message.content.task_id)}
 										onRun={runTaskFromLiveCard}
 										onOpenPlan={(taskId) => void openPlanSheet(taskId)}
 										onNeedPlan={loadLiveCardPlan}
@@ -5320,6 +5333,7 @@
 									<TaskStatusCard
 										{message}
 										taskExecutionGroups={visibleMessage.taskExecutionGroups}
+										taskTimes={liveTaskRecord($taskStore.tasks, message.content.task_id)}
 										{runExpansionOverrides}
 										{activeSessionId}
 										{tailedTaskId}
@@ -5523,6 +5537,7 @@
 										sessionId={message.session_id}
 										chatTurnId={assistantTurnId}
 										live={assistantTurnId === liveTurnId}
+										stopsTurnWhenRunEnded={assistantTurnId === turnStoppableWithNoServerRun}
 										embedded={true}
 										variant={$chatNext ? 'next' : 'classic'}
 										{transcriptTaskStatuses}
@@ -5580,6 +5595,7 @@
 											sessionId={message.session_id}
 											chatTurnId={messageTurnId}
 											live={turnIsLive}
+											stopsTurnWhenRunEnded={messageTurnId === turnStoppableWithNoServerRun}
 											embedded={true}
 											variant={$chatNext ? 'next' : 'classic'}
 											{transcriptTaskStatuses}
@@ -5780,7 +5796,7 @@
                     {#if activeSessionId}<QueueInspector sessionId={activeSessionId} />{/if}
 					<ConcurrentVoiceRequests />
                     {#if currentSession?.internal_voice?.kind === 'branch'}
-                        <a class="concurrent-parent-link" href={`/t/${encodeURIComponent(currentSession.ui_thread_id)}/chat?session=${encodeURIComponent(currentSession.internal_voice.parent_session_id)}`}>
+                        <a class="concurrent-parent-link" href={$threadHrefs(currentSession.ui_thread_id, `/chat?session=${encodeURIComponent(currentSession.internal_voice.parent_session_id)}`)}>
                             Concurrent · Started from original conversation ↗
                         </a>
                     {/if}
@@ -5974,9 +5990,9 @@
 					<h2>{planSheetTask?.title || 'Task plan'}</h2>
 					<p>
 						{#if planSheetTask?.planStatus}
-							{titleCase(planSheetTask.planStatus)} plan for #{currentThreadId}.
+							{titleCase(planSheetTask.planStatus)} plan for #{$threadLabels(currentThreadId)}.
 						{:else}
-							Graph, waterfall, history, and persisted task plan for #{currentThreadId}.
+							Graph, waterfall, history, and persisted task plan for #{$threadLabels(currentThreadId)}.
 						{/if}
 					</p>
 				</div>

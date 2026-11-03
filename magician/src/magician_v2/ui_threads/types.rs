@@ -7,6 +7,14 @@ pub struct UiThreadRecord {
     pub principal: String,
     pub workspace: String,
     pub id: String,
+    /// URL key that follows the thread's name (`/t/<slug>`). The `id` never
+    /// changes; a rename moves the slug and keeps the old one as an alias, so
+    /// an old link still resolves. Unique per scope among live slugs, other
+    /// threads' ids and other threads' aliases; never a reserved route word
+    /// (`new`). Empty only on a record deserialized from a payload that
+    /// predates slugs: treat empty as `id`.
+    #[serde(default)]
+    pub slug: String,
     pub name: String,
     pub archived: bool,
     pub sort_order: i64,

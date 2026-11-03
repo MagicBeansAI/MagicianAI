@@ -300,7 +300,7 @@ Mint fields: label, workspace, agent identity, harness engine, allowlist, expiry
   (`400 unowned_workspace`); the plane door re-checks ownership per request and
   ignores caller principal/workspace fields. Principal = minter's `scope_root`.
 - **`NEVER_ON_THE_PLANE` floor**: `shell`, `run_coding_task`,
-  `apply_code_proposal`, `run_project_checks`, `claude`, `codex`, `agy`,
+  `apply_code_proposal`, `run_project_checks`, `validate_skill`, `test_skill`, `install_skill`, `claude`, `codex`, `agy`,
   `opencode`, `list_proposals`, `interactive_process`. Mint drops them from
   `allowed_tools` (reported as `floor_filtered_tools`) and
   `TerminalGrant::permits` re-checks on every call.

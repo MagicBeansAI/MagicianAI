@@ -549,6 +549,31 @@ pub trait WorkerHost: Send {
         Ok(())
     }
 
+    /// Whether this run-ending `outcome` ends only an inline nested segment.
+    ///
+    /// A sub-goal or an in-context delegation runs its own loop-state segment
+    /// inside its parent's `Apply`, on the parent's runtime execution. A FINAL
+    /// outcome there goes back to the parent loop as an observation; it is not
+    /// the execution's ending. For such an ending the driver:
+    ///
+    /// - does not ask for a terminal settlement receipt — one would settle the
+    ///   whole runtime execution with the child's outcome while the parent is
+    ///   still running;
+    /// - does not fence the operator-steer inbox — the fence would be bound to
+    ///   a segment that never runs again, and the parent's next boundary would
+    ///   refuse to reopen it (`operator_steer_inbox_terminal_fence_binding_mismatch`).
+    ///   Input accepted meanwhile stays queued for the parent's next Decide;
+    /// - commits the segment with [`super::state::LoopState::retired_into_parent_segment`]
+    ///   so no receipt-less settlement path treats it as the execution's end.
+    ///
+    /// A continuation-bearing outcome (a pause, a sleep, a resumable budget or
+    /// iteration stop) must answer `false`: a nested pause owns the execution
+    /// until it is resumed and keeps its receipt and fence. The default is
+    /// `false`, which is every host without nested same-execution loops.
+    fn retires_into_parent_segment(&self, _outcome: &AgenticOutcome) -> bool {
+        false
+    }
+
     /// Run exactly one phase and report what it decided.
     ///
     /// The host performs the phase's own control flow — it does not re-perform
@@ -1762,31 +1787,45 @@ async fn advance_under_lease(
             },
             _ => None,
         };
-        let admission = match await_with_lease_heartbeat(
-            store,
-            lease,
-            config.lease_ttl,
-            host.admit_terminal_operator_steers(
-                phase,
-                iteration,
-                report.steer_consume_receipt.as_ref(),
-                report.terminal_steer_policy,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(admission)) => admission,
-            Ok(Err(error)) => {
-                return Advanced::ExecutionFailed {
-                    reason: format!("durable operator-steer deadline admission failed: {error}"),
-                }
-            },
-            Err(error) => {
-                return Advanced::Refused(Refusal::Store {
-                    during: "lease_heartbeat_during_deadline_steer_admission",
-                    error,
-                })
-            },
+        // A nested segment's deadline ends only that segment; superseding the
+        // shared control generation here would close the parent's steer epoch
+        // under a segment that never runs again. The parent's own next phase
+        // meets the run's deadline and closes the epoch itself.
+        let retires_into_parent = matches!(
+            &report.step,
+            PhaseStep::Return(outcome) if host.retires_into_parent_segment(outcome.as_ref())
+        );
+        let admission = if retires_into_parent {
+            TerminalSteerAdmission::Admitted
+        } else {
+            match await_with_lease_heartbeat(
+                store,
+                lease,
+                config.lease_ttl,
+                host.admit_terminal_operator_steers(
+                    phase,
+                    iteration,
+                    report.steer_consume_receipt.as_ref(),
+                    report.terminal_steer_policy,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(admission)) => admission,
+                Ok(Err(error)) => {
+                    return Advanced::ExecutionFailed {
+                        reason: format!(
+                            "durable operator-steer deadline admission failed: {error}"
+                        ),
+                    }
+                },
+                Err(error) => {
+                    return Advanced::Refused(Refusal::Store {
+                        during: "lease_heartbeat_during_deadline_steer_admission",
+                        error,
+                    })
+                },
+            }
         };
         if admission != TerminalSteerAdmission::Admitted {
             return Advanced::ExecutionFailed {
@@ -2292,7 +2331,15 @@ async fn advance_under_lease(
         None
     };
 
-    if matches!(&report.step, PhaseStep::Return(_)) {
+    // A nested segment's final ending is not a run-ending boundary of the
+    // execution: no terminal fence is written for it (see
+    // `WorkerHost::retires_into_parent_segment`), so the parent's next
+    // non-terminal boundary has nothing bound to this segment to reopen, and
+    // input accepted meanwhile waits for the parent's next Decide.
+    if matches!(
+        &report.step,
+        PhaseStep::Return(outcome) if !host.retires_into_parent_segment(outcome.as_ref())
+    ) {
         let admission = match await_with_lease_heartbeat(
             store,
             lease,
@@ -3167,6 +3214,14 @@ async fn commit_boundary(
             terminal: TerminalKind::from(outcome.as_ref()),
         },
     };
+    // An inline nested segment's final ending: committed as an ordinary
+    // `RunEnded` for this segment, with no settlement receipt and the
+    // retirement marker, so nothing settles the shared runtime execution with
+    // the child's outcome. See `WorkerHost::retires_into_parent_segment`.
+    let retires_into_parent = matches!(
+        &report.step,
+        PhaseStep::Return(outcome) if host.retires_into_parent_segment(outcome.as_ref())
+    );
 
     let cursor = match next_cursor(state.cursor, &step) {
         Ok(cursor) => cursor,
@@ -3372,6 +3427,7 @@ async fn commit_boundary(
     let terminal_settlement_receipt = match (&report.step, step) {
         (PhaseStep::Return(outcome), RecordedStep::RunEnded { terminal })
             if terminal != TerminalKind::HandedOff
+                && !retires_into_parent
                 && (!terminal.is_resumable()
                     || matches!(
                         terminal,
@@ -3444,6 +3500,7 @@ async fn commit_boundary(
     // Every successful boundary replaces this pointer. A receipt can never
     // leak from an older ending into a later resumed prefix.
     state.terminal_settlement_receipt = terminal_settlement_receipt;
+    state.retired_into_parent_segment = retires_into_parent;
     state.cursor = cursor;
     state.pending = report.pending;
     state.resolve_checkpoint = report.resolve_checkpoint;

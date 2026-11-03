@@ -3,8 +3,14 @@
 // isRunExpanded for the toggle handler that owns the overrides map).
 // Moved verbatim from ChatPanel.svelte during the Stage E decomposition.
 
-import type { ChatMessageContent, ChatRenderTaskExecutionGroup } from '$lib/stores/chatStore';
+import type {
+	ChatMessage,
+	ChatMessageContent,
+	ChatRenderTaskExecutionGroup
+} from '$lib/stores/chatStore';
+import { timeSpan, toEpochMs, type CardTimes } from '$lib/shared/cardTimes';
 import { stripMarkdownPreview } from '$lib/shared/markdownPreview';
+import { threadHref } from '$lib/threads/threadLinks';
 
 // `archived` is final too: an archived task never runs again, and a card whose
 // last status update never arrived must settle on it instead of reading
@@ -146,7 +152,7 @@ export function buildThreadTaskHref(content: ChatMessageContent): string | null 
 	// panel is the right affordance for inspecting an internal run.
 	if (threadId && threadId !== 'general') {
 		const params = new URLSearchParams({ selected: taskId });
-		return `/t/${encodeURIComponent(threadId)}?${params.toString()}`;
+		return threadHref(threadId, `?${params.toString()}`);
 	}
 	return null;
 }
@@ -159,7 +165,44 @@ export function buildArchivedTaskHref(content: ChatMessageContent): string | nul
 	const threadId = content.ui_thread_id?.trim();
 	if (threadId && threadId !== 'general') {
 		const params = new URLSearchParams({ selected: taskId, filter: 'all' });
-		return `/t/${encodeURIComponent(threadId)}?${params.toString()}`;
+		return threadHref(threadId, `?${params.toString()}`);
 	}
 	return null;
+}
+
+/** The task-store fields a task card's times read (`Task` has them). */
+export interface TaskRecordTimes {
+	/** ISO. */
+	createdAt?: string;
+	/** Epoch ms of the run's last real step. */
+	lastProgressAt?: number;
+}
+
+/**
+ * When a task card's task was created and last updated, for its
+ * "Created … · Updated …" line. Created is the task record's creation time when
+ * the task store has the task, else the card's earliest update; never later
+ * than that update (the store stamps a record that arrived without a creation
+ * time as created "now"). Updated is the later of the card's latest update and
+ * the record's last progress (`lastProgressAt`). The record's `updatedAt` is
+ * never used: it moves on heartbeats and local edits, and the store stamps a
+ * record without one as "now", so an idle task would read "Updated now".
+ * Chat-started tasks are often absent from the store, so the card's own
+ * updates carry them.
+ */
+export function taskCardTimes(
+	message: ChatMessage,
+	taskExecutionGroups: ChatRenderTaskExecutionGroup[] = [],
+	record?: TaskRecordTimes
+): CardTimes {
+	const updates = timeSpan(
+		[message, ...taskExecutionGroups.flatMap((group) => group.updates)].map((m) => m.created_at)
+	);
+	const recordCreated = toEpochMs(record?.createdAt);
+	const createdAt =
+		recordCreated !== undefined && updates.createdAt !== undefined
+			? Math.min(recordCreated, updates.createdAt)
+			: (recordCreated ?? updates.createdAt);
+	const { updatedAt } = timeSpan([updates.updatedAt, record?.lastProgressAt]);
+	return { createdAt, updatedAt };
 }

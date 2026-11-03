@@ -1,0 +1,17 @@
+#!/bin/sh
+# Snapshot-safe entrypoint for the telegram-self skill.
+#
+# The governed runtime copies its entrypoint ALONE into a private temporary
+# directory and runs that copy, so the official launcher cannot be the
+# entrypoint: its ESM entry (@dapi/tgcli/cli.js) imports ./store-lock.js,
+# ./core/*.js and other siblings.
+#
+# This file carries nothing relative to itself. It execs the declared PATH
+# companion `tgcli` by name; the runtime puts this skill's reviewed bin/
+# directory on the child's PATH and the companion runs in place, beside its
+# real package files. argv is passed through unchanged.
+if ! command -v tgcli >/dev/null 2>&1; then
+  echo "telegram-self: the pinned tgcli CLI is not installed (run: make setup-all)" >&2
+  exit 127
+fi
+exec tgcli "$@"

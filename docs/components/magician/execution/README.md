@@ -167,7 +167,22 @@ serialized per parent.
   conversation, environment knowledge, provider checkpoint/image cohort,
   iteration/budget, owner/trust and tool authority (hidden from
   HITL/Attention/WebSocket pause reads);
-  terminal children resume it with only their result evidence.
+  terminal children resume it with only their result evidence. Every
+  `WaitingForChildren` reducer (orchestrator, HITL resume, continue) writes it
+  through one helper. A loop segment parked on children that names its
+  successor but has no checkpoint is never recovered generically: the
+  readiness owner keeps the parent parked and looks again a minute later (the
+  reconciler retires a park whose checkpoint never lands), and the generic
+  recovery claim every other resume passes defers it with
+  `stateless_parked_children_checkpoint_missing`.
+  A continuation refused by generic recovery is deferred, not failed: to just
+  after the owner's deadline when another generation owns the run (a live
+  segment's lease or pin), 30 s when authority is unsettled, 60 s for a parked
+  segment without its checkpoint; five consecutive failed claims fail the
+  parent visibly. The wake for a deferral re-dispatches the continuation once
+  instead of acknowledging a Runnable parent nothing drives; an exact
+  continuation deferred to a peer is re-dispatched from its still-present
+  checkpoint and receipt rather than having the receipt consumed.
 - **Typed one-child launch**: after a successful child the parent projects the sole accepted child output
   (exact source execution and path), commits output refs and completes with no
   model summary or reconciliation; V3
@@ -190,7 +205,13 @@ A delegated coding child that stages a Pi diff raises `diff_approval` HITL
 (`WaitingUser`; Attention `source` `"diff_approval"`) while the parent stays
 `WaitingChildren` (`delegated_waiting_for_user_should_suspend`);
 `cancel_execution_tree` spares a cascaded child parked on that pause; explicit
-root cancel still terminates the root.
+root cancel still terminates the root. A delegated child that hits an approval
+gate (`WaitingForConfirmation`) parks the same way: its approval card reaches
+the owner, the child stays `WaitingUser` until approved (resume) or denied
+(failed), and the parent stays `WaitingChildren`. Tree cancellation does not
+spare it; a gate or owner question still staged when the cascade passes is
+failed at terminal settlement once its parent or root reads `Cancelled`, and
+its card is never published (a canonical diff approval stays spared).
 
 ## Operation-routed LLM calls route through the dispatch queue
 
@@ -286,8 +307,12 @@ yield-unification).
 | **Tool selection** | Each pack `description` (`## AVAILABLE CAPABILITIES`) | Per-execution catalog |
 | **Procedure skill** | `skillshub/<slug>/SKILL.md` body (`## ACTIVE PROCEDURE PLAYBOOK` when active) | Yes — `activate_skill` / `deactivate_skill` |
 
-A runtime fourth tier (artifact-output guidance, plus dashboard guidance when
-`create_dashboard` is in the catalog) comes from
+A runtime fourth tier (artifact-output guidance, the deliver-first rule — once
+a result satisfies the goal, save it and finish; the final answer is the
+requested artifact, never an audit of it; long results go to a file declared in
+`yield.deliverables`, with no host paths or `file://` links in user-facing
+text — plus dashboard guidance when `create_dashboard` is in the catalog) comes
+from
 `decision.rs::build_artifact_output_guidance_section` into
 `{artifact_guidance_section}`. Chat delegates get persona via
 `AgenticContextOverrides.prompt_identity`. `activate_skill` /

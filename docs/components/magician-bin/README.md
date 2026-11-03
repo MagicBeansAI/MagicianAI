@@ -29,7 +29,9 @@ channel admission.
   agent services) are kept rustfmt-sorted; reordering them registers no new
   route. `GET` and `POST /meetings/whatsapp-ring` are registered with the other
   literal `/meetings/*` routes, before `/meetings/{id}`.
-- `src/adapters/` — local tool services.
+- `src/adapters/` — local tool services. At startup they log which ripgrep the
+  `grep` and `glob` tools run and its source, and log an error naming the fix
+  when there is none.
 - The opt-in `retrieval-eval` binary target runs the shared chat retrieval
   benchmark with runtime keychain authority; example/test fixture keys cannot
   authenticate an existing live app registry. macOS may require Keychain access
@@ -198,7 +200,14 @@ sealed.
     directory is gone, whose `state.json` never landed, or whose durable state
     is terminal (`pause_execution_record_is_gone_or_terminal`); a real I/O
     failure keeps the record. The synthesis reconcile sweep budgets each task
-    itself (no outer timeout) and is idempotent. Boot also spawns
+    itself (no outer timeout) and is idempotent. The interrupted-execution
+    pass reports the task runs it resumed (`recovered_task_runs`), and
+    `rearm_chat_delivery_for_recovered_tasks` re-registers the chat fan-out
+    and starts the delegate watcher for each task the chat itself launched
+    (`created_by: chat_*`) that names a chat session, under the synthetic
+    `chat-task-*` turn, so a chat pack or delegate run cut off by the restart
+    still posts its result into that chat. Children of runs and scheduled
+    runs are skipped. Boot also spawns
     `spawn_runtime_divergence_reconciler`
     ([hitl-attention § Restart durability](../magician/hitl-attention.md#restart-durability)).
 
@@ -219,7 +228,13 @@ Stateless is the default; `MAGICIAN_EXECUTION_DRIVER=inprocess` is an explicit
 rollback. `GET /health/execution-driver` reports the resolved driver
 (`ExecutionDriver::select`), any unrecognised value, and per-arm run counts
 since start (`resolved_driver` should be `stateless` and
-`runs_since_start.stateless` should advance). Shutdown keeps the wake
+`runs_since_start.stateless` should advance). From the shutdown signal on,
+a chat turn starts no new work: `runtime::startup::is_shutting_down()` makes
+chat pack, delegate, handover, sub-goal and pipeline calls answer
+`runtime_draining` ("Magician is restarting…") before a task exists. The HTTP drain still finishes requests in
+flight, but the supervisor kills the process 10 s after the signal, so a run a
+turn started then would be cut off mid-step. Runs already executing, and
+scheduled goal cycles, still launch theirs: restart recovery resumes them. Shutdown keeps the wake
 supervisor until claimed child handlers finish generation-bound handoff, then
 closes the execution-job registry, refuses late launches, drains in-memory
 futures, and only then tears down event, queue and storage sinks. Cancellation

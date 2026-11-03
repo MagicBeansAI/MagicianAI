@@ -382,7 +382,7 @@ names the published inode.
 | Loop-state key | `loop_state_execution_id(execution_id, resume_generation, nesting, refinement_pass)` via `loop_state_address` (trivial components omitted), since `handle_spawn_sub_goal_decision`, in-context `handle_delegate_to_agent_decision` and `execute_agentically_with_refinement` re-enter with the same execution id and offset. Not `ctx.depth` (a delegated child is top-level at `depth == 1`). Controller attempts add their validated hash as an axis; the exact base/segment binding stays the durable ownership authority. |
 | Outbox | `journal_and_emit` splits a `RuntimeTransportEvent` into `JournalBody::Event` (byte-exact `#[serde(tag, content)]` split), buffers for post-commit projection per `loop_state_address` with `RecordedEventRouting`; `routing_for` takes the **bare** execution id (nested segments' events belong to the shared execution). |
 | `run_loop/worker_runner.rs` | `sweep`: scan, claim, `advance_in_session` to a boundary, release; refuses a mid-iteration cursor. `classify` is total over 17 variants; `after_park` re-checks because `leave_park` does not move the cursor. Boot asks each row's Artifact/runtime or PlanGraph owner to compose the host; a generic fleet over arbitrary keys is forbidden. |
-| `run_loop/reconciler.rs` | `scan_parked`: `Unwakeable` (proved) vs `Stalled` (suspected). `Recovery::RetireProvedParks` takes a `RetirableGround` set; live caller opts into `DeadlinePassedWhileParked` only. `EveryChildHasFinished` is unsound under the refinement axis (addresses children by bare id); `NoChildrenNamed` declined (`check_park` refuses empty lists); `ChildMayStillBeContinued` never retires; a cursor past the committed watermark refuses retirement. A committed `Children` park is inert while `.resolve_wake(` is unwired. `RetirementRefused::GroundNotOptedIn` ≠ `GroundIsNotActedOn`. |
+| `run_loop/reconciler.rs` | `scan_parked`: `Unwakeable` (proved) vs `Stalled` (suspected). `Recovery::RetireProvedParks` takes a `RetirableGround` set; `magician-bin` opts into `DeadlinePassedWhileParked` and `EveryChildHasFinished` (the latter proves a `Success` child finished only from a `ChainClosure` receipt). Retirements cascade one tree level per pass. `prepare_children_handoff` on a source that ended non-resumably without a handoff returns `SourceEndedWithoutHandoff`; a terminal parent's crash repair then discards that descriptor instead of retrying it; `NoChildrenNamed` declined (`check_park` refuses empty lists); `ChildMayStillBeContinued` never retires; a cursor past the committed watermark refuses retirement. A committed `Children` park is inert while `.resolve_wake(` is unwired. `RetirementRefused::GroundNotOptedIn` ≠ `GroundIsNotActedOn`. |
 | Store | `commit` publishes the ending beside the state (`ended.json` / `ExecutionSlot.ended`), never at `append_journal` (a `RunEnded` above the watermark is an orphan). Filesystem commits prepublish a current-plus-proposed revision binding before the snapshot CAS. `scan_runnable(worker, limit, after)` pages in order; an over-window directory reserves its last entry as next-page sentinel. Cold scans withhold a terminal's exact revision; claim repair republishes a missing marker from the journal. Store filters cannot see `max_phase_attempts`, `max_iterations` or indeterminate effects; the process-local holdoff is suppression, not correctness. |
 | Cold entry | `LoopState::foreign_pickup`: missing Decide carry → Observe; Resolve/Apply restore the pre-Resolve capsule or re-observe; Prepare commits an iteration-bound Epilogue checkpoint (history baseline, wall-clock start); browser decisions re-observe. Process-local secrets suppress checkpoint publication. |
 | Exact recovery | `EffectIndeterminate` Adopt/Refire keyed by source segment and `EffectId`. Coding reattach needs a live unsettled invocation matching engine, native session, scope root, project root, root task and invocation generation. A sealed fixed-roster outer owner (roster + revisioned progress) settles first; the active stage's absolute deadline encloses the whole exact-resume future. |
@@ -433,6 +433,28 @@ markers; delegated-child failure receipts re-enter child policy.
 `HandedOff` is successor retirement, never a root outcome; an eventless
 reconciler `CannotProceed` may carry no receipt. Convergence is replayable and
 idempotent, not one transaction.
+
+Nested segments: an inline sub-goal or in-context delegation
+(`AgenticContext::is_nested_same_execution_segment`, i.e. non-empty
+`continuation_frames`; the root never has one, fresh or resumed) runs its own
+segment on the parent's runtime execution. Its final (non-continuation) ending
+is the parent's observation, not the execution's: via
+`WorkerHost::retires_into_parent_segment` the driver mints no settlement receipt
+and writes no terminal steer fence (late input waits for the parent's next
+Decide), and commits `LoopState::retired_into_parent_segment`, which keeps the
+segment out of runtime-settlement debt, receipt-less `CannotProceed` included.
+Its other events still project, but it emits no `AgenticExecutionCompleted`
+(consumers read that as the execution's terminal: Artifact terminal marker,
+escalation resolution, progress gauge); the parent sees `SubGoalOutcome` / the
+delegate deliverable. Root-only effects — terminal task-state close or
+partial-yield projection, task completion result, work-ledger record,
+execution summary, memory-temperature credit — are skipped as well; the child's
+own `create`/`patch` task-state edits still apply and feed its gates, a `close`
+does not. Nested pauses keep their receipts, fences and transition bindings; the
+parent (inline, or via the frame unwind in
+`execute_with_durable_continuations_inner`) settles the execution with its own
+ending. An exact recovery whose caller holds no parent frames drops the
+restored frames and runs the segment as root, so it still settles.
 
 Both lifecycle owners wait on a one-shot readiness latch (config,
 Artifact/runtime services, delegation dispatch composed), so boot recovery never

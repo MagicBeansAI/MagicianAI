@@ -13,6 +13,7 @@ import type {
 import { deriveActs } from './taskCapabilities';
 import {
 	isDeliverableRef,
+	orderTaskDeliverables,
 	outputFilesFrom,
 	outputKindOf,
 	planProgressFrom,
@@ -1948,6 +1949,60 @@ describe('deliverables and the other task files', () => {
 			'execution'
 		);
 		expect(file).not.toHaveProperty('deliverable');
+	});
+
+	it('labels the generated summary Summary and keeps a self-named primary_task_user file', () => {
+		const files = outputFilesFrom([
+			{ audience: 'user', role: 'primary_task_user', relative_path: 'outputs/out_task_user_t1_e1.md' },
+			{ audience: 'user', role: 'primary_task_user', relative_path: 'outputs/report.html' },
+			{ audience: 'user', role: 'user_attachment', relative_path: 'outputs/delivered/e1/a.pdf', primary: true }
+		]);
+		expect(files.map((file) => [file.name, file.label ?? null, file.taskSummary === true, file.primary === true])).toEqual([
+			['out_task_user_t1_e1.md', 'Summary', true, false],
+			['report.html', null, true, false],
+			['a.pdf', null, false, true]
+		]);
+	});
+
+	it('never marks a run row or a non-deliverable as the primary deliverable', () => {
+		const [run] = outputFilesFrom(
+			[{ audience: 'user', role: 'user_attachment', relative_path: 'executions/e1/outputs/a.pdf', primary: true }],
+			() => null,
+			'execution'
+		);
+		const [internal] = outputFilesFrom([
+			{ audience: 'agent', role: 'continuation_context', relative_path: 'outputs/c.json', primary: true }
+		]);
+		expect(run).not.toHaveProperty('primary');
+		expect(internal).not.toHaveProperty('primary');
+	});
+
+	it('orders deliverables primary, other delivered files, summary, inside their own slots', () => {
+		const files = orderTaskDeliverables(
+			outputFilesFrom([
+				{ audience: 'user', role: 'primary_task_user', relative_path: 'outputs/out_task_user_t1_e1.md' },
+				{ audience: 'agent', role: 'continuation_context', relative_path: 'outputs/out_task_continuation_t1_e1.json' },
+				{ audience: 'user', role: 'user_media', relative_path: 'outputs/chart.png' },
+				{ audience: 'user', role: 'user_attachment', relative_path: 'outputs/delivered/e1/report.pdf', primary: true }
+			])
+		);
+		expect(files.map((file) => file.name)).toEqual([
+			'report.pdf',
+			'out_task_continuation_t1_e1.json',
+			'chart.png',
+			'out_task_user_t1_e1.md'
+		]);
+	});
+
+	it('without a primary marker only moves the summary behind the delivered files', () => {
+		const files = orderTaskDeliverables(
+			outputFilesFrom([
+				{ audience: 'user', role: 'primary_task_user', relative_path: 'outputs/out_task_user_t1_e1.md' },
+				{ audience: 'user', role: 'user_attachment', relative_path: 'outputs/delivered/e1/b.csv' },
+				{ audience: 'user', role: 'user_media', relative_path: 'outputs/a.png' }
+			])
+		);
+		expect(files.map((file) => file.name)).toEqual(['b.csv', 'a.png', 'out_task_user_t1_e1.md']);
 	});
 
 	it('turns sidecars into non-deliverable rows under outputs/', () => {

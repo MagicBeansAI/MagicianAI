@@ -6,6 +6,7 @@ import {
 	handleChatTurnStateEnvelope,
 	parseChatTurnState,
 	recordChatTurnStateFromResponse,
+	recordStopOfTurnWithNoServerRun,
 	resetChatTurnStates,
 	runningTurnIdForSession,
 	settledTurnIds,
@@ -41,6 +42,33 @@ describe('chat turn state', () => {
 		recordChatTurnStateFromResponse({ turn_state: running }, 'sess-1');
 		recordChatTurnStateFromResponse({ turn_state: null }, 'sess-1');
 		expect(runningTurnIdForSession(get(chatTurnStateStore), 'sess-1')).toBeNull();
+	});
+
+	it('a Stop the server has no run for settles the turn the client showed as live', () => {
+		// After a restart the server reports no turn, so nothing would ever
+		// settle a turn this client still shows as live.
+		recordStopOfTurnWithNoServerRun('sess-1', 'turn-orphan', 30);
+		const states = get(chatTurnStateStore);
+		expect(settledTurnIds(states).has('turn-orphan')).toBe(true);
+		expect(states.get('turn-orphan')).toMatchObject({ chat_session_id: 'sess-1', status: 'stopped', ended_at: 30 });
+		expect(turnStatusNotice(states.get('turn-orphan'))).toBe('Stopped');
+		// The server's own running state for the turn still wins: the local
+		// stop only stood in for a state the server did not have.
+		recordChatTurnStateFromResponse({ turn_state: { ...running, chat_turn_id: 'turn-orphan' } }, 'sess-1');
+		expect(runningTurnIdForSession(get(chatTurnStateStore), 'sess-1')).toBe('turn-orphan');
+		// A turn the server already settled keeps its state.
+		handleChatTurnStateEnvelope({
+			event_type: 'chat.turn.state_changed',
+			payload: { chat_turn_id: 'turn-done', chat_session_id: 'sess-1', status: 'completed', started_at: 1, ended_at: 2 }
+		});
+		recordStopOfTurnWithNoServerRun('sess-1', 'turn-done', 40);
+		expect(get(chatTurnStateStore).get('turn-done')?.status).toBe('completed');
+		// So does one the server reports as running.
+		recordChatTurnStateFromResponse({ turn_state: { ...running, chat_turn_id: 'turn-live' } }, 'sess-2');
+		recordStopOfTurnWithNoServerRun('sess-2', 'turn-live', 40);
+		expect(runningTurnIdForSession(get(chatTurnStateStore), 'sess-2')).toBe('turn-live');
+		recordStopOfTurnWithNoServerRun('', 'turn-x');
+		expect(get(chatTurnStateStore).has('turn-x')).toBe(false);
 	});
 
 	it('ignores other events and malformed payloads', () => {

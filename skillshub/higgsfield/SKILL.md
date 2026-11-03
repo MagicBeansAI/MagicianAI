@@ -1,12 +1,12 @@
 ---
 name: "higgsfield"
-version: 0.2.0
+version: 0.2.1
 description: "Generate or transform images, video, audio, 3D assets, ads, and product media through the authenticated Higgsfield CLI. Use for GPT Image 2, Nano Banana, Seedance, Marketing Studio, Virality Predictor, Soul, product-photoshoot, marketplace-card, game, and website workflows exposed by the installed CLI. Prefer model/workflow discovery before constructing unfamiliar argv. Not for local image editing that should stay offline."
 metadata:
   magician:
     setup: { definition: higgsfield-account }
     requires:
-      bins: ["higgsfield"]
+      bins: ["higgsfield-adapter", "higgsfield"]
     install_hint:
       docs: "Run `make setup-higgsfield-cli` to install the pinned CLI, then connect Higgsfield in Settings → Service accounts (also on mobile). Terminal fallback: authenticate with `./skillshub/higgsfield/bin/higgsfield auth login`, then seed with `make setup-higgsfield-auth SCOPE=<principal>/<workspace>`."
     runtime_canary:
@@ -19,7 +19,12 @@ metadata:
     runtime_contract:
       schema_version: tool-runtime.skill-runtime.v1
       requires:
-        bins: [higgsfield]
+        # The runtime snapshots its entrypoint alone; bin/higgsfield.js needs
+        # ./run.js and the native ../vendor/hf, so the tracked
+        # `higgsfield-adapter` is the entrypoint and execs the `higgsfield`
+        # PATH companion in place.
+        bins: [higgsfield-adapter, higgsfield]
+        entrypoint: higgsfield-adapter
       runtime:
         protocol: cli
         command_prefix: []
@@ -89,8 +94,8 @@ If `account status` reports an expired/missing session, pause for the operator
 to refresh the scoped CLI credentials through Settings → Service accounts.
 The governed manifest enforces this
 before process launch: `auth` and every workspace command except `list` and
-`status` are rejected. No skill-owned shell wrapper participates in active
-execution.
+`status` are rejected. The only skill-owned file in the launch path is
+`bin/higgsfield-adapter`, which execs the pinned CLI with the same argv.
 
 
 ## UX Rules

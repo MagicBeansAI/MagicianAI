@@ -69,6 +69,7 @@ use magician::magician_v2::mcp_oauth_binding::{
     mcp_endpoint_aliases, mcp_oauth_binding, mcp_oauth_callback_mode, McpOAuthBindingError,
 };
 use magician::magician_v2::skills::loader::{diagnose_skill_dir, SkillDirVerdict};
+use magician::magician_v2::skills::scope_env::{self, ScopeEnvSource, ScopedPackageError};
 use magician::magician_v2::skills::scope_layer;
 use magician::magician_v2::skills::{InferredKind, SkillLoader};
 use magician_components::setup::{self, ResolvedSetup, SetupBinding, SetupDriver};
@@ -1554,7 +1555,9 @@ pub async fn get_skill_env_handler(
 /// `POST /api/magician/v2/skills/catalog/{name}/env`
 ///
 /// Admin (setup token). Writes `<scope>/skills/<name>/config/.env` through
-/// the shared atomic 0600 writer — the same file skill dispatch reads.
+/// the shared atomic 0600 writer — the same file skill dispatch reads — and
+/// invalidates each target scope's capability caches, so a changed
+/// `${NAME}` endpoint (`skills::scope_env`) applies on the next request.
 pub async fn put_skill_env_handler(
     req: HttpRequest,
     api: web::Data<SkillsApi>,
@@ -1605,26 +1608,8 @@ pub async fn put_skill_env_handler(
 
     let mut targets: Vec<String> = Vec::new();
     for entry in &body.workspaces {
-        let dir = match scope_skill_dir(&api, entry, &name) {
-            Ok(dir) => dir,
-            Err(response) => return response,
-        };
-        if let Err(e) = std::fs::create_dir_all(dir.join("config")) {
-            return error(
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("config dir create failed: {e}"),
-            );
-        }
-        let updates: Vec<(&str, Option<String>)> =
-            pairs.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-        if let Err(e) = magician::magician_v2::runtime_settings::update_env_file(
-            &dir.join("config/.env"),
-            &updates,
-        ) {
-            return error(
-                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("env write failed: {e}"),
-            );
+        if let Err(response) = write_scope_skill_env(&api, entry, &name, &pairs) {
+            return response;
         }
         targets.push(entry.clone());
     }
@@ -1635,6 +1620,46 @@ pub async fn put_skill_env_handler(
         "skills_api: per-skill env updated"
     );
     HttpResponse::Ok().json(serde_json::json!({ "updated": targets }))
+}
+
+/// Write one scope's `<scope>/skills/<name>/config/.env` and drop that
+/// scope's capability caches. The env is a load input — a `${NAME}` endpoint
+/// resolves from it — so a value changed here must reach the scope's catalog
+/// at once, not after setup or a background recheck.
+fn write_scope_skill_env(
+    api: &SkillsApi,
+    entry: &str,
+    name: &str,
+    pairs: &[(String, Option<String>)],
+) -> Result<(), HttpResponse> {
+    let dir = scope_skill_dir(api, entry, name)?;
+    let (principal, workspace) = parse_scope(entry)
+        .map_err(|reason| error(actix_web::http::StatusCode::BAD_REQUEST, &reason))?;
+    std::fs::create_dir_all(dir.join("config")).map_err(|e| {
+        error(
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("config dir create failed: {e}"),
+        )
+    })?;
+    let updates: Vec<(&str, Option<String>)> =
+        pairs.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    magician::magician_v2::runtime_settings::update_env_file(&dir.join("config/.env"), &updates)
+        .map_err(|e| {
+            error(
+                actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("env write failed: {e}"),
+            )
+        })?;
+    let skills_root = api
+        .workspace_layout
+        .scope_skills_root(&principal, &workspace);
+    api.invalidate_capability_scope(&principal, &workspace);
+    // Also when no scoped resolver is bound (tests, early boot).
+    magician::magician_v2::execution::compiled_providers::invalidate_skills_dir_cache(
+        &skills_root,
+    );
+    invalidate_pack_dir_index(&skills_root);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -1673,12 +1698,20 @@ pub(crate) fn skill_oauth_coordinator(
             "the installed skill manifest could not be read",
         )
     })?;
-    let package = tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
-        .map_err(|_| {
-            error(
+    // The same resolver the scope's capability load uses: a `${NAME}`
+    // endpoint resolves from this scope's own `config/.env` (the real scope
+    // folder, not the rewritten source), so the binding below is the one a
+    // run builds from the loaded package.
+    let package = scope_env::parse_runtime_package(&source, ScopeEnvSource::Skill(&skill_dir))
+        .map_err(|parse_error| match parse_error {
+            ScopedPackageError::ScopeEnv(reason) => error(
+                actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
+                &format!("this workspace has not configured the skill: {reason}"),
+            ),
+            ScopedPackageError::Parse(_) => error(
                 actix_web::http::StatusCode::UNPROCESSABLE_ENTITY,
                 "the installed skill runtime contract is invalid",
-            )
+            ),
         })?
         .ok_or_else(|| {
             error(
@@ -2095,6 +2128,10 @@ pub(crate) fn browser_signin_accounts(
 ) -> Result<Vec<ServiceAccountRow>, HttpResponse> {
     let mut accounts = Vec::new();
     {
+        let (principal, workspace) = crate::scope::resolve_required_scope(req.headers(), None)?;
+        let skills_root = api
+            .workspace_layout
+            .scope_skills_root(&principal, &workspace);
         for (name, source, binding) in installed_setup_bindings(req, api)? {
             let Ok(setup) = setup::resolve(&binding) else {
                 continue;
@@ -2107,12 +2144,28 @@ pub(crate) fn browser_signin_accounts(
                     kind: "browser_cli",
                 }),
                 SetupDriver::GovernedOauth => {
-                    let aliases =
-                        tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
-                            .ok()
-                            .flatten()
+                    // A skill this scope's env does not configure (an unset
+                    // `${NAME}` endpoint) is not offered here, as it is not
+                    // offered to agents; its Skills-page env names the gap.
+                    let dir = skills_root.join(&name);
+                    let aliases = match scope_env::parse_runtime_package(
+                        &source,
+                        ScopeEnvSource::Skill(&dir),
+                    ) {
+                        Ok(package) => package
                             .map(|package| mcp_endpoint_aliases(&package))
-                            .unwrap_or_default();
+                            .unwrap_or_default(),
+                        Err(reason) if reason.withdraws_skill() => {
+                            tracing::debug!(skill = %name, %reason, "skills_api: account not offered");
+                            continue;
+                        },
+                        // A contract defect still lists the stored account, as
+                        // before references existed, so it can be signed out.
+                        Err(reason) => {
+                            tracing::warn!(skill = %name, %reason, "skills_api: account contract unreadable");
+                            Vec::new()
+                        },
+                    };
                     // The setup label of a governed-OAuth skill is the generic
                     // "Provider account"; name the service instead.
                     let service = magician::magician_v2::mcp_oauth::service_display_name(&name)
@@ -2686,6 +2739,19 @@ pub async fn list_skills_catalog_handler(
     })
 }
 
+/// Where a catalog row's `${NAME}` references resolve: as its capability load
+/// would resolve them.
+fn catalog_scope_env<'a>(dir: &'a Path, origin: &str) -> ScopeEnvSource<'a> {
+    // Skillshub rows are install sources, resolved once linked into a scope.
+    // The runtime loads an extras folder in place, where a reference cannot
+    // resolve, so its row must say so like a scope row.
+    if origin == "skillshub" {
+        ScopeEnvSource::Template
+    } else {
+        ScopeEnvSource::Skill(dir)
+    }
+}
+
 /// One catalog entry from a skill folder: `Ok(None)` for an app package,
 /// `Err(reason)` when the loader refuses it — the same verdict discovery
 /// uses, so the catalog lists what the runtime could actually load and names
@@ -2719,6 +2785,7 @@ fn catalog_entry_from_dir(
             &manifest.description,
             dir,
             &source,
+            catalog_scope_env(dir, origin),
         )
     {
         return Err(reason);
@@ -2742,7 +2809,7 @@ fn catalog_entry_from_dir(
         .and_then(|frontmatter| frontmatter.version.clone());
     let setup_binding =
         catalog_frontmatter.and_then(|frontmatter| frontmatter.metadata.magician.setup);
-    let auth = tool_runtime_core::manifest_parser::parse_skill_runtime_package(&source)
+    let auth = scope_env::parse_runtime_package(&source, catalog_scope_env(dir, origin))
         .ok()
         .flatten()
         .map(|package| {
@@ -3912,6 +3979,111 @@ mod tests {
                 Some("scenes")
             ]
         );
+    }
+
+    /// A `${METABASE_BASE_URL}` skill: not offered and not connectable in a
+    /// scope that has not set the value (the refusal names it); once the
+    /// Skills-page env write sets it, the scope's caches are dropped and
+    /// Connect binds the scope's own origin.
+    #[actix_rt::test]
+    async fn a_scope_env_endpoint_is_configured_through_the_skill_env() {
+        use magician::magician_v2::execution::compiled_providers::{
+            load_skills_dir, skills_dir_cache_contains,
+        };
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let skills_root = http_test_v3_root(&directory).join("scopes/test/test/skills");
+        let skill_dir = skills_root.join("metabase-mcp");
+        std::fs::create_dir_all(&skill_dir).expect("skill directory");
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skillshub/metabase-mcp/SKILL.md"),
+            skill_dir.join("SKILL.md"),
+        )
+        .expect("install skill fixture");
+        let api = http_test_skills_api(&directory);
+        let vault = http_test_vault_api(&directory);
+        let broadcaster =
+            Arc::new(magician::magician_v2::realtime_events::RuntimeTransportBroadcaster::new(4));
+        let oauth_api =
+            crate::mcp_oauth_api::McpOAuthApi::new_with_callback_port(broadcaster, 4317);
+        let request = actix_test::TestRequest::default()
+            .insert_header(("X-Principal", "test"))
+            .insert_header(("X-Workspace", "test"))
+            .to_http_request();
+
+        let refused =
+            skill_oauth_coordinator(&request, &api, &vault, &oauth_api, "metabase-mcp", None)
+                .err()
+                .expect("an unconfigured scope cannot connect");
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = actix_web::body::to_bytes(refused.into_body())
+            .await
+            .expect("body");
+        assert!(
+            String::from_utf8_lossy(&body).contains("METABASE_BASE_URL"),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let offered = |api: &SkillsApi| {
+            browser_signin_accounts(&request, api)
+                .expect("list accounts")
+                .iter()
+                .any(|row| row.name == "metabase-mcp")
+        };
+        assert!(!offered(&api));
+
+        load_skills_dir(&skills_root);
+        assert!(skills_dir_cache_contains(&skills_root));
+        write_scope_skill_env(
+            &api,
+            "test/test",
+            "metabase-mcp",
+            &[(
+                "METABASE_BASE_URL".to_owned(),
+                Some("https://mb.example".to_owned()),
+            )],
+        )
+        .expect("env written");
+        assert!(
+            !skills_dir_cache_contains(&skills_root),
+            "the env write drops the scope's parsed skills"
+        );
+
+        let (coordinator, _) =
+            skill_oauth_coordinator(&request, &api, &vault, &oauth_api, "metabase-mcp", None)
+                .expect("configured scope connects");
+        let CredentialProfileBinding::McpOauth {
+            resource_url,
+            authorization_issuer,
+        } = &coordinator.profile_key().binding
+        else {
+            panic!("expected MCP OAuth binding");
+        };
+        assert_eq!(resource_url.as_str(), "https://mb.example/api/metabase-mcp");
+        // Canonical form, as the vault record id hashes it.
+        assert_eq!(authorization_issuer.as_str(), "https://mb.example/");
+        assert!(offered(&api));
+    }
+
+    /// The skillshub row is the shared template every scope links to: it is
+    /// healthy without any scope's value. A scope-only copy is judged with
+    /// its own scope's env, like its capability load.
+    #[test]
+    fn catalog_checks_a_scope_env_reference_as_a_template_or_per_scope() {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skillshub/metabase-mcp");
+        let row = catalog_entry_from_dir(&source, "metabase-mcp", "skillshub", &[])
+            .expect("the template is valid")
+            .expect("a skill, not an app");
+        assert!(row.invalid.is_none());
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let scoped = directory.path().join("scopes/p/w/skills/metabase-mcp");
+        std::fs::create_dir_all(&scoped).expect("skill directory");
+        std::fs::copy(source.join("SKILL.md"), scoped.join("SKILL.md")).expect("copy");
+        let reason = catalog_entry_from_dir(&scoped, "metabase-mcp", "scope", &[])
+            .err()
+            .expect("unset in that scope");
+        assert!(reason.contains("METABASE_BASE_URL"), "{reason}");
     }
 
     fn credential_state(state: AuthState, refresh_available: bool) -> SkillCredentialState {

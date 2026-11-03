@@ -20,11 +20,13 @@
  */
 
 import {
+	orderTaskDeliverables,
 	outputFilesFrom,
 	outputKindOf,
 	provenanceRows,
 	queuedReasonOf,
 	verdictStatusOf,
+	withPrimaryDeliverable,
 	type OutputUrlFor,
 	type PanelOutputFile,
 	type TaskOutputRef
@@ -120,7 +122,21 @@ export function internalTaskOutputFiles(
 ): PanelOutputFile[] | null {
 	if (details === null) return null;
 	const refs = taskOutputRefs(details);
-	return refs === null ? null : outputFilesFrom(refs, urlFor, 'task');
+	if (refs === null) return null;
+	// The record names its primary deliverable once, on the refs; the rows
+	// then read primary, other delivered files, summary (`orderTaskDeliverables`).
+	const primaryId = (
+		(details.task as { refs?: unknown } | undefined)?.refs as
+			| { primary_deliverable_output_id?: unknown }
+			| undefined
+	)?.primary_deliverable_output_id;
+	return orderTaskDeliverables(
+		outputFilesFrom(
+			withPrimaryDeliverable(refs, typeof primaryId === 'string' ? primaryId : null),
+			urlFor,
+			'task'
+		)
+	);
 }
 
 /**
