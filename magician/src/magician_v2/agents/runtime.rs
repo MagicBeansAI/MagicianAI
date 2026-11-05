@@ -8089,7 +8089,7 @@ async fn spawn_delegated_children_from_runtime_inner(
             }
 
             spawn_execution_job(move || async move {
-                if !child_launch_authority_is_current(
+                if !crate::off_frame!(child_launch_authority_is_current(
                     runtime.as_ref(),
                     &principal,
                     &workspace,
@@ -8099,17 +8099,17 @@ async fn spawn_delegated_children_from_runtime_inner(
                     &target_definition_digest,
                     app_agent_binding.as_ref(),
                 )
-                .await
+                .await)
                 {
-                    force_child_failure(
+                    crate::off_frame!(force_child_failure(
                         &orch_for_execution,
                         &child_execution_id,
                         "Delegation authorization changed before scheduled child launch",
                     )
-                    .await;
+                    .await);
                     return;
                 }
-                if delegated_child_launch_should_abort(
+                if crate::off_frame!(delegated_child_launch_should_abort(
                     runtime.as_ref(),
                     &orch_for_execution,
                     &principal,
@@ -8119,7 +8119,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                     parent_cancel.as_ref(),
                     app_agent_tool_child_binding.is_some(),
                 )
-                .await
+                .await)
                 {
                     info!(
                         child_execution_id = %child_execution_id,
@@ -8135,16 +8135,16 @@ async fn spawn_delegated_children_from_runtime_inner(
                     )
                     .and_then(|json| serde_json::from_str(&json).ok());
                 let Some(layout) = runtime.workspace_layout.as_ref() else {
-                    force_child_failure(
+                    crate::off_frame!(force_child_failure(
                         &orch_for_execution,
                         &child_execution_id,
                         "Delegated child cannot resolve scoped trust policies because runtime workspace layout is missing",
                     )
-                    .await;
+                    .await);
                     return;
                 };
 
-                if delegated_child_launch_should_abort(
+                if crate::off_frame!(delegated_child_launch_should_abort(
                     runtime.as_ref(),
                     &orch_for_execution,
                     &principal,
@@ -8154,7 +8154,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                     parent_cancel.as_ref(),
                     app_agent_tool_child_binding.is_some(),
                 )
-                .await
+                .await)
                 {
                     info!(
                         child_execution_id = %child_execution_id,
@@ -8241,7 +8241,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                         prompt_identity,
                     };
                 let override_result = if let Some(restored) = restored_app_agent.as_ref() {
-                    orch_for_execution
+                    crate::off_frame!(orch_for_execution
                         .build_direct_agent_overrides_from_sealed_definition(
                             restored,
                             &target.target_agent_id,
@@ -8256,9 +8256,9 @@ async fn spawn_delegated_children_from_runtime_inner(
                             expected_artifacts,
                             target.spend_token_ids.clone(),
                         )
-                        .await
+                        .await)
                 } else {
-                    orch_for_execution
+                    crate::off_frame!(orch_for_execution
                         .build_direct_agent_overrides(
                             &target.target_agent_id,
                             Some(principal.clone()),
@@ -8272,12 +8272,12 @@ async fn spawn_delegated_children_from_runtime_inner(
                             expected_artifacts,
                             target.spend_token_ids.clone(),
                         )
-                        .await
+                        .await)
                 };
                 let mut overrides = match override_result {
                     Ok(overrides) => overrides,
                     Err(error) => {
-                        force_child_failure(
+                        crate::off_frame!(force_child_failure(
                             &orch_for_execution,
                             &child_execution_id,
                             &format!(
@@ -8285,7 +8285,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                                 target.target_agent_id, error
                             ),
                         )
-                        .await;
+                        .await);
                         return;
                     },
                 };
@@ -8329,12 +8329,12 @@ async fn spawn_delegated_children_from_runtime_inner(
 
                 if let Some(child_binding) = app_agent_tool_child_binding.as_ref() {
                     let Some(service) = runtime.artifact_v2_service() else {
-                        force_child_failure(
+                        crate::off_frame!(force_child_failure(
                             &orch_for_execution,
                             &child_execution_id,
                             "Callable-agent disclosure owner is unavailable",
                         )
-                        .await;
+                        .await);
                         return;
                     };
                     let scope =
@@ -8342,7 +8342,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                             &principal.clone(),
                             &workspace.clone(),
                         );
-                    match service
+                    match crate::off_frame!(service
                         .admit_app_agent_tool_child_execution_context(
                             &scope,
                             &parent_task_id,
@@ -8350,7 +8350,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                             &target.target_agent_id,
                             child_binding,
                         )
-                        .await
+                        .await)
                     {
                         Ok((admitted_goal, disclosure_guard)) => {
                             let result_declaration = match child_binding.result_declaration_permit() {
@@ -8361,12 +8361,12 @@ async fn spawn_delegated_children_from_runtime_inner(
                                         error_class = %std::any::type_name_of_val(&error),
                                         "[DELEGATION] Callable-agent result declaration denied"
                                     );
-                                    force_child_failure(
+                                    crate::off_frame!(force_child_failure(
                                         &orch_for_execution,
                                         &child_execution_id,
                                         "Callable-agent result declaration denied",
                                     )
-                                    .await;
+                                    .await);
                                     return;
                                 },
                             };
@@ -8380,12 +8380,12 @@ async fn spawn_delegated_children_from_runtime_inner(
                                 error_class = %std::any::type_name_of_val(&error),
                                 "[DELEGATION] Callable-agent model disclosure denied"
                             );
-                            force_child_failure(
+                            crate::off_frame!(force_child_failure(
                                 &orch_for_execution,
                                 &child_execution_id,
                                 "Callable-agent model disclosure denied",
                             )
-                            .await;
+                            .await);
                             return;
                         },
                     }
@@ -8395,7 +8395,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                 // and all fallible child-context construction. A grant, immutable
                 // lock, implementation, parent definition or callable target that
                 // changed during those awaits cannot reach the child model loop.
-                if !child_launch_authority_is_current(
+                if !crate::off_frame!(child_launch_authority_is_current(
                     runtime.as_ref(),
                     &principal,
                     &workspace,
@@ -8405,8 +8405,8 @@ async fn spawn_delegated_children_from_runtime_inner(
                     &target_definition_digest,
                     app_agent_binding.as_ref(),
                 )
-                .await
-                    || !app_agent_tool_workflow_authority_is_current(
+                .await)
+                    || !crate::off_frame!(app_agent_tool_workflow_authority_is_current(
                         runtime.as_ref(),
                         &principal,
                         &workspace,
@@ -8415,18 +8415,18 @@ async fn spawn_delegated_children_from_runtime_inner(
                         &source_agent_id,
                         app_agent_tool_child_binding.as_ref(),
                     )
-                    .await
+                    .await)
                 {
-                    force_child_failure(
+                    crate::off_frame!(force_child_failure(
                         &orch_for_execution,
                         &child_execution_id,
                         "Sealed app workflow authority changed before callable-agent start",
                     )
-                    .await;
+                    .await);
                     return;
                 }
 
-                let fresh_child = match orch_for_execution.get_execution(&child_execution_id).await {
+                let fresh_child = match crate::off_frame!(orch_for_execution.get_execution(&child_execution_id).await) {
                     Ok(execution) => execution,
                     Err(error) => {
                         tracing::warn!(
@@ -8434,30 +8434,30 @@ async fn spawn_delegated_children_from_runtime_inner(
                             %error,
                             "[DELEGATION] Fresh child runtime read failed closed"
                         );
-                        force_child_failure(
+                        crate::off_frame!(force_child_failure(
                             &orch_for_execution,
                             &child_execution_id,
                             "Fresh child runtime read failed closed",
                         )
-                        .await;
+                        .await);
                         return;
                     },
                 };
-                if let Err(error) = orch_for_execution
+                if let Err(error) = crate::off_frame!(orch_for_execution
                     .bind_server_owned_fresh_launch_overrides(&fresh_child, &mut overrides)
-                    .await
+                    .await)
                 {
                     tracing::warn!(
                         child_execution_id = %child_execution_id,
                         %error,
                         "[DELEGATION] Child runtime admission failed closed"
                     );
-                    force_child_failure(
+                    crate::off_frame!(force_child_failure(
                         &orch_for_execution,
                         &child_execution_id,
                         "Child runtime admission failed closed",
                     )
-                    .await;
+                    .await);
                     return;
                 }
 
@@ -8474,7 +8474,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                         biased;
                         _ = parent_cancel.cancelled() => {
                             if app_agent_tool_child_binding.is_some() {
-                                cancel_app_agent_tool_child_owned(
+                                crate::off_frame!(cancel_app_agent_tool_child_owned(
                                     runtime.as_ref(),
                                     orch_for_execution.as_ref(),
                                     &principal,
@@ -8483,9 +8483,9 @@ async fn spawn_delegated_children_from_runtime_inner(
                                     &child_execution_id,
                                     crate::magician_v2::artifact_v2::app_agent_tool::AppAgentChildCancellationReason::ParentCancelled,
                                 )
-                                .await;
+                                .await);
                             } else {
-                                let _ = orch_for_execution.cancel_execution_tree(&child_execution_id).await;
+                                let _ = crate::off_frame!(orch_for_execution.cancel_execution_tree(&child_execution_id).await);
                             }
                             info!(
                                 child_execution_id = %child_execution_id,
@@ -8514,7 +8514,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                                 // cancel by design; any other owner question
                                 // under a cancelled tree is withdrawn.
                                 if canonical_staged_diff_approval(&input_type)
-                                    || !cancel_parked_child_of_cancelled_tree(
+                                    || !crate::off_frame!(cancel_parked_child_of_cancelled_tree(
                                         runtime.as_ref(),
                                         orch_for_execution.as_ref(),
                                         &principal,
@@ -8523,7 +8523,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                                         &child_execution_id,
                                         app_agent_tool_child_binding.is_some(),
                                     )
-                                    .await
+                                    .await)
                                 {
                                     info!(
                                         child_execution_id = %child_execution_id,
@@ -8535,7 +8535,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                             crate::magician_v2::execution::AgenticOutcome::WaitingForConfirmation {
                                 ..
                             } => {
-                                if !cancel_parked_child_of_cancelled_tree(
+                                if !crate::off_frame!(cancel_parked_child_of_cancelled_tree(
                                     runtime.as_ref(),
                                     orch_for_execution.as_ref(),
                                     &principal,
@@ -8544,7 +8544,7 @@ async fn spawn_delegated_children_from_runtime_inner(
                                     &child_execution_id,
                                     app_agent_tool_child_binding.is_some(),
                                 )
-                                .await
+                                .await)
                                 {
                                     info!(
                                         child_execution_id = %child_execution_id,
@@ -8580,14 +8580,14 @@ async fn spawn_delegated_children_from_runtime_inner(
                             );
                             match runtime.artifact_v2_service() {
                                 Some(service) => {
-                                    if let Err(error) = service
+                                    if let Err(error) = crate::off_frame!(service
                                         .persist_runtime_child_sleeping_outcome(
                                             &scope,
                                             &parent_task_id,
                                             &child_execution_id,
                                             &parent_execution_id,
                                         )
-                                        .await
+                                        .await)
                                     {
                                         tracing::warn!(
                                             child_execution_id = %child_execution_id,
@@ -8607,24 +8607,28 @@ async fn spawn_delegated_children_from_runtime_inner(
                             }
                         },
                         DelegatedChildOutcomeDisposition::Succeeded => {
-                            notify_parent_after_forced_child_terminal(
+                            crate::off_frame!(notify_parent_after_forced_child_terminal(
                                 &orch_for_execution,
                                 &child_execution_id,
                             )
-                            .await;
+                            .await);
                         },
                         DelegatedChildOutcomeDisposition::ForceFailure(reason) => {
-                            force_child_failure(&orch_for_execution, &child_execution_id, &reason)
-                                .await;
+                            crate::off_frame!(force_child_failure(
+                                &orch_for_execution,
+                                &child_execution_id,
+                                &reason
+                            )
+                            .await);
                         },
                     },
                     Err(error) => {
-                        force_child_failure(
+                        crate::off_frame!(force_child_failure(
                             &orch_for_execution,
                             &child_execution_id,
                             &format!("Delegated child runtime error: {}", error),
                         )
-                        .await;
+                        .await);
                     },
                 }
             });

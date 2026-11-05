@@ -8,9 +8,9 @@ metadata:
     skill_type: procedure
 ---
 
-# Impeccable — Magician procedure
+# Impeccable — Magican procedure
 
-Modified for Magician from Paul Bakaus's Impeccable skill-v4.8.0.
+Modified for Magican from Paul Bakaus's Impeccable skill-v4.8.0.
 See [provenance and limitations](PROVENANCE.md), [license](LICENSE) and
 [notices](NOTICE.md). This is a curated adaptation, not the full upstream toolchain.
 
@@ -20,7 +20,7 @@ Use this procedure for UI design and refinement. These workflow names express
 user intent; they are not shell commands, installed slash commands or tools.
 Do not run or download an upstream launcher, detector, hook or editor installer.
 No API key is required. Actual edits and browser actions use existing governed
-Magician tools, preserving approval and review gates. Reading this procedure
+Magican tools, preserving approval and review gates. Reading this procedure
 does not authorize writes, purchases, downloads or new tool installation.
 
 1. Read the project's existing PRODUCT.md, DESIGN.md, relevant surface briefs,

@@ -124,14 +124,22 @@ impl CapabilityProvider for HarnessCapabilityProvider {
             },
         };
 
+        // Each context builder awaits off this frame: inline, both branches'
+        // futures held a slot here at once.
         let context = if matches!(
             self.tool_name,
             INSPECT_AGENT_TOOL_NAME | SYSTEM_STATUS_TOOL_NAME
         ) {
-            HarnessExecutionContext::for_runtime_inspection(&self.services, params, self.tool_name)
+            crate::off_frame!(
+                HarnessExecutionContext::for_runtime_inspection(
+                    &self.services,
+                    params,
+                    self.tool_name
+                )
                 .await
+            )
         } else {
-            HarnessExecutionContext::from_params(&self.services, params).await
+            crate::off_frame!(HarnessExecutionContext::from_params(&self.services, params).await)
         }
         .map_err(|error| ExecutionError::Step(format!("{}: {error}", self.tool_name)))?;
 

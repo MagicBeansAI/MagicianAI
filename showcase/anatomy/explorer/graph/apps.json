@@ -211,11 +211,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": "PreparedProtectedAppTool",
    "fn": "execute_pack_dispatch",
-   "line": 53365,
+   "line": 53362,
    "carries": null,
    "title": "Agent picks a tool",
    "say": "The app's agent answers with a tool call, and the executor treats it as a protected app tool rather than an ordinary one.",
-   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:329; magician/src/magician_v2/execution/agentic/executor.rs:50591; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661; branch at magician/src/magician_v2/execution/agentic/executor.rs:52698",
+   "evidence": "magician/src/magician_v2/execution/agentic/executor.rs:329; magician/src/magician_v2/execution/agentic/executor.rs:50591; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661; branch at magician/src/magician_v2/execution/agentic/executor.rs:52698; branch at magician/src/magician_v2/execution/agentic/executor.rs:53365",
    "next": "apps.bind.plan"
   },
   {
@@ -432,11 +432,11 @@
    "file": "magician/src/magician_v2/execution/agentic/executor.rs",
    "type": null,
    "fn": "execute_pack_dispatch",
-   "line": 53365,
+   "line": 53362,
    "carries": null,
    "title": "Tool refused",
    "say": "With no trusted dispatcher for this call, the tool is refused before any input leaves, and the agent sees only the refusal.",
-   "evidence": "magician/src/magician_v2/apps/app_tool_bind.rs:458; magician/src/magician_v2/execution/agentic/executor.rs:50702; branch at magician/src/magician_v2/execution/agentic/executor.rs:50659; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661; branch at magician/src/magician_v2/execution/agentic/executor.rs:52698",
+   "evidence": "magician/src/magician_v2/apps/app_tool_bind.rs:458; magician/src/magician_v2/execution/agentic/executor.rs:50702; branch at magician/src/magician_v2/execution/agentic/executor.rs:50659; branch at magician/src/magician_v2/execution/agentic/executor.rs:49977; branch at magician/src/magician_v2/execution/agentic/executor.rs:50063; branch at magician/src/magician_v2/execution/agentic/executor.rs:50099; branch at magician/src/magician_v2/execution/agentic/executor.rs:50201; branch at magician/src/magician_v2/execution/agentic/executor.rs:50203; branch at magician/src/magician_v2/execution/agentic/executor.rs:50386; branch at magician/src/magician_v2/execution/agentic/executor.rs:51266; branch at magician/src/magician_v2/execution/agentic/executor.rs:51268; branch at magician/src/magician_v2/execution/agentic/executor.rs:52620; branch at magician/src/magician_v2/execution/agentic/executor.rs:52661; branch at magician/src/magician_v2/execution/agentic/executor.rs:52698; branch at magician/src/magician_v2/execution/agentic/executor.rs:53365",
    "next": "apps.run.next"
   },
   {

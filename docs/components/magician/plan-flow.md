@@ -180,7 +180,8 @@ engine's `plan_parameter_priority` operation, with the planner's
 `parameter_extraction` LLM as shadow reference and fallback for unresolved
 parameters (bounded concurrency, safe defaults when neither answers). An
 omitted decision field, or a failed fallback, keeps the caller's existing
-value.
+value. Each fallback call awaits under `off_frame!`, so the classifier's
+frame holds one result, not the call's future.
 
 ## Before the outline: one extraction, one rewrite
 

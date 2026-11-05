@@ -131,6 +131,9 @@ TECHNICAL_MARKERS = (
     "api/magician",
     "restart-magician",
     "stop-magician",
+    # The git identity the dugite adapter signs commits with when a repository
+    # has none (`bin/dugite.gitconfig`). The skill documents the literal value.
+    "magician@localhost",
 )
 
 OPERATIONAL_MARKERS = (

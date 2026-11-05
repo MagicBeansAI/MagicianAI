@@ -80,6 +80,19 @@ async fn goal_recall_keeps_one_snapshot_and_observes_added_and_edited_goals() {
     .await
     .unwrap();
     assert_eq!(first.len(), 12);
+    // A search also reads the agent scope (episodes, environment knowledge),
+    // a separate snapshot whose first build is not part of the goal scan.
+    load_memory_recall_candidate_documents(
+        &service,
+        &definition.agent_id,
+        &definition.memory_tiers,
+        &MemoryCandidateRequest {
+            scope: TierScope::Agent,
+            ..request.clone()
+        },
+    )
+    .await
+    .unwrap();
     let before_rank = memory_prompt_snapshot_cache_stats();
     let (ranked, meta) = rank_memory_candidates_hybrid(
         None,

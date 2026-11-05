@@ -42,7 +42,8 @@ impl Canaries {
         Self {
             identifier: format!("p7-user-{}@example.test", &tag[..8]),
             password: format!("p7-pw-{}-canary", &tag[8..20]),
-            // A six-digit code that no fixture text contains by accident.
+            // A six-digit code; the sweep matches it as a whole number, since
+            // six digits recur by accident inside the runtime's digests.
             code: format!(
                 "{:06}",
                 (u32::from_str_radix(&tag[20..25], 16).unwrap_or(482913) % 900_000) + 100_000
@@ -112,7 +113,18 @@ pub fn sweep_bytes(location: &str, bytes: &[u8], secrets: &[&str]) -> Vec<Sighti
     let mut found = Vec::new();
     for secret in secrets {
         for encoded in encodings(secret) {
-            if contains(bytes, encoded.as_bytes()) {
+            // A bare digit code is only a sighting as a whole number: any six
+            // digits recur by chance inside the hex digests, timestamps and
+            // nanos the runtime writes (a constant blake3 digest in an empty
+            // projection once carried a run's code). Its encodings stay
+            // substring matches.
+            let digit_code = secret.bytes().all(|b| b.is_ascii_digit());
+            let found_here = if digit_code && encoded.as_str() == *secret {
+                contains_whole_number(bytes, encoded.as_bytes())
+            } else {
+                contains(bytes, encoded.as_bytes())
+            };
+            if found_here {
                 found.push(Sighting {
                     location: location.to_string(),
                     encoding: encoded.clone(),
@@ -128,6 +140,30 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         && haystack
             .windows(needle.len())
             .any(|window| window == needle)
+}
+
+/// `needle` where it is not glued to a longer hex or decimal run: a
+/// neighbour that is a hex digit, or a decimal point beside a digit, makes
+/// the match part of some other number.
+fn contains_whole_number(haystack: &[u8], needle: &[u8]) -> bool {
+    let glued = |at: Option<usize>, beyond: Option<usize>| {
+        let byte = |i: Option<usize>| i.and_then(|i| haystack.get(i)).copied();
+        match byte(at) {
+            Some(b) if b.is_ascii_hexdigit() => true,
+            Some(b'.') => byte(beyond).is_some_and(|b| b.is_ascii_digit()),
+            _ => false,
+        }
+    };
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .enumerate()
+            .any(|(start, window)| {
+                let end = start + needle.len();
+                window == needle
+                    && !glued(start.checked_sub(1), start.checked_sub(2))
+                    && !glued(Some(end), Some(end + 1))
+            })
 }
 
 /// Assert no sighting, with every location listed.

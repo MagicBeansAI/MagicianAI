@@ -5,7 +5,7 @@ guide: |
   Tool name: `validate_skill`
 
   Runs `python3 skillshub/scripts/validate_skill_md.py skillshub/<name>` from
-  the magician checkout and returns `{ skill, status: valid | invalid, command,
+  the repository checkout and returns `{ skill, status: valid | invalid, command,
   exit_code, timed_out, output_tail }`. It only reads files, so it does not ask
   the owner. Use it after adding or editing a skill, before `test_skill` and
   `install_skill`.

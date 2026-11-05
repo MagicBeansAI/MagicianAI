@@ -19,7 +19,7 @@
     <b>Powering <a href="https://next.magican.ai">Magican</a> — Life assistant for work, play, and everything else.</b>
   </p>
   <p>
-    <a href="magician/Cargo.toml"><img src="https://img.shields.io/badge/Magician-v0.7.147-7C3AED.svg" alt="Magician crate version 0.7.147" /></a>
+    <a href="magician/Cargo.toml"><img src="https://img.shields.io/badge/Magician-v0.7.152-7C3AED.svg" alt="Magician crate version 0.7.152" /></a>
     <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" /></a>
     <a href="#architecture"><img src="https://img.shields.io/badge/rust-2021%20edition-orange.svg" alt="Rust" /></a>
     <a href="#everything-it-does"><img src="https://img.shields.io/badge/runs%20on-macOS%20%7C%20iOS%20%7C%20Android%20%7C%20Linux%20soon-lightgrey.svg" alt="Platforms" /></a>
@@ -85,6 +85,25 @@ these names to the underlying configuration.
 > **Pre-release.** Magician has not reached v1.0. APIs, configuration, data
 > formats and surfaces may change before then. Pin versions for integrations
 > and expect migrations.
+
+## Demos
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="https://youtu.be/Y7Fp18cdFbQ"><img src="https://img.youtube.com/vi/Y7Fp18cdFbQ/maxresdefault.jpg" alt="Fav Recipe demo" /></a>
+      <br/>
+      <b><a href="https://youtu.be/Y7Fp18cdFbQ">Fav Recipe</a></b>
+    </td>
+    <td width="50%" valign="top">
+      <a href="https://youtu.be/FM9e3fPH1Y4"><img src="https://img.youtube.com/vi/FM9e3fPH1Y4/maxresdefault.jpg" alt="Island of Notes demo" /></a>
+      <br/>
+      <b><a href="https://youtu.be/FM9e3fPH1Y4">Island of Notes</a></b>
+    </td>
+  </tr>
+</table>
+
+More in [`demo/`](demo/README.md).
 
 ## Things it does that you might not expect
 

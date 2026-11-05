@@ -13,6 +13,20 @@ export function isGoogleAuthRejection(text: string): boolean {
   return GOOGLE_AUTH_REJECTION.test(text);
 }
 
+/** Outcome of one plain Gmail call made with the watcher's credentials. */
+export type GmailProbe = { ok: true } | { ok: false; text: string };
+
+/**
+ * The watcher's Pub/Sub setup was refused twice in a row; a plain Gmail call
+ * with the same credentials decides who is at fault. Gmail refusing them too
+ * means a new sign-in is needed. Gmail accepting them means a new sign-in
+ * cannot help (the watch's cached token, or the account's Google Cloud access),
+ * and neither can a probe that failed for another reason prove them bad.
+ */
+export function repeatedRejectionNeedsSignIn(gmail: GmailProbe): boolean {
+  return !gmail.ok && isGoogleAuthRejection(gmail.text);
+}
+
 /** Bounded tail of a watcher's stderr, kept only to classify its exit. */
 export function appendBounded(tail: string, chunk: string, limit = 16 * 1024): string {
   const next = tail + chunk;

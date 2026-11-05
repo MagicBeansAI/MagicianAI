@@ -327,7 +327,7 @@ describe('RequestActivityCard', () => {
 			render(RequestActivityCard, { sessionId: 's1', chatTurnId: turn, live: true, embedded: true });
 
 		const nothingToCancel = () =>
-			vi.fn(async () =>
+			vi.fn(async (_input: RequestInfo | URL) =>
 				Response.json(
 					{ code: 'invalid_request', error: 'No active execution to cancel', details: { cancelled: false } },
 					{ status: 400 }

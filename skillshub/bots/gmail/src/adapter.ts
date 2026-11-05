@@ -1,14 +1,25 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { prepareEnvoyReply } from "./envoy-reply.js";
-import { appendBounded, isGoogleAuthRejection } from "./auth-rejection.js";
 import {
+  appendBounded,
+  type GmailProbe,
+  isGoogleAuthRejection,
+  repeatedRejectionNeedsSignIn,
+} from "./auth-rejection.js";
+import {
+  forgetWatchSubscription,
   forgetWatchTopic,
+  isMissingSubscriptionError,
+  isMissingTopicError,
   isWatchActiveLine,
+  parseCreatedSubscription,
   parseCreatedTopic,
   readSavedWatchTopic,
+  renewWatchArgs,
+  reusableSubscription,
   reusableTopic,
   saveWatchTopic,
   shouldForgetTopic,
@@ -87,6 +98,9 @@ const REJECTED_REFRESH_TOKEN = /invalid_grant|revoked|invalid_client|unauthorize
  */
 const EX_WATCH_FAILING = 70;
 
+/** Gmail watches expire after 7 days; a `--subscription` run renews daily. */
+const WATCH_RENEWAL_MS = 24 * 60 * 60 * 1000;
+
 interface AuthProblem {
   reason: string;
   /** The probe proved the stored credentials can never work again. */
@@ -111,10 +125,18 @@ export class GmailAdapter implements ChannelAdapter<string> {
   private watchStderrTail = "";
   /** Consecutive watcher runs that ended after Google rejected the credentials. */
   private authRejectedRuns = 0;
+  /** The token cache was set aside once after Pub/Sub refused credentials Gmail accepts. */
+  private tokenCacheSetAside = false;
   /** Saved Pub/Sub topic this watcher run was handed with `--topic`. */
   private watchReusedTopic: string | undefined;
   /** Topic gws said it created on this run; saved once the watch is active. */
   private watchCreatedTopic: string | undefined;
+  /** Subscription gws said it created on this run; saved once the watch is active. */
+  private watchCreatedSubscription: string | undefined;
+  /** Saved subscription this watcher run was handed with `--subscription`. */
+  private watchReusedSubscription: string | undefined;
+  /** Daily Gmail watch renewal while a `--subscription` run is up. */
+  private watchRenewalTimer: ReturnType<typeof setInterval> | undefined;
   private watchActive = false;
   private watchErrorText = "";
 
@@ -186,6 +208,7 @@ export class GmailAdapter implements ChannelAdapter<string> {
   async stop(): Promise<void> {
     this.stopping = true;
 
+    this.clearWatchRenewal();
     if (this.watchProcess) {
       const proc = this.watchProcess;
       this.watchProcess = undefined;
@@ -285,6 +308,71 @@ export class GmailAdapter implements ChannelAdapter<string> {
     process.exit(EX_WATCH_FAILING);
   }
 
+  /**
+   * Google rejected the watcher's credentials on two runs in a row. Ask for
+   * a new sign-in only when Gmail rejects them as well. When Gmail accepts
+   * them, the watch's own cached access token is the suspect: gws caches one
+   * token per scope set, and a new sign-in replaces the credentials but not
+   * that entry, so an 'Authenticate' prompt would loop. Set the cache aside
+   * once and retry; a refusal that survives a fresh token is Pub/Sub's.
+   */
+  private async settleRepeatedRejection(): Promise<void> {
+    if (repeatedRejectionNeedsSignIn(await this.probeGmail())) {
+      this.exitGoogleRejectedCredentials();
+    }
+    const account = `${this.profileName}${this.expectedAccount ? ` (${this.expectedAccount})` : ""}`;
+    if (!this.tokenCacheSetAside && this.setAsideTokenCache()) {
+      this.tokenCacheSetAside = true;
+      this.authRejectedRuns = 0;
+      console.error(
+        `[gmail-bot] Google Pub/Sub refused the watch for ${account} while Gmail accepts the same credentials; ` +
+          "set aside gws's token cache and retrying with a fresh token",
+      );
+      this.spawnWatcher();
+      return;
+    }
+    console.error(
+      `[gmail-bot] Google Pub/Sub refused the watch for ${account} on two runs in a row, with a fresh token, ` +
+        "while Gmail accepts the same credentials; signing in again will not fix this. Check that the account may use " +
+        "Google Cloud (Workspace admin: Additional Google services > Google Cloud) and has Pub/Sub access on " +
+        `${this.projectId ?? "the OAuth client's project"}.`,
+    );
+    process.exit(EX_WATCH_FAILING);
+  }
+
+  /** Rename gws's token cache aside (kept, not deleted); `false` when there is none. */
+  private setAsideTokenCache(): boolean {
+    if (!this.configDir) {
+      return false;
+    }
+    const cache = resolve(this.configDir, "token_cache.json");
+    if (!existsSync(cache)) {
+      return false;
+    }
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+    try {
+      renameSync(cache, resolve(this.configDir, `token_cache.rejected-${stamp}.json`));
+      return true;
+    } catch (error) {
+      console.error(`[gmail-bot] could not set aside ${cache}: ${errorReason(error)}`);
+      return false;
+    }
+  }
+
+  /** One read-only Gmail call with the watcher's credentials. */
+  private probeGmail(): Promise<GmailProbe> {
+    return new Promise((resolve) => {
+      execFile(
+        this.gwsBinary,
+        ["gmail", "users", "getProfile", "--params", JSON.stringify({ userId: "me" })],
+        { timeout: 30_000, env: { ...process.env, ...this.gwsEnv() } },
+        (error, stdout, stderr) => {
+          resolve(error ? { ok: false, text: `${errorReason(error)}\n${stdout}\n${stderr}` } : { ok: true });
+        },
+      );
+    });
+  }
+
   /** Google rejected the credentials on two watcher runs in a row. */
   private exitGoogleRejectedCredentials(): never {
     const reason =
@@ -357,12 +445,57 @@ export class GmailAdapter implements ChannelAdapter<string> {
       return;
     }
 
-    // Reuse the topic an earlier run created (see watch-topic.ts): without
-    // `--topic`, gws creates and leaks a new Pub/Sub topic on every start.
-    const topic = this.configDir
-      ? reusableTopic(readSavedWatchTopic(this.configDir), this.projectId)
-      : undefined;
-    const args = watchArgs(topic);
+    // Reuse the topic and subscription an earlier run created (see
+    // watch-topic.ts): without them gws creates and leaks new ones on every
+    // start. A `--subscription` run skips gws's Gmail watch renewal, so renew
+    // first; when that fails, fall back to `--topic`, which renews it itself.
+    const saved = this.configDir ? readSavedWatchTopic(this.configDir) : undefined;
+    const topic = reusableTopic(saved, this.projectId);
+    const subscription = reusableSubscription(saved, this.projectId);
+    if (!topic || !subscription) {
+      this.startWatchProcess(topic, undefined);
+      return;
+    }
+    void this.renewGmailWatch(topic).then((renewed) => {
+      if (this.stopping) {
+        return;
+      }
+      this.startWatchProcess(topic, renewed ? subscription : undefined);
+    });
+  }
+
+  /**
+   * Renew the 7-day Gmail watch on `topic`. A topic Google no longer has is
+   * forgotten with its subscription, so the next run creates both.
+   */
+  private async renewGmailWatch(topic: string): Promise<boolean> {
+    try {
+      await this.execGws(renewWatchArgs(topic));
+      return true;
+    } catch (error) {
+      const reason = errorReason(error);
+      if (this.configDir && isMissingTopicError(reason, topic)) {
+        console.error(`[gmail-bot] saved Pub/Sub topic ${topic} no longer exists; forgetting it`);
+        forgetWatchTopic(this.configDir);
+      } else {
+        console.error(`[gmail-bot] Gmail watch renewal on ${topic} failed: ${reason}`);
+      }
+      return false;
+    }
+  }
+
+  private clearWatchRenewal(): void {
+    if (this.watchRenewalTimer) {
+      clearInterval(this.watchRenewalTimer);
+      this.watchRenewalTimer = undefined;
+    }
+  }
+
+  private startWatchProcess(topic: string | undefined, subscription: string | undefined): void {
+    if (this.stopping) {
+      return;
+    }
+    const args = watchArgs(topic, subscription);
     console.info(`[gmail-bot] spawning gws ${args.join(" ")}`);
 
     const proc = spawn(this.gwsBinary, args, {
@@ -374,13 +507,23 @@ export class GmailAdapter implements ChannelAdapter<string> {
     this.watchJsonBuffer = "";
     this.watchAuthRejected = false;
     this.watchStderrTail = "";
-    this.watchReusedTopic = topic;
+    // A `--subscription` run never touches the topic, so only its
+    // subscription can be found missing.
+    this.watchReusedTopic = subscription ? undefined : topic;
+    this.watchReusedSubscription = subscription;
     this.watchCreatedTopic = undefined;
+    this.watchCreatedSubscription = undefined;
     this.watchActive = false;
     this.watchErrorText = "";
     // A watcher that stays up long enough ends the failure streak, so exit-2s
     // days apart are not counted as consecutive (see `healthyRunMs`).
     this.resilient.recordStart();
+    this.clearWatchRenewal();
+    if (topic && subscription) {
+      const timer = setInterval(() => void this.renewGmailWatch(topic), WATCH_RENEWAL_MS);
+      timer.unref();
+      this.watchRenewalTimer = timer;
+    }
 
     const rl = createInterface({ input: proc.stdout! });
     rl.on("line", (line: string) => {
@@ -406,9 +549,21 @@ export class GmailAdapter implements ChannelAdapter<string> {
 
     proc.on("close", (code, signal) => {
       this.watchProcess = undefined;
+      this.clearWatchRenewal();
       if (this.stopping) {
         console.info("[gmail-bot] watch process exited after stop");
         return;
+      }
+      const reusedSubscription = this.watchReusedSubscription;
+      if (
+        this.configDir &&
+        reusedSubscription &&
+        isMissingSubscriptionError(this.watchErrorText + this.watchStderrTail, reusedSubscription)
+      ) {
+        console.error(
+          `[gmail-bot] saved Pub/Sub subscription ${reusedSubscription} no longer exists; forgetting it so the next start creates one`,
+        );
+        forgetWatchSubscription(this.configDir);
       }
       // A saved topic someone deleted fails every start the same way: drop
       // it so the restart below lets gws create a fresh one.
@@ -428,11 +583,12 @@ export class GmailAdapter implements ChannelAdapter<string> {
       }
       // Google refusing the credentials is not a crash a restart can fix,
       // and `gws auth status` may still accept them (it only checks them
-      // locally). Two runs in a row ending that way mean a new sign-in is
-      // needed: surface it instead of restarting into the same rejection.
+      // locally). Two runs in a row ending that way stop the restarts; a
+      // plain Gmail call then says whether a new sign-in can help.
       this.authRejectedRuns = this.watchAuthRejected ? this.authRejectedRuns + 1 : 0;
       if (this.authRejectedRuns >= 2) {
-        this.exitGoogleRejectedCredentials();
+        void this.settleRepeatedRejection();
+        return;
       }
       void this.resilient.handleExit(code, signal, () => this.spawnWatcher());
     });
@@ -443,27 +599,36 @@ export class GmailAdapter implements ChannelAdapter<string> {
   }
 
   /**
-   * Track the watcher's Pub/Sub setup: remember a topic gws creates, and
-   * save it for later runs once the Gmail watch is active on it.
+   * Track the watcher's Pub/Sub setup: remember the topic and subscription
+   * gws creates, and save them for later runs once the Gmail watch is active.
    */
   private observeWatchSetupLine(line: string): void {
-    const created = parseCreatedTopic(line);
-    if (created) {
-      this.watchCreatedTopic = created;
+    const createdTopic = parseCreatedTopic(line);
+    if (createdTopic) {
+      this.watchCreatedTopic = createdTopic;
+      return;
+    }
+    const createdSubscription = parseCreatedSubscription(line);
+    if (createdSubscription) {
+      this.watchCreatedSubscription = createdSubscription;
       return;
     }
     if (this.watchActive || !isWatchActiveLine(line)) {
       return;
     }
     this.watchActive = true;
-    if (!this.watchCreatedTopic || !this.configDir) {
+    const topic = this.watchCreatedTopic ?? this.watchReusedTopic;
+    if (!topic || !this.configDir || (!this.watchCreatedTopic && !this.watchCreatedSubscription)) {
       return;
     }
     try {
-      saveWatchTopic(this.configDir, this.watchCreatedTopic);
-      console.info(`[gmail-bot] saved Pub/Sub topic ${this.watchCreatedTopic} for later watcher runs`);
+      saveWatchTopic(this.configDir, topic, new Date(), this.watchCreatedSubscription);
+      console.info(
+        `[gmail-bot] saved Pub/Sub topic ${topic}` +
+          `${this.watchCreatedSubscription ? ` and subscription ${this.watchCreatedSubscription}` : ""} for later watcher runs`,
+      );
     } catch (error) {
-      console.error(`[gmail-bot] failed to save Pub/Sub topic ${this.watchCreatedTopic}: ${errorReason(error)}`);
+      console.error(`[gmail-bot] failed to save Pub/Sub topic ${topic}: ${errorReason(error)}`);
     }
   }
 

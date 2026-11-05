@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { appendBounded, isGoogleAuthRejection } from '../dist/auth-rejection.js';
+import { appendBounded, isGoogleAuthRejection, repeatedRejectionNeedsSignIn } from '../dist/auth-rejection.js';
 
 test('Google rejecting the sent credentials is an auth rejection', () => {
   // The Pub/Sub error the watcher logged when its stored token was unusable.
@@ -26,4 +26,15 @@ test('the stderr tail stays bounded and keeps the newest text', () => {
   const tail = appendBounded('a'.repeat(10), 'bcd', 8);
   assert.equal(tail.length, 8);
   assert.ok(tail.endsWith('bcd'));
+});
+
+test('a Pub/Sub refusal asks for a sign-in only when Gmail refuses the credentials too', () => {
+  // Gmail accepts the token Pub/Sub refused: a new sign-in cannot help.
+  assert.equal(repeatedRejectionNeedsSignIn({ ok: true }), false);
+  assert.equal(
+    repeatedRejectionNeedsSignIn({ ok: false, text: 'Command failed: gws gmail users getProfile\n{"error":{"code":401,"status":"UNAUTHENTICATED"}}' }),
+    true,
+  );
+  // A probe that failed for another reason proves nothing about the token.
+  assert.equal(repeatedRejectionNeedsSignIn({ ok: false, text: 'Command failed: spawn ETIMEDOUT' }), false);
 });

@@ -14859,10 +14859,12 @@ mod locality_policy_tests {
             );
             // Generated cloud routes are shared by operations with the same
             // reviewed posture, so the inventory is smaller than the retired
-            // one-`*-remote`-profile-per-operation family.
+            // one-`*-remote`-profile-per-operation family. The seventh is
+            // `workload/app_processing/chat_cloud` (2026-11-02): chat over
+            // remote-allowed app data, beside the 32K app-workflow route.
             assert_eq!(
                 cloud_profiles.len(),
-                6,
+                7,
                 "{surface} cloud replacement inventory changed; review every new route"
             );
         }

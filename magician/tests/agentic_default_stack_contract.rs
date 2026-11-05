@@ -227,6 +227,17 @@ fn production_agentic_entry_points_retain_scheduler_root_boundaries() {
                 "dyn std::future::Future<Output = Result<bool, ArtifactV2Error>>",
                 "+ Send",
                 "Box::pin(async move",
+                "self.spawn_resumed_parent_continuation(",
+            ],
+        },
+        BoundaryContract {
+            // The resume above hands the parent's continuation here (0.7.150)
+            // instead of spawning it inline.
+            label: "resumed parent continuation spawn",
+            source: ARTIFACT_SERVICE,
+            start: "fn spawn_resumed_parent_continuation(",
+            end: "async fn redispatch_deferred_parent_resume(",
+            required: &[
                 "runtime_boundary::spawn_execution_job",
                 "move || async move",
                 "continue_execution_with_orchestrator(",

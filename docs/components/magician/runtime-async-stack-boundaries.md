@@ -360,5 +360,9 @@ children spawned into a structured set with the execution token meter
 recovery direct and sleeping-retry runs (`agents/runtime.rs`), App workflow
 launch admission (`apps/workflows.rs`) and the detached HTTP resume
 (`web_api.rs`). The `off_frame!` macro (`magician/src/lib.rs`) boxes an awaited
-call so its state leaves the caller's frame. Runtime worker threads keep
-Tokio's 2 MiB default.
+call in the out-of-line `box_off_frame`, so neither its state nor the boxed
+block takes a slot in the caller's frame. Runtime worker threads keep
+Tokio's 2 MiB default. The delegated-child launch job
+(`spawn_delegated_children_from_runtime_inner`) awaits its setup and settlement
+calls through `off_frame!`: inline, its frame reached 755 KiB and every
+delegation overflowed the worker (2026-11-03).

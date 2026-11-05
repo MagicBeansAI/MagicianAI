@@ -59,7 +59,7 @@ describe('presentTaskOutputBlocks — the chat task card\'s Outputs', () => {
 	});
 
 	it('keeps an old task\'s order but still drops the summary behind the delivered files', () => {
-		const blocks = presentTaskOutputBlocks([
+		const blocks = presentTaskOutputBlocks<ContentBlockRecord>([
 			file('outputs/out_task_user_task_1_exec_1.md'),
 			file('outputs/chart.png', { mime_type: 'image/png' }),
 			{ type: 'text', text: 'note' },

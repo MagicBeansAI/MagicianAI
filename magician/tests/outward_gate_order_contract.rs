@@ -58,14 +58,10 @@ fn only_at(haystack: &str, marker: &str) -> usize {
 fn the_restriction_refusal_runs_before_the_capture_branch_not_inside_the_live_one() {
     let body = executor_from_the_dispatch_fn();
 
-    let restriction = only_at(
-        &body,
-        "outward_bound_dispatch(action, ctx, &capability, &action_token)",
-    );
-    let capture = only_at(
-        &body,
-        "matches!(disposition, OutwardDisposition::Capture(_))",
-    );
+    let restriction = only_at(&body, "let bound = match outward_bound_dispatch(");
+    // Where capture is decided. Both of its uses (an owner-reviewed send
+    // lifting capture, and the capture branch itself) come after this.
+    let capture = only_at(&body, "let disposition = outward_actions::outward_disposition(");
 
     assert!(
         restriction < capture,
@@ -92,16 +88,12 @@ fn the_work_context_ceiling_is_gate_zero_ahead_of_restriction_suppression_and_ca
     let body = executor_from_the_dispatch_fn();
 
     let work_context = only_at(&body, "outward_gate::work_context_refusal(");
-    let restriction = only_at(
-        &body,
-        "outward_bound_dispatch(action, ctx, &capability, &action_token)",
-    );
+    let restriction = only_at(&body, "let bound = match outward_bound_dispatch(");
     let suppression = only_at(&body, "outward_gate::contact_refusal(");
     let compliance = only_at(&body, "recipient_compliance::compliance_refusal(");
-    let capture = only_at(
-        &body,
-        "matches!(disposition, OutwardDisposition::Capture(_))",
-    );
+    // Where capture is decided. Both of its uses (an owner-reviewed send
+    // lifting capture, and the capture branch itself) come after this.
+    let capture = only_at(&body, "let disposition = outward_actions::outward_disposition(");
 
     assert!(
         work_context < restriction,

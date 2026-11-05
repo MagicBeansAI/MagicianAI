@@ -128,18 +128,30 @@ returns `false` (env var absent) and `exitNeedsAuth` still calls
 
 | Bot | Version | Provider id | Probe |
 |-----|---------|-------------|-------|
-| `@magician/bot-gmail` | `0.2.3+` | `google_workspace` | `gws auth status --format json` |
+| `@magician/bot-gmail` | `0.2.4+` | `google_workspace` | `gws auth status --format json` |
 | `@magician/bot-telegram-self` | `0.2.2+` | `telegram_self` | `tgcli channels --limit 1 --json` |
 
 The Gmail probe checks stored credentials locally, so it can accept ones Google
 refuses. When Google rejects the watcher's credentials (`UNAUTHENTICATED`, 401,
 `ACCESS_TOKEN_TYPE_UNSUPPORTED`) on two consecutive watcher runs, the Gmail bot
-exits needs-auth with its sidecar instead of counting toward its
-persistent-failure exit (70); permission and quota errors still take that path,
-since signing in cannot fix them. The watcher reuses one Pub/Sub topic per
+makes one read-only Gmail call (`gmail users getProfile`) with the same
+credentials. Only when Gmail rejects them too does it exit needs-auth with its
+sidecar. When Gmail accepts them, a new sign-in cannot clear the refusal: `gws`
+caches one access token per scope set, and signing in replaces the credentials
+but not the watch's cached entry. The bot renames `token_cache.json` to
+`token_cache.rejected-<UTC stamp>.json` once and restarts the watcher; a
+refusal that survives the fresh token exits 70 (the account's Google Cloud
+access or project roles), as permission and quota errors do. The watcher reuses one Pub/Sub topic per
 profile: the topic `gws` created on first watch activation is kept in
 `$GWS_CONFIG_DIR/gmail-watch-topic.json` (mode `0600`) and passed back with
 `--topic` for the same project; it is dropped when Google reports it not found.
+The subscription that run creates is saved beside it (`subscription`), and later
+runs pass `--subscription` instead, so a restart no longer leaves a new
+subscription behind. That mode skips `gws`'s setup, including the 7-day Gmail
+watch renewal, so the bot calls `gmail users watch` on the saved topic before
+each such run and daily while it runs. A failed renewal falls back to `--topic`
+(saving the new subscription); a subscription Google reports not found is
+dropped and the topic kept.
 
 WhatsApp (wu-cli) and Kapso are not on the contract: their auth is
 connect-and-auth-in-one (QR appears during connect), which does not decompose

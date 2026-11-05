@@ -913,7 +913,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 23039,
+     "line": 23048,
      "why": "Launches an execution for a task"
     },
     {
@@ -1060,7 +1060,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "fn": "delivered_file_outputs_for_terminal",
      "type": null,
-     "line": 42375,
+     "line": 42432,
      "why": "Keep delivered files beside the answer"
     }
    ],
@@ -1108,7 +1108,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": "ArtifactV2Service",
      "fn": "start_execution",
-     "line": 23039,
+     "line": 23048,
      "title": "Start an execution",
      "say": "Starting execution creates a run under the task, which agents carry out, handing sub-work to the delegation dispatcher when they need help.",
      "evidence": "service.rs:22087; scheduler.rs:29"
@@ -1179,7 +1179,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "fn": "delivered_file_outputs_for_terminal",
      "type": null,
-     "line": 42375,
+     "line": 42432,
      "title": "Keep delivered files beside the answer",
      "say": "Files the run wrote and explicitly named as delivered appear beside the answer, using their own filenames and copies checked against their digests."
     }
@@ -1455,42 +1455,42 @@
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "harness_tool_future",
-     "line": 145,
+     "line": 153,
      "why": "Routes each harness tool by name"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "create_harness_task_with_budget",
-     "line": 1335,
+     "line": 1343,
      "why": "Caps tasks created per cycle"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "execute_evaluate_harness",
-     "line": 832,
+     "line": 840,
      "why": "Evaluates harness outcomes"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "owner_approval_required_result",
-     "line": 1770,
+     "line": 1778,
      "why": "Out-of-scope asks go to owner"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "execute_promote_backlog_item",
-     "line": 1796,
+     "line": 1804,
      "why": "Promotes a backlog item to work"
     },
     {
      "file": "magician/src/magician_v2/execution/harness_provider.rs",
      "type": null,
      "fn": "render_goal_program_metrics_block",
-     "line": 3448,
+     "line": 3456,
      "why": "Program metrics for cycle prompts"
     },
     {
@@ -1520,6 +1520,62 @@
      "fn": "take",
      "line": 226,
      "why": "Loop runs plan without turns"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "hot_names_for",
+     "line": 173,
+     "why": "Chooses the always-shown tools for a grant, honouring the config overlay"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "builtin_hot_names_for_grant",
+     "line": 165,
+     "why": "Adds the delegation tools only when the agent has a target"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "plane_tools_list_configured",
+     "line": 244,
+     "why": "Builds the tools/list entries from hot, loaded and bridged tools"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "is_callable_configured",
+     "line": 298,
+     "why": "A call is allowed only for a tool in the list the grant is shown"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "plane_tool_search",
+     "line": 540,
+     "why": "Grant-scoped search and select-to-load of deferred tools"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "expand_selected_packs",
+     "line": 695,
+     "why": "Selecting one tool loads every permitted tool of its pack"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "delegated_owner_hints",
+     "line": 660,
+     "why": "Names the agent that owns a tool this grant cannot call"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "offered_index_entry",
+     "line": 342,
+     "why": "Offers each tool through the restricted projection or withholds it"
     }
    ],
    "configKeys": [
@@ -1585,6 +1641,30 @@
      "title": "Mint a plane grant",
      "say": "Magician mints a short-lived grant and gives the engine an MCP configuration pointing back at itself, so every tool call returns through Magician.",
      "evidence": "docs/components/magician/plane.md:6-7; engine.rs:321 mcp_config_document"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "hot_names_for",
+     "line": 173,
+     "title": "A short list, not a toolbox",
+     "say": "An outside agent is shown Magican's own controls such as tasks, memory, agents, apps and monitors, not a copy of the file and shell tools it already has. Delegation tools appear only when the agent has someone to hand work to."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "plane_tool_search",
+     "line": 540,
+     "title": "Everything else by search",
+     "say": "Other tools are found by searching. Picking a tool by name loads its whole group for that session and replaces the earlier pick, while plain keyword search loads nothing. If a match belongs to another agent, the result names that agent and says to hand the work over."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/plane/catalog.rs",
+     "type": null,
+     "fn": "is_callable_configured",
+     "line": 298,
+     "title": "Knowing a name is not permission",
+     "say": "A call is accepted only if the tool is in the very list this session was shown or has loaded. Guessing the name of a hidden tool does not let the agent run it."
     },
     {
      "file": "magician/src/magician_v2/execution/plane/dispatch.rs",
@@ -2864,7 +2944,7 @@
      "file": "skillshub/bots/gmail/src/adapter.ts",
      "type": "GmailAdapter",
      "fn": null,
-     "line": 97,
+     "line": 111,
      "why": "Gmail via gws OAuth"
     },
     {
@@ -3067,7 +3147,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 51472,
+     "line": 51469,
      "why": "Classifies each action before execution"
     },
     {
@@ -3123,7 +3203,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27958,
+     "line": 27961,
      "why": "Canonical answer endpoint"
     },
     {
@@ -3273,7 +3353,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "classify_outward_dispatch",
-     "line": 51472,
+     "line": 51469,
      "title": "Spot outward actions",
      "say": "Before executing, each action is classified, and anything that can send email, messages or invitations, including raw passthrough arguments, counts as outward.",
      "evidence": "docs/components/magician/outward-actions.md:1-23"
@@ -3327,7 +3407,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27958,
+     "line": 27961,
      "title": "Answer once",
      "say": "The owner answers through one endpoint from Attention, chat, a bot or a phone, and the waiting work resumes with that answer.",
      "evidence": "docs/components/magician/hitl-attention.md:547; main.rs:13460"
@@ -4906,6 +4986,34 @@
      "type": null,
      "line": 1,
      "why": "Measured iPhone capture and playback activity"
+    },
+    {
+     "file": "magicllm/src/speech_voices.rs",
+     "type": null,
+     "fn": "gemini_voices",
+     "line": 2135,
+     "why": "30-voice studio roster for older Gemini models"
+    },
+    {
+     "file": "magicllm/src/realtime/voices.rs",
+     "type": null,
+     "fn": "voices_for_realtime_model",
+     "line": 224,
+     "why": "Picks the voice list for a call's model"
+    },
+    {
+     "file": "magicllm/src/realtime/voices.rs",
+     "type": null,
+     "fn": "canonical_realtime_voice_for_model",
+     "line": 239,
+     "why": "Validates a saved voice against that list"
+    },
+    {
+     "file": "magician-media/src/media_rails/providers/gemini_tts.rs",
+     "type": null,
+     "fn": "supported_voices",
+     "line": 130,
+     "why": "Spoken-reply voices from the same roster"
     }
    ],
    "configKeys": [
@@ -5013,6 +5121,22 @@
      "line": 1,
      "title": "Choose the mic mode during the call",
      "say": "Web, iPhone and Android share Open mic and Hold to talk controls. Change modes during a call; translation profiles keep Hold to talk unavailable."
+    },
+    {
+     "file": "magicllm/src/speech_voices.rs",
+     "type": null,
+     "fn": "gemini_voices",
+     "line": 2135,
+     "title": "One list of voices",
+     "say": "Magican keeps a single built-in list of the voices Gemini and Grok can speak with, so every screen offers the same names."
+    },
+    {
+     "file": "magicllm/src/realtime/voices.rs",
+     "type": null,
+     "fn": "voices_for_realtime_model",
+     "line": 224,
+     "title": "Voices that fit the model",
+     "say": "When you pick a voice for a live call, the list depends on the model, because the newest Gemini model accepts about two thousand voices and the older one accepts thirty. A voice the model would reject is never offered."
     },
     {
      "file": "magdroid/android/app/src/main/kotlin/ai/magicbeans/magdroid/ui/LiveCallPanel.kt",
@@ -6598,6 +6722,311 @@
      "line": 83,
      "title": "Watching in the studio",
      "say": "The studio rail shows crews still in play, each with a status dot for every lane, and folds finished ones away. Open a lane's run, or start, stop, merge and pick a winner right there."
+    }
+   ]
+  },
+  {
+   "id": "decision-model-health",
+   "name": "Decision model scoreboard",
+   "group": "What it does",
+   "oneLine": "Tracks how well and how fast the Decision Engine answers, by task and model, and lets the owner check sampled answers by hand.",
+   "maturity": "shipped",
+   "maturityEvidence": "DecisionMetrics starts at boot (magician-bin/src/main.rs:7516) and four owner-only routes are mounted (main.rs:13993-13996); decision events are captured from decision_host.rs:253. Covered by six store tests in decision_metrics/tests.rs, two health tests in health.rs:477 and :652, and an API auth test; docs/archive/plans/2026-09-30-decision-model-observability.md records live verification.",
+   "locations": [
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "event",
+     "line": 324,
+     "why": "Folds each decision record into day totals"
+    },
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "quality",
+     "line": 56,
+     "why": "Per-model agreement, review and application counts"
+    },
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "review",
+     "line": 528,
+     "why": "Saves an owner's label on a sampled case"
+    },
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "retain",
+     "line": 439,
+     "why": "Trims cases to 7 days, summaries to 90"
+    },
+    {
+     "file": "magician-core/src/decision_metrics/health.rs",
+     "type": null,
+     "fn": "classify",
+     "line": 149,
+     "why": "Sorts one case into decided, error, etc."
+    },
+    {
+     "file": "magician-core/src/decision_metrics/health.rs",
+     "type": null,
+     "fn": "aggregate",
+     "line": 267,
+     "why": "Per-operation counts and p50/p95 latency"
+    },
+    {
+     "file": "magician-core/src/decision_metrics/types.rs",
+     "type": "Case",
+     "fn": null,
+     "line": 98,
+     "why": "One retained decision with references and reviews"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/decision_metrics/service.rs",
+     "type": null,
+     "fn": "capture",
+     "line": 334,
+     "why": "Compacts decision events onto a bounded queue"
+    },
+    {
+     "file": "magician-api/src/plane_api/decision_metrics.rs",
+     "type": null,
+     "fn": "decision_metrics_health",
+     "line": 57,
+     "why": "Owner-only health route"
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/decision-models/+page.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Decision models page: quality, cost, latency"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/plane/DecisionHealthCard.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "why": "Per-task health card with a status verdict"
+    }
+   ],
+   "configKeys": [],
+   "routes": [
+    "GET /api/magician/v2/plane/decision-metrics",
+    "GET /api/magician/v2/plane/decision-metrics/cases",
+    "GET /api/magician/v2/plane/decision-metrics/health",
+    "POST /api/magician/v2/plane/decision-metrics/review"
+   ],
+   "uiSurface": {
+    "description": "The Decision models page shows quality, application outcomes, latency and cost per task and model, with a health card and a human review panel; it is linked from the LLM page.",
+    "path": "ui/unified-ui/src/routes/(app)/decision-models/+page.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/decision_host.rs",
+     "type": null,
+     "fn": "emit_model_event",
+     "line": 252,
+     "title": "Decisions leave a record",
+     "say": "Each time the Decision Engine answers, a compact record of the question, the result and its cost is handed to the scoreboard."
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/decision_metrics/service.rs",
+     "type": null,
+     "fn": "capture",
+     "line": 334,
+     "title": "Never slows the answer",
+     "say": "The record is trimmed and dropped onto a small bounded queue. If the queue is full or the record is too large it is counted as lost, so the decision is never held up by bookkeeping."
+    },
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "event",
+     "line": 324,
+     "title": "Counted once, per day",
+     "say": "A background writer adds the record to daily totals in a small private database, and a call seen twice is not counted twice. Different models and settings are never pooled together."
+    },
+    {
+     "file": "magician-core/src/decision_metrics/health.rs",
+     "type": null,
+     "fn": "classify",
+     "line": 149,
+     "title": "Did it work",
+     "say": "Each retained case is sorted into decided, unresolved, timed out, failed or skipped, using only fixed status codes, so no provider error text is ever stored or shown."
+    },
+    {
+     "file": "magician-core/src/decision_metrics/store.rs",
+     "type": null,
+     "fn": "review",
+     "line": 528,
+     "title": "You check a sample",
+     "say": "You can open a sampled case and label the right answer yourself. Your label is compared with the model's, so quality rests on your review and not only on the model agreeing with another model."
+    },
+    {
+     "file": "ui/unified-ui/src/routes/(app)/decision-models/+page.svelte",
+     "type": null,
+     "fn": null,
+     "line": 1,
+     "title": "See it on one page",
+     "say": "The Decision models page shows, for today, a week or a month, how often each task was answered, how fast, and what it cost, with a health card that marks each task healthy, degraded or failing."
+    }
+   ]
+  },
+  {
+   "id": "rich-reply-cards",
+   "name": "Replies that arrive as cards",
+   "group": "What it does",
+   "oneLine": "Task results, tool outcomes and attachments show in chat as tidy cards with output files, sources and an Open task button, while the plain text stays the real answer.",
+   "maturity": "shipped",
+   "maturityEvidence": "ChatMessage::new and ensure_presentation (chat/models.rs) build the sidecar for every non-user message, chat/storage.rs load_message_segment and append_segmented_message re-project it, and realtime_events.rs sanitize_chat_message_presentation_for_transport re-validates it before sending; presentation.rs has 16 unit tests. The web renderer is default-enabled for the migrated message kinds (docs/archive/changelogs/unified-ui.md, 'structured-response rollout complete').",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": "StructuredResponseV1",
+     "fn": null,
+     "line": 41,
+     "why": "The card: schema, version, plain text, blocks, actions, meta"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": "StructuredResponseBlockV1",
+     "fn": null,
+     "line": 62,
+     "why": "Block kinds: markdown, callout, table, list, artifacts, sources, metrics"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "project",
+     "line": 445,
+     "why": "Builds the card from the message content, bounding each field"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "attach_to_content",
+     "line": 369,
+     "why": "Accepts a supplied card only if it equals the server-built one"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "from_content_for_message",
+     "line": 412,
+     "why": "Projects per message and warns once per message when invalid"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "artifact_target",
+     "line": 805,
+     "why": "Logical file id plus locator when the id must be shortened"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "validate_structured_response_fields",
+     "line": 922,
+     "why": "Size, count, URL and control-character limits"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "validate_action",
+     "line": 1237,
+     "why": "Rejects server-run actions; only client-side actions pass"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/models.rs",
+     "type": null,
+     "fn": "ensure_presentation",
+     "line": 297,
+     "why": "Normalizes every non-user message at the durability boundary"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/storage.rs",
+     "type": null,
+     "fn": "load_message_segment",
+     "line": 3654,
+     "why": "Upgrades stored history with a card on read"
+    },
+    {
+     "file": "magician/src/magician_v2/realtime_events.rs",
+     "type": null,
+     "fn": "sanitize_chat_message_presentation_for_transport",
+     "line": 10748,
+     "why": "Drops an invalid card before it is sent to clients"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/structuredResponse/rollout.ts",
+     "type": null,
+     "fn": "shouldEnableStructuredResponseRollout",
+     "line": 32,
+     "why": "Deterministic percentage rollout gate in the web chat"
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/structuredResponse/toPlainText.ts",
+     "type": null,
+     "fn": "toPlainText",
+     "line": 87,
+     "why": "Plain-text projection used when a card cannot be drawn"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": {
+    "description": "Chat replies for task updates, tool results and attachments render as cards with an Outputs list, a Sources strip and an Open task button.",
+    "path": "ui/unified-ui/src/lib/magician/structuredResponse/StructuredResponseRenderer.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": "StructuredResponseV1",
+     "fn": null,
+     "line": 41,
+     "title": "A reply can carry a card",
+     "say": "Alongside the text of a reply, Magican can attach a small card built from blocks such as notes, tables, file lists and source links. The text stays the real answer, and the card is just a clearer way to show it."
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "project",
+     "line": 445,
+     "title": "Built from what really happened",
+     "say": "The server builds the card from the message itself. A finished task becomes a status note with its output files and an Open task button, and a tool result becomes a short action summary."
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "artifact_target",
+     "line": 805,
+     "title": "Files by name, not by path",
+     "say": "Output files are listed by a logical name rather than a location on this computer. A very long name is shortened with a fingerprint and a lookup entry, so the file still opens."
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "validate_structured_response_fields",
+     "line": 922,
+     "title": "Strict limits on every card",
+     "say": "Each card is checked for size, number of blocks, safe web links and stray control characters before it is kept. Anything that would run an action on the server is refused."
+    },
+    {
+     "file": "magician/src/magician_v2/chat/presentation.rs",
+     "type": null,
+     "fn": "attach_to_content",
+     "line": 369,
+     "title": "A supplied card must match",
+     "say": "A card handed in from elsewhere is accepted only if it is identical to the one the server would build itself. That way nothing can slip in hidden text or extra buttons."
+    },
+    {
+     "file": "ui/unified-ui/src/lib/magician/structuredResponse/toPlainText.ts",
+     "type": null,
+     "fn": "toPlainText",
+     "line": 87,
+     "title": "The text is never lost",
+     "say": "If a card is dropped or a screen cannot draw it, chat shows the plain message instead, so you always see the answer."
     }
    ]
   }

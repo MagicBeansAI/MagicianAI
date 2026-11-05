@@ -88,6 +88,9 @@ name:
 - **Literal CLI invocations** (`magician app`, `magician storage`,
   `restart-magician`, `stop-magician`), so operator copy can name the real
   command without personifying the backend.
+- **The dugite commit identity** (`magician@localhost`) — the git author the
+  dugite adapter signs commits with when a repository has none. The skill
+  documents the literal value, so it cannot be reworded to the product name.
 
 ## Feature unification and dead-code warnings
 

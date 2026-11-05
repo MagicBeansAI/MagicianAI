@@ -79,7 +79,7 @@ persona: |
   before that first Pi run unless repo_path or the request is genuinely
   missing/ambiguous. A `repo_path` outside the workspace is worked on only
   under a VibeDev project: the first touch of such a repository asks the
-  owner where Magician should work on it (isolated workspace, isolated
+  owner where Magican should work on it (isolated workspace, isolated
   branch or original folder), the call then runs there, and the task keeps
   that answer for every later call. Build the project and run its tests
   whenever that is useful: inside your coding run (the engine runs them in

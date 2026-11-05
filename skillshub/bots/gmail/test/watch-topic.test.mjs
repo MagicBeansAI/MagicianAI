@@ -5,11 +5,16 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { GmailAdapter } from '../dist/adapter.js';
 import {
+  forgetWatchSubscription,
+  isMissingSubscriptionError,
   isMissingTopicError,
   isWatchActiveLine,
+  parseCreatedSubscription,
   parseCreatedTopic,
   parseSavedWatchTopic,
   readSavedWatchTopic,
+  renewWatchArgs,
+  reusableSubscription,
   reusableTopic,
   saveWatchTopic,
   shouldForgetTopic,
@@ -18,6 +23,7 @@ import {
 } from '../dist/watch-topic.js';
 
 const TOPIC = 'projects/magician-gws/topics/gws-gmail-watch-9ea955cc';
+const SUBSCRIPTION = 'projects/magician-gws/subscriptions/gws-gmail-watch-41c2d7aa';
 // What Pub/Sub answers when a subscription is created on a deleted topic.
 const TOPIC_NOT_FOUND = '{"code":404,"message":"Resource not found (resource=gws-gmail-watch-9ea955cc).","status":"NOT_FOUND"}';
 
@@ -27,6 +33,29 @@ test('the topic gws creates is read from its setup line, prefixed or not', () =>
   assert.equal(parseCreatedTopic('Creating Pub/Sub subscription: projects/magician-gws/subscriptions/gws-gmail-watch-9ea955cc'), undefined);
   assert.equal(isWatchActiveLine('Gmail watch active (historyId: 4395, expires: 1785000000000)'), true);
   assert.equal(isWatchActiveLine('Listening for new emails...'), false);
+  assert.equal(parseCreatedSubscription(`Creating Pub/Sub subscription: ${SUBSCRIPTION}`), SUBSCRIPTION);
+  assert.equal(parseCreatedSubscription(`Creating Pub/Sub topic: ${TOPIC}`), undefined);
+});
+
+test('a saved subscription is reused with --subscription, and the Gmail watch is renewed on its topic', () => {
+  const saved = parseSavedWatchTopic(JSON.stringify({ topic: TOPIC, project: 'magician-gws', subscription: SUBSCRIPTION }));
+  assert.equal(reusableSubscription(saved, 'magician-gws'), SUBSCRIPTION);
+  assert.equal(reusableSubscription(saved, 'other-project'), undefined);
+  assert.deepEqual(watchArgs(TOPIC, SUBSCRIPTION), ['gmail', '+watch', '--format', 'json', '--subscription', SUBSCRIPTION]);
+  assert.deepEqual(renewWatchArgs(TOPIC), [
+    'gmail', 'users', 'watch', '--params', '{"userId":"me"}', '--json', `{"topicName":"${TOPIC}"}`,
+  ]);
+  // A subscription from another project is dropped; the topic is kept.
+  const foreign = parseSavedWatchTopic(JSON.stringify({
+    topic: TOPIC, project: 'magician-gws', subscription: 'projects/other/subscriptions/gws-gmail-watch-41c2d7aa',
+  }));
+  assert.equal(foreign?.topic, TOPIC);
+  assert.equal(foreign?.subscription, undefined);
+
+  const missing = '{"code":404,"message":"Resource not found (resource=gws-gmail-watch-41c2d7aa).","status":"NOT_FOUND"}';
+  assert.equal(isMissingSubscriptionError(missing, SUBSCRIPTION), true);
+  assert.equal(isMissingSubscriptionError(TOPIC_NOT_FOUND, SUBSCRIPTION), false);
+  assert.equal(isMissingSubscriptionError('{"code":403,"status":"PERMISSION_DENIED"}', SUBSCRIPTION), false);
 });
 
 test('a saved topic is reused only for the project the watcher runs against', () => {
@@ -63,36 +92,49 @@ test('only a not-found error for the saved topic forgets it', () => {
 test('the topic is saved atomically, owner-only, beside the gws credentials', (t) => {
   const configDir = mkdtempSync(join(tmpdir(), 'gmail-topic-'));
   t.after(() => rmSync(configDir, { recursive: true, force: true }));
-  saveWatchTopic(configDir, TOPIC, new Date('2026-10-27T00:00:00Z'));
+  saveWatchTopic(configDir, TOPIC, new Date('2026-10-27T00:00:00Z'), SUBSCRIPTION);
   const path = join(configDir, WATCH_TOPIC_STATE_FILE);
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
     topic: TOPIC,
     project: 'magician-gws',
     saved_at: '2026-10-27T00:00:00.000Z',
+    subscription: SUBSCRIPTION,
   });
   assert.deepEqual(readSavedWatchTopic(configDir)?.topic, TOPIC);
+  forgetWatchSubscription(configDir);
+  assert.equal(readSavedWatchTopic(configDir)?.topic, TOPIC);
+  assert.equal(readSavedWatchTopic(configDir)?.subscription, undefined);
 });
 
 /* ---------- through the adapter, with a stand-in `gws` ---------- */
 
 /**
- * A fake `gws gmail +watch`: records its arguments, then either sets up a
- * new topic and stays up, or (handed a topic) fails the way FAKE_GWS_FAILURE says.
+ * A fake `gws`: records its arguments. `gmail users watch` (the renewal)
+ * succeeds. `gmail +watch` sets up a new topic and subscription and stays
+ * up; handed a topic or subscription, it fails the way FAKE_GWS_FAILURE says,
+ * else creates a subscription (topic) or skips setup (subscription).
  */
 const FAKE_GWS = `#!/usr/bin/env node
 const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_GWS_ARGS, JSON.stringify(args) + '\\n');
-const topicIndex = args.indexOf('--topic');
-if (topicIndex < 0) {
-  process.stderr.write('Creating Pub/Sub topic: ${TOPIC}\\n');
-  process.stderr.write('Creating Pub/Sub subscription: projects/magician-gws/subscriptions/gws-gmail-watch-9ea955cc\\n');
-} else if (process.env.FAKE_GWS_FAILURE) {
+if (args[1] === 'users') {
+  process.stdout.write('{"historyId":"4395","expiration":"1785000000000"}\\n');
+  process.exit(0);
+}
+const reused = args.includes('--topic') || args.includes('--subscription');
+if (reused && process.env.FAKE_GWS_FAILURE) {
   process.stdout.write(JSON.stringify({ error: JSON.parse(process.env.FAKE_GWS_FAILURE) }, null, 2) + '\\n');
   process.exit(1);
 }
-process.stderr.write('Gmail watch active (historyId: 4395, expires: 1785000000000)\\n');
+if (!reused) process.stderr.write('Creating Pub/Sub topic: ${TOPIC}\\n');
+if (args.includes('--subscription')) {
+  process.stderr.write('Listening for new emails...\\n');
+} else {
+  process.stderr.write('Creating Pub/Sub subscription: ${SUBSCRIPTION}\\n');
+  process.stderr.write('Gmail watch active (historyId: 4395, expires: 1785000000000)\\n');
+}
 setInterval(() => {}, 1000);
 `;
 
@@ -139,11 +181,12 @@ async function waitFor(predicate, timeoutMs = 5000) {
   }
 }
 
-test('a first run saves the topic gws created once the watch is active, and the next run reuses it', async (t) => {
+test('a first run saves the topic and subscription gws created; the next run renews the watch and reuses both', async (t) => {
   const { adapter, statePath, calls } = adapterWithFakeGws(t);
   adapter.spawnWatcher();
   await waitFor(() => existsSync(statePath));
   assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).topic, TOPIC);
+  assert.equal(JSON.parse(readFileSync(statePath, 'utf8')).subscription, SUBSCRIPTION);
   assert.deepEqual(calls()[0], ['gmail', '+watch', '--format', 'json']);
   const first = adapter.watchProcess;
   const closed = new Promise((resolve) => first.once('close', resolve));
@@ -152,8 +195,31 @@ test('a first run saves the topic gws created once the watch is active, and the 
 
   adapter.stopping = false;
   adapter.spawnWatcher();
-  await waitFor(() => calls().length === 2);
-  assert.deepEqual(calls()[1], ['gmail', '+watch', '--format', 'json', '--topic', TOPIC]);
+  await waitFor(() => calls().length === 3);
+  assert.deepEqual(calls()[1], renewWatchArgs(TOPIC));
+  assert.deepEqual(calls()[2], ['gmail', '+watch', '--format', 'json', '--subscription', SUBSCRIPTION]);
+});
+
+test('a topic saved before subscriptions were saved gains the subscription its next run creates', async (t) => {
+  const { adapter, statePath, configDir, calls } = adapterWithFakeGws(t);
+  saveWatchTopic(configDir, TOPIC);
+  adapter.spawnWatcher();
+  await waitFor(() => JSON.parse(readFileSync(statePath, 'utf8')).subscription === SUBSCRIPTION);
+  assert.deepEqual(calls()[0], ['gmail', '+watch', '--format', 'json', '--topic', TOPIC]);
+});
+
+test('a saved subscription Google no longer has is forgotten; the topic is kept', async (t) => {
+  const missing = adapterWithFakeGws(t, {
+    failure: '{"code":404,"message":"Resource not found (resource=gws-gmail-watch-41c2d7aa).","status":"NOT_FOUND"}',
+  });
+  saveWatchTopic(missing.configDir, TOPIC, new Date(), SUBSCRIPTION);
+  const exited = missing.exited();
+  missing.adapter.spawnWatcher();
+  await exited;
+  assert.deepEqual(missing.calls()[1].slice(-2), ['--subscription', SUBSCRIPTION]);
+  const state = JSON.parse(readFileSync(missing.statePath, 'utf8'));
+  assert.equal(state.topic, TOPIC);
+  assert.equal(state.subscription, undefined);
 });
 
 test('a saved topic Google no longer has is forgotten; other failures keep it', async (t) => {

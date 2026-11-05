@@ -79,6 +79,10 @@ BUDGETS: list[tuple[str, int]] = [
     # Terminal projector -> settlement acceptance. Already large; may not grow.
     (r"ArtifactV2Service31accept_terminal_loop_settlement28\{closure\}17", 540),
     (r"terminal_outbox24project_claimed_terminal28\{closure\}17", 176),
+    # Delegated child launch (execution worker): the job block, then the
+    # child's direct agentic run beneath it. At 755 KiB the job overflowed.
+    (r"runtime43spawn_delegated_children_from_runtime_inner28\{closure\}28\{closure\}28\{closure\}28\{closure\}17", 440),
+    (r"MagicianV2Orchestrator41execute_agentic_direct_with_outcome_inner28\{closure\}17", 570),
 ]
 
 CLOSURE = re.compile(r"_\$u7b\$\$u7b\$closure\$u7d\$\$u7d\$")

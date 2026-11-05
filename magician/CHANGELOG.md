@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- `off_frame!` now builds and boxes its `async` block in the out-of-line `box_off_frame`. Boxed in the caller, the block (as large as the callee's future) still took a slot of its full size per site, so seven budgeted frames had crept over (`take_pause_for_request` 122/80 KiB, the run loop 362/360). All budgeted frames are back within budget, e.g. the run loop at 189 KiB and terminal settlement at 97 KiB (was 542).
+
+### 2026-11-03 — 0.7.152
+
+- A delegated child no longer crashes the server when it starts. The job that launches it (`spawn_delegated_children_from_runtime_inner`) awaited every setup and settlement call inline, so in a debug build each callee's future took its own slot in the job's poll frame; the 0.7.151 pause-withdrawal calls grew it from 638 to 755 KiB, and with the child's agentic loop underneath the worker used 2,063 of its 2,080 KiB and aborted on a stack overflow at every delegation. Each of those calls now runs through `off_frame!`, and the job's frame is budgeted in `scripts/stack_frame_budget.py`.
+- Agent personas, skill text, the validate_skill pack and the Pi setup hint say Magican, not the backend name.
+
 ### 2026-11-02 — 0.7.151
 
 - A delegated agent's approval gate reaches the owner. A delegated run that paused for an approval rule or a confirmation-gated tool (an agent edit, an install) was force-failed and cancelled within a second and its approval card suppressed, so gated work inside a delegation could never be done and the parent re-delegated it in a loop. The child now parks as waiting for the owner, its card is published, the parent waits on it, approving resumes the child and denying settles it failed; cancelling the parent still cancels it. Receipts sealed before the upgrade keep the old force-failure.

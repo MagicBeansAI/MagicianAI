@@ -23151,25 +23151,28 @@ impl MagicianV2Api {
         let selected = match storage_key.as_deref() {
             Some(key) => {
                 if let Some((principal, workspace)) = request_scope {
-                    if let Err(error) = self
-                        .full_pause_store
-                        .recover_root_owner_pause_authority_from_receipt(
-                            key,
-                            principal,
-                            workspace,
-                            execution_id,
-                            self.v2_orchestrator.artifact_v2_service(),
-                        )
-                        .await
-                    {
+                    if let Err(error) = magician::off_frame!(
+                        self.full_pause_store
+                            .recover_root_owner_pause_authority_from_receipt(
+                                key,
+                                principal,
+                                workspace,
+                                execution_id,
+                                self.v2_orchestrator.artifact_v2_service(),
+                            )
+                            .await
+                    ) {
                         warn!(%execution_id, %key, %error,
                             "Root pause receipt could not be verified; retaining continuation");
                         return Err(PauseSelectionError::TerminalSettlementPending);
                     }
                 }
+                // Boxed: the pause is ~9 KiB and every move below took a
+                // slot of this HTTP worker's frame.
                 magician::off_frame!(
                     self.take_pause_by_storage_key_with_recovery(key, request_scope)
                         .await
+                        .map(Box::new)
                 )
             },
             None => None,
@@ -23191,9 +23194,9 @@ impl MagicianV2Api {
                 // through the durable write. A protected one keeps its exact
                 // sealed restore.
                 let restored = if pause.pause_state.app_disclosure_checkpoint.is_some() {
-                    restore_taken_pause_exact(&self.full_pause_store, pause)
+                    restore_taken_pause_exact(&self.full_pause_store, *pause)
                 } else {
-                    match self.full_pause_store.store_durable(pause) {
+                    match self.full_pause_store.store_durable(*pause) {
                         Ok(_) => true,
                         Err(error) => {
                             warn!(
@@ -23221,7 +23224,7 @@ impl MagicianV2Api {
             magician::magician_v2::execution::agentic::run_loop::terminal_outbox::wake_terminal_outbox_projector();
             return Err(PauseSelectionError::TerminalSettlementPending);
         }
-        Ok(selected)
+        Ok(selected.map(|pause| *pause))
     }
 
     /// POST /api/magician/v2/executions/{id}/execution/agentic-resume - Resume agentic execution with user input

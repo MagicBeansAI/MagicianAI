@@ -185,6 +185,9 @@ nothing with the mail correlator.
 | `calendar`, `presto-calendar` | Calendar `Event` resource | **No**; not a per-recipient message id |
 | `browser`, `agent-browser` | page snapshot | **No** |
 
+The `presto-gmail` restricted `send` allows exactly `to`/`cc`/`bcc`/`subject`/`body`;
+an existing thread is answered through `reply`, not `send`.
+
 ### Chat channels: `send` vs `run`
 
 `telegram`, `telegram-self` and `whatsapp` each declare an explicit `send` action

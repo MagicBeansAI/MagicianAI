@@ -488,7 +488,6 @@ mod tests {
                 "account".to_string(),
                 "body".to_string(),
                 "cc".to_string(),
-                "reply_to_message_id".to_string(),
                 "subject".to_string(),
                 "to".to_string(),
             ]

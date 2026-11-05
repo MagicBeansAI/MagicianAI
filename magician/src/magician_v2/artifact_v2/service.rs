@@ -12556,9 +12556,14 @@ impl ArtifactV2Service {
         lease: TaskPlanningRecoveryLease,
     ) -> Result<(), ArtifactV2Error> {
         // Every await here is off-frame: this sits under the recovery monitor
-        // on the same worker that polls planning down to the LLM router.
-        let task = crate::off_frame!(self.get_task(&scope, &task_id).await)?;
-        let plan = crate::off_frame!(self.load_task_plan_record(&scope, &task_id, &plan_id).await)?;
+        // on the same worker that polls planning down to the LLM router. The
+        // records come back boxed, so this frame holds pointers, not copies.
+        let task = crate::off_frame!(self.get_task(&scope, &task_id).await.map(Box::new))?;
+        let plan = crate::off_frame!(
+            self.load_task_plan_record(&scope, &task_id, &plan_id)
+                .await
+                .map(Box::new)
+        )?;
         if plan.status.is_terminal() {
             return Ok(());
         }
@@ -12605,6 +12610,7 @@ impl ArtifactV2Service {
                 .conversation_store()
                 .get_execution(&execution_id)
                 .await
+                .map(Box::new)
         ) {
             Ok(runtime) => runtime,
             Err(crate::magician_v2::storage::V2StorageError::ExecutionNotFound(_)) => {
@@ -12625,6 +12631,7 @@ impl ArtifactV2Service {
                             WaitingState::Planning,
                         )
                         .await
+                        .map(Box::new)
                 )
                 .map_err(|err| ArtifactV2Error::Runtime(err.to_string()))?
             },
@@ -12653,6 +12660,7 @@ impl ArtifactV2Service {
                     None,
                 )
                 .await
+                .map(|turn| turn.map(Box::new))
         )
         .ok_or_else(|| {
             ArtifactV2Error::Runtime(
@@ -12744,6 +12752,7 @@ impl ArtifactV2Service {
         let refreshed = crate::off_frame!(
             self.refresh_task_plan_from_planning_execution(&scope, &task_id, &plan_id)
                 .await
+                .map(Box::new)
         )?;
         // A no-output provider completion is a permanent planning result, but
         // the failure projection itself can still fail transiently. Commit it
@@ -25983,10 +25992,11 @@ impl ArtifactV2Service {
                 )))
             },
         };
-        let runtime = self
-            .orchestrator
-            .get_execution(execution_id)
-            .await
+        let runtime = crate::off_frame!(
+            self.orchestrator
+                .get_execution(execution_id)
+                .await
+        )
             .map_err(ArtifactV2Error::Runtime)?;
         if runtime.principal != principal || runtime.workspace != workspace {
             return Err(ArtifactV2Error::InvalidRequest(format!(
@@ -25996,7 +26006,7 @@ impl ArtifactV2Service {
         }
         if runtime.waiting_state == crate::magician_v2::storage::models::WaitingState::Cancelled {
             if let Some(descriptor) = verified_descriptor {
-                self.retire_pipeline_terminal_settlement(descriptor).await?;
+                crate::off_frame!(self.retire_pipeline_terminal_settlement(descriptor).await)?;
                 self.orchestrator
                     .revoke_stateless_terminal_pause_receipt(descriptor)
                     .map_err(ArtifactV2Error::Runtime)
@@ -26017,9 +26027,10 @@ impl ArtifactV2Service {
                 refinement_in_flight, refinement_successor_disposition,
                 RefinementSuccessorDisposition,
             };
-            let successor_committed_receipt = self
-                .refinement_successor_committed_receipt(key, successor)
-                .await?;
+            let successor_committed_receipt = crate::off_frame!(
+                self.refinement_successor_committed_receipt(key, successor)
+                    .await
+            )?;
             match refinement_successor_disposition(
                 successor_committed_receipt,
                 refinement_in_flight(principal, workspace, key.execution_id()),
@@ -26043,9 +26054,10 @@ impl ArtifactV2Service {
         if !task_id.is_empty() {
             let scope = ScopeRef::system_internal_unauthenticated(principal, workspace);
             let root = runtime.root_execution_id.as_deref().unwrap_or(execution_id);
-            if self
-                .external_execution_output_owner(&scope, task_id, root)
-                .await?
+            if crate::off_frame!(
+                self.external_execution_output_owner(&scope, task_id, root)
+                    .await
+            )?
                 .is_some()
             {
                 // A sealed question is an input boundary, not acceptance of an
@@ -26060,7 +26072,7 @@ impl ArtifactV2Service {
                     && verified_descriptor.is_some_and(|descriptor| {
                         !descriptor.outcome.is_terminal && descriptor.pause_key.is_some()
                     })
-                    && self.get_task(&scope, task_id).await?.manifest.lifecycle
+                    && crate::off_frame!(self.get_task(&scope, task_id).await)?.manifest.lifecycle
                         == TaskLifecycle::Persistent
                 {
                     return Ok(TerminalLoopSettlementAcceptance::Publish);
@@ -26073,10 +26085,11 @@ impl ArtifactV2Service {
         }
         let receipt_pause_was_adopted = if let Some(descriptor) = verified_descriptor {
             !descriptor.outcome.is_terminal
-                && self
-                    .orchestrator
-                    .stateless_terminal_pause_receipt_was_adopted(descriptor)
-                    .await
+                && crate::off_frame!(
+                    self.orchestrator
+                        .stateless_terminal_pause_receipt_was_adopted(descriptor)
+                        .await
+                )
                     .map_err(ArtifactV2Error::Runtime)?
         } else {
             false
@@ -26124,15 +26137,20 @@ impl ArtifactV2Service {
                 };
                 &reconciler_descriptor
             };
-            self.orchestrator
-                .settle_stateless_terminal_receipt(descriptor)
-                .await
+            crate::off_frame!(
+                self.orchestrator
+                    .settle_stateless_terminal_receipt(descriptor)
+                    .await
+            )
                 .map_err(ArtifactV2Error::Runtime)?;
             return Ok(TerminalLoopSettlementAcceptance::Publish);
         }
         let scope = ScopeRef::system_internal_unauthenticated(key.principal(), key.workspace());
         if receipt_pause_was_adopted {
-            let execution = self.get_execution(&scope, task_id, execution_id).await?;
+            let execution = crate::off_frame!(
+                self.get_execution(&scope, task_id, execution_id)
+                    .await
+            )?;
             let delegated_child = execution.state.parent_execution_id.is_some()
                 || matches!(
                     execution.state.relationship_type.as_str(),
@@ -26150,9 +26168,10 @@ impl ArtifactV2Service {
         }
         let pipeline_lock = self.pipeline_continuation_lock(execution_id);
         let pipeline_guard = pipeline_lock.lock().await;
-        if let Some(continuation) = self
-            .pipeline_continuation_binding_by_execution_id(execution_id)
-            .await?
+        if let Some(continuation) = crate::off_frame!(
+            self.pipeline_continuation_binding_by_execution_id(execution_id)
+                .await
+        )?
         {
             if let Some(stage_index) = continuation.progress.active_stage_index {
                 let active_segment = continuation
@@ -26182,61 +26201,72 @@ impl ArtifactV2Service {
                         && active_segment == *resume_segment;
                     if active_segment == key.execution_id() || outer_pause_already_committed {
                         if !outer_pause_already_committed {
-                            self.mark_pipeline_stage_paused(
-                                &scope,
-                                task_id,
-                                execution_id,
-                                &continuation.stages,
-                                continuation.progress.revision,
-                                stage_index,
-                                resume_segment.clone(),
-                            )
-                            .await?;
-                        }
-                        drop(pipeline_guard);
-                        let execution = self.get_execution(&scope, task_id, execution_id).await?;
-                        if self
-                            .app_workflow_service()
-                            .is_workflow_task(&scope, task_id)
-                            .await
-                            .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
-                        {
-                            if let Some(release) = self
-                                .app_workflow_service()
-                                .prepare_pause_resource_release(
+                            crate::off_frame!(
+                                self.mark_pipeline_stage_paused(
                                     &scope,
                                     task_id,
                                     execution_id,
-                                    &execution.state.agent_id,
+                                    &continuation.stages,
+                                    continuation.progress.revision,
+                                    stage_index,
+                                    resume_segment.clone(),
                                 )
                                 .await
+                            )?;
+                        }
+                        drop(pipeline_guard);
+                        let execution = crate::off_frame!(
+                            self.get_execution(&scope, task_id, execution_id)
+                                .await
+                        )?;
+                        if crate::off_frame!(
+                            self.app_workflow_service()
+                                .is_workflow_task(&scope, task_id)
+                                .await
+                        )
+                            .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
+                        {
+                            if let Some(release) = crate::off_frame!(
+                                self.app_workflow_service()
+                                    .prepare_pause_resource_release(
+                                        &scope,
+                                        task_id,
+                                        execution_id,
+                                        &execution.state.agent_id,
+                                    )
+                                    .await
+                            )
                                 .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
                             {
                                 release.release().await;
                             }
                         }
-                        self.orchestrator
-                            .settle_stateless_terminal_receipt(descriptor)
-                            .await
-                            .map_err(ArtifactV2Error::Runtime)?;
-                        self.persist_stateless_receipt_execution_outcome_inner(
-                            &scope,
-                            task_id,
-                            execution_id,
-                            ExecutionOutcomeSnapshot {
-                                execution_status: descriptor.outcome.execution_status.clone(),
-                                task_status: descriptor.outcome.task_status.clone(),
-                                outcome_type: descriptor.outcome.outcome_type.clone(),
-                                outcome_summary: descriptor.outcome.outcome_summary.clone(),
-                                iterations_used: descriptor.outcome.iterations_used,
-                                is_terminal: false,
-                                completion_kind: descriptor.outcome.completion_kind,
-                                open_items: descriptor.outcome.open_items.clone(),
-                            },
-                            &descriptor.exact_segment_id,
-                            descriptor.terminal_seq,
+                        crate::off_frame!(
+                            self.orchestrator
+                                .settle_stateless_terminal_receipt(descriptor)
+                                .await
                         )
-                        .await?;
+                            .map_err(ArtifactV2Error::Runtime)?;
+                        crate::off_frame!(
+                            self.persist_stateless_receipt_execution_outcome_inner(
+                                &scope,
+                                task_id,
+                                execution_id,
+                                ExecutionOutcomeSnapshot {
+                                    execution_status: descriptor.outcome.execution_status.clone(),
+                                    task_status: descriptor.outcome.task_status.clone(),
+                                    outcome_type: descriptor.outcome.outcome_type.clone(),
+                                    outcome_summary: descriptor.outcome.outcome_summary.clone(),
+                                    iterations_used: descriptor.outcome.iterations_used,
+                                    is_terminal: false,
+                                    completion_kind: descriptor.outcome.completion_kind,
+                                    open_items: descriptor.outcome.open_items.clone(),
+                                },
+                                &descriptor.exact_segment_id,
+                                descriptor.terminal_seq,
+                            )
+                            .await
+                        )?;
                         return Ok(TerminalLoopSettlementAcceptance::Publish);
                     }
                 }
@@ -26278,11 +26308,13 @@ impl ArtifactV2Service {
                             descriptor,
                             sidecar,
                         )?;
-                        let recovered = super::pipeline_terminal_settlement::PipelineTerminalSettlementStore::new(
-                            self.workspace.clone(),
-                        )
-                        .read_exact(&sidecar_binding, sidecar)
-                        .await?
+                        let recovered = crate::off_frame!(
+                            super::pipeline_terminal_settlement::PipelineTerminalSettlementStore::new(
+                                self.workspace.clone(),
+                            )
+                            .read_exact(&sidecar_binding, sidecar)
+                            .await
+                        )?
                         .into_parts();
                         crate::magician_v2::execution::ChildDeliverableSummary {
                             child_execution_id: format!("{execution_id}::stage{stage_index}"),
@@ -26319,22 +26351,27 @@ impl ArtifactV2Service {
                             media: Vec::new(),
                         }
                     };
-                    self.commit_pipeline_stage(
-                        &scope,
-                        task_id,
-                        execution_id,
-                        &continuation.stages,
-                        continuation.progress.revision,
-                        stage_index,
-                        deliverable,
-                    )
-                    .await?;
+                    crate::off_frame!(
+                        self.commit_pipeline_stage(
+                            &scope,
+                            task_id,
+                            execution_id,
+                            &continuation.stages,
+                            continuation.progress.revision,
+                            stage_index,
+                            deliverable,
+                        )
+                        .await
+                    )?;
                     if let Some(descriptor) = verified_descriptor {
                         // The outer progress CAS is now authoritative. A
                         // cleanup failure keeps terminal debt retryable; its
                         // next pass observes the advanced cursor and repeats
                         // this exact retirement without replaying the stage.
-                        self.retire_pipeline_terminal_settlement(descriptor).await?;
+                        crate::off_frame!(
+                            self.retire_pipeline_terminal_settlement(descriptor)
+                                .await
+                        )?;
                     }
 
                     // The outer progress CAS is the durable crash receipt. A
@@ -26352,9 +26389,10 @@ impl ArtifactV2Service {
                     // reactivate and recover from the already-committed outer
                     // cursor; returning the error also keeps terminal-settlement
                     // debt visible until a later projector pass.
-                    let activation = self
-                        .activate_execution_internal(&scope, task_id, execution_id)
-                        .await;
+                    let activation = crate::off_frame!(
+                        self.activate_execution_internal(&scope, task_id, execution_id)
+                            .await
+                    );
                     drop(pipeline_guard);
                     activation?;
                     return Ok(TerminalLoopSettlementAcceptance::Publish);
@@ -26368,7 +26406,7 @@ impl ArtifactV2Service {
             // another stage (or completed its roster). The current cursor is
             // the durable receipt, so acknowledging this stale debt is safe.
             if let Some(descriptor) = verified_descriptor {
-                self.retire_pipeline_terminal_settlement(descriptor).await?;
+                crate::off_frame!(self.retire_pipeline_terminal_settlement(descriptor).await)?;
             }
             drop(pipeline_guard);
             return Ok(TerminalLoopSettlementAcceptance::Publish);
@@ -26405,7 +26443,7 @@ impl ArtifactV2Service {
                 key.execution_id()
             ))
         };
-        let execution = self.get_execution(&scope, task_id, execution_id).await?;
+        let execution = crate::off_frame!(self.get_execution(&scope, task_id, execution_id).await)?;
         let delegated_child = execution.state.parent_execution_id.is_some()
             || matches!(
                 execution.state.relationship_type.as_str(),
@@ -26420,15 +26458,17 @@ impl ArtifactV2Service {
         // chooses the agent-only fence. Governed children fail under the full
         // fence by design.
         let pause_under_cancelled_tree = delegated_child
-            && self
-                .delegated_pause_under_cancelled_tree(execution_id, verified_descriptor)
-                .await;
+            && crate::off_frame!(
+                self.delegated_pause_under_cancelled_tree(execution_id, verified_descriptor)
+                    .await
+            );
         if pause_under_cancelled_tree
             && !agent_only_lifecycle_exclusion
-            && !self
-                .orchestrator
-                .is_governed_app_execution(execution_id)
-                .await
+            && !crate::off_frame!(
+                self.orchestrator
+                    .is_governed_app_execution(execution_id)
+                    .await
+            )
                 .map_err(ArtifactV2Error::Runtime)?
         {
             return Err(ArtifactV2Error::Runtime(format!(
@@ -26498,46 +26538,53 @@ impl ArtifactV2Service {
                     .map_err(ArtifactV2Error::Runtime)
                     .map(|_| ())?;
             }
-            crate::magician_v2::agents::runtime::force_child_failure_checked(
-                &self.orchestrator,
-                execution_id,
-                &format!(
-                    "Delegated child stateless segment ended as {}",
-                    terminal.settlement_label()
-                ),
+            crate::off_frame!(
+                crate::magician_v2::agents::runtime::force_child_failure_checked(
+                    &self.orchestrator,
+                    execution_id,
+                    &format!(
+                        "Delegated child stateless segment ended as {}",
+                        terminal.settlement_label()
+                    ),
+                )
+                .await
             )
-            .await
             .map_err(ArtifactV2Error::Runtime)?;
-            outcome = self
-                .capture_runtime_outcome_snapshot(&scope, task_id, execution_id)
-                .await?;
+            outcome = crate::off_frame!(
+                self.capture_runtime_outcome_snapshot(&scope, task_id, execution_id)
+                    .await
+            )?;
         } else if verified_descriptor.is_some() {
             // Re-apply the canonical post-executor success gates. The receipt
             // is captured inside the loop, before these server-owned checks,
             // so accepting its raw Success would bypass VibeDev's required
             // coding evidence and an app workflow's typed terminal result.
-            let outcome_binding = self
-                .binding_for_existing_execution(&scope, task_id, execution_id)
-                .await?;
-            let task = self.get_task(&scope, task_id).await?;
+            let outcome_binding = crate::off_frame!(
+                self.binding_for_existing_execution(&scope, task_id, execution_id)
+                    .await
+            )?;
+            let task = crate::off_frame!(self.get_task(&scope, task_id).await)?;
             let coding_coordinator_run =
                 crate::magician_v2::artifact_v2::models::is_vibedev_coding_build_run(
                     &task.manifest.ui_thread_id,
                     &task.manifest.tags,
                 );
-            outcome = self
-                .gate_vibedev_build_success(&outcome_binding, coding_coordinator_run, outcome)
-                .await;
-            let is_app_workflow = self
-                .app_workflow_service()
-                .is_workflow_task(&scope, task_id)
-                .await
+            outcome = crate::off_frame!(
+                self.gate_vibedev_build_success(&outcome_binding, coding_coordinator_run, outcome)
+                    .await
+            );
+            let is_app_workflow = crate::off_frame!(
+                self.app_workflow_service()
+                    .is_workflow_task(&scope, task_id)
+                    .await
+            )
                 .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?;
             if outcome.is_terminal && outcome.task_status == "completed" && is_app_workflow {
-                if let Err(error) = self
-                    .app_workflow_service()
-                    .require_terminal_result(&scope, task_id, execution_id)
-                    .await
+                if let Err(error) = crate::off_frame!(
+                    self.app_workflow_service()
+                        .require_terminal_result(&scope, task_id, execution_id)
+                        .await
+                )
                 {
                     outcome = ExecutionOutcomeSnapshot::runtime_error(error.to_string());
                 }
@@ -26545,21 +26592,23 @@ impl ArtifactV2Service {
         }
         if let Some(descriptor) = verified_descriptor {
             if !outcome.is_terminal
-                && self
-                    .app_workflow_service()
-                    .is_workflow_task(&scope, task_id)
-                    .await
+                && crate::off_frame!(
+                    self.app_workflow_service()
+                        .is_workflow_task(&scope, task_id)
+                        .await
+                )
                     .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?
             {
-                let release = self
-                    .app_workflow_service()
-                    .prepare_pause_resource_release(
-                        &scope,
-                        task_id,
-                        execution_id,
-                        &execution.state.agent_id,
-                    )
-                    .await
+                let release = crate::off_frame!(
+                    self.app_workflow_service()
+                        .prepare_pause_resource_release(
+                            &scope,
+                            task_id,
+                            execution_id,
+                            &execution.state.agent_id,
+                        )
+                        .await
+                )
                     .map_err(|error| ArtifactV2Error::Runtime(error.to_string()))?;
                 if let Some(release) = release {
                     // The receipt is already committed and independently
@@ -26582,9 +26631,11 @@ impl ArtifactV2Service {
             // For ordinary roots, keep runtime settlement on the raw receipt.
             // VibeDev/app gates alter only the Artifact snapshot, matching the
             // live owner and avoiding illegal Completed -> Failed replays.
-            self.orchestrator
-                .settle_stateless_terminal_receipt(&settled)
-                .await
+            crate::off_frame!(
+                self.orchestrator
+                    .settle_stateless_terminal_receipt(&settled)
+                    .await
+            )
                 .map_err(ArtifactV2Error::Runtime)?;
         } else if terminal == TerminalKind::CannotProceed {
             // Receipt-less CannotProceed is the one deliberately retained
@@ -26622,29 +26673,35 @@ impl ArtifactV2Service {
                 pause_resume_segment: None,
                 refinement_successor_segment: None,
             };
-            self.orchestrator
-                .settle_stateless_terminal_receipt(&descriptor)
-                .await
+            crate::off_frame!(
+                self.orchestrator
+                    .settle_stateless_terminal_receipt(&descriptor)
+                    .await
+            )
                 .map_err(ArtifactV2Error::Runtime)?;
         }
         if let Some(descriptor) = verified_descriptor.filter(|_| !outcome.is_terminal) {
-            self.persist_stateless_receipt_execution_outcome_inner(
-                &scope,
-                task_id,
-                execution_id,
-                outcome,
-                &descriptor.exact_segment_id,
-                descriptor.terminal_seq,
-            )
-            .await?;
+            crate::off_frame!(
+                self.persist_stateless_receipt_execution_outcome_inner(
+                    &scope,
+                    task_id,
+                    execution_id,
+                    outcome,
+                    &descriptor.exact_segment_id,
+                    descriptor.terminal_seq,
+                )
+                .await
+            )?;
         } else {
-            Box::pin(self.persist_external_execution_outcome_inner(
-                &scope,
-                task_id,
-                execution_id,
-                outcome,
-            ))
-            .await?;
+            crate::off_frame!(
+                self.persist_external_execution_outcome_inner(
+                    &scope,
+                    task_id,
+                    execution_id,
+                    outcome,
+                )
+                .await
+            )?;
         }
         if delegated_child_forced_failure {
             Ok(TerminalLoopSettlementAcceptance::SuppressedByCanonicalPolicy)

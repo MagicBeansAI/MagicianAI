@@ -3066,6 +3066,69 @@
      "fn": "spawn_model_discovery_worker",
      "line": 340,
      "why": "A newly offered CLI model"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "agent_stdio_args",
+     "line": 130,
+     "why": "Launch flags: Grok's sandbox, no web search, no sub-agents, no shared leader, stdio"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "may_send_method",
+     "line": 143,
+     "why": "Only five standard protocol methods may be sent; anything under x.ai/ is refused"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "attest_grok_isolation_roots",
+     "line": 267,
+     "why": "Decides isolated, unattested or incompatible from what the session reports"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": "GrokIsolationVerdict",
+     "fn": null,
+     "line": 217,
+     "why": "The three isolation outcomes"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "magician_grok_home",
+     "line": 1043,
+     "why": "Prepares Magican's own Grok home with a link to the owner's sign-in"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "grok_home_config",
+     "line": 1369,
+     "why": "Keeps only the owner's model and sign-in tables and turns imports off"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "grok_contained_env",
+     "line": 1160,
+     "why": "Points Grok's home variables at that folder and switches off Claude/Cursor imports"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "grok_session_record_contained",
+     "line": 1247,
+     "why": "Reads Grok's own session record for no tool servers and no hook run"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "grok_home_writable_regex",
+     "line": 1116,
+     "why": "Which runtime files the OS box lets Grok write in its home"
     }
    ],
    "configKeys": [
@@ -3154,6 +3217,30 @@
      "line": 333,
      "title": "Build the adapter",
      "say": "A small factory turns the chosen engine into its adapter. Engine and options must match, so a Codex request can never quietly run on Pi."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "agent_stdio_args",
+     "line": 130,
+     "title": "Grok starts with the doors shut",
+     "say": "When Magican starts Grok for coding it turns on Grok's own sandbox and switches off web search and sub-agents. It also refuses a shared helper process, and it may send only five ordinary protocol requests, never Grok's own extensions."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "magician_grok_home",
+     "line": 1043,
+     "title": "Grok gets its own home",
+     "say": "Grok runs from a private folder that links to your sign-in and keeps only your model settings. Your own plugins, tool servers and hooks cannot reach it, and the folder is emptied of anything a session left behind before each launch."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/coding_engine/grok_contract.rs",
+     "type": null,
+     "fn": "attest_grok_isolation_roots",
+     "line": 267,
+     "title": "Ready only on proof",
+     "say": "A Grok session counts as ready only when it reports no tool servers and a clean tool list. One that shows hooks, plugins, web search or a hook that ran is refused, and a missing report counts as unknown rather than safe."
     },
     {
      "file": "magician/src/magician_v2/execution/coding_engine/claude.rs",
@@ -3656,7 +3743,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27958,
+     "line": 27961,
      "why": "Owner applies, picks files, rejects"
     },
     {
@@ -3748,7 +3835,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "respond_hitl_handler",
-     "line": 27958,
+     "line": 27961,
      "title": "The owner decides",
      "say": "The proposal shows up as a diff to review. The owner applies all of it, picks some files, or rejects it, and a proposal that changed after review is refused."
     },
@@ -4009,7 +4096,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "execute_action_inner",
-     "line": 54977,
+     "line": 54974,
      "why": "Outward acts pass the gates here"
     },
     {
@@ -4105,7 +4192,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "execute_action_inner",
-     "line": 54977,
+     "line": 54974,
      "title": "An agent sends",
      "say": "When an agent's action is classified as outward, the executor runs the recipient gates before anything leaves, for captured sends as well as live ones."
     },
@@ -4933,6 +5020,76 @@
      "fn": "maybe_prune_settled_sources",
      "line": 1109,
      "why": "Compact settled trace files"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "validate_legacy_llm_query",
+     "line": 44,
+     "why": "Allows only SELECT over the approved views"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": "LegacyLlmSqlVisitor",
+     "fn": null,
+     "line": 77,
+     "why": "Walks the SQL tree to block other tables"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "install_legacy_llm_views",
+     "line": 245,
+     "why": "Installs content-free views over chosen files"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "build_llm_calls_relation",
+     "line": 1170,
+     "why": "One row per call from lifecycle and attempts"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "compatibility_projection_expr",
+     "line": 1263,
+     "why": "Redacts errors, keeps unknown cost NULL"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "bound_legacy_llm_query_rows",
+     "line": 714,
+     "why": "Adds a row limit to unbounded queries"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "llm_calls_timestamp_lower_bound_ms",
+     "line": 753,
+     "why": "Pushes a provable time window into the scan"
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "install_llm_embeddings_view",
+     "line": 1047,
+     "why": "Content-free view of embedding calls"
+    },
+    {
+     "file": "magician-api/src/analytics_api.rs",
+     "type": null,
+     "fn": "query_llm_calls_handler",
+     "line": 1273,
+     "why": "REST route that runs the checked SQL"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/internal_data_provider.rs",
+     "type": null,
+     "fn": "query_llm_calls",
+     "line": 1092,
+     "why": "Agents' internal_data query uses the same gate"
     }
    ],
    "configKeys": [
@@ -5020,6 +5177,30 @@
      "line": 711,
      "title": "One governed reader",
      "say": "A shared read service answers the LLM page and internal tools alike, assembling a trace's calls and provider attempts within the caller's scope."
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "validate_legacy_llm_query",
+     "line": 44,
+     "title": "Only approved views",
+     "say": "Any SQL asked of the old call history is parsed first. Only a single read query over the approved call views is allowed, so it cannot reach other files, other tables or write anything."
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "build_llm_calls_relation",
+     "line": 1170,
+     "title": "One row per call",
+     "say": "Older and newer records of the same call are merged so each call counts once, with the model name filled in from the attempt that actually succeeded."
+    },
+    {
+     "file": "magician/src/magician_v2/analytics/legacy_llm_compat.rs",
+     "type": null,
+     "fn": "compatibility_projection_expr",
+     "line": 1263,
+     "title": "Unknown stays unknown",
+     "say": "Error text is replaced by a marker and a call whose cost was never reported stays blank instead of turning into zero, so spend totals are not silently wrong."
     },
     {
      "file": "magician/src/magician_v2/analytics/llm_fact_compactor.rs",
@@ -6094,7 +6275,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_agent_memory_consolidation_health_handler",
-     "line": 27485,
+     "line": 27488,
      "why": "Per-agent consolidation health endpoint"
     },
     {
@@ -6350,7 +6531,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "create_agent_definition_handler",
-     "line": 27114,
+     "line": 27117,
      "why": "POST /agents handler"
     },
     {
@@ -6896,7 +7077,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "steer_active_execution_handler",
-     "line": 30256,
+     "line": 30259,
      "why": "Steer endpoint"
     },
     {
@@ -7085,14 +7266,14 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "open_verification_gate",
-     "line": 33031,
+     "line": 33088,
      "why": "Opens gate before terminal step"
     },
     {
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "drive_verification_gate",
-     "line": 33287,
+     "line": 33344,
      "why": "Runs passes until gate settles"
     },
     {
@@ -7155,7 +7336,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "spawn_verification_reconciler",
-     "line": 34013,
+     "line": 34070,
      "why": "Re-offers unsettled gates periodically"
     }
    ],
@@ -7185,7 +7366,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "open_verification_gate",
-     "line": 33031,
+     "line": 33088,
      "title": "Open a gate",
      "say": "The task service opens a verification gate for the candidate. Under enforce the task stays visibly verifying; under observe, the shipped default, it completes as usual while evidence is still recorded."
     },
@@ -7233,7 +7414,7 @@
      "file": "magician/src/magician_v2/artifact_v2/service.rs",
      "type": null,
      "fn": "spawn_verification_reconciler",
-     "line": 34013,
+     "line": 34070,
      "title": "Survive restarts",
      "say": "A reconciler re-offers unsettled gates every minute by default, so a gate interrupted by a restart still reaches a verdict."
     }
@@ -7335,7 +7516,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_observation_screenshot_handler",
-     "line": 30304,
+     "line": 30307,
      "why": "Serves what the agent saw"
     },
     {
@@ -7584,7 +7765,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "get_agent_effective_tools_handler",
-     "line": 27162,
+     "line": 27165,
      "why": "Previews an agent's effective tools"
     },
     {
@@ -7607,6 +7788,69 @@
      "fn": "ripgrep_missing",
      "line": 64,
      "why": "A missing ripgrep is reported, not hidden"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_step_with_registry",
+     "line": 408,
+     "why": "Looks the tool up in the registry and lets its provider lower the step"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_file_action",
+     "line": 431,
+     "why": "File tool: read, write, append, delete, copy, move, exists, list, make folder"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_http_action",
+     "line": 556,
+     "why": "Web request step, with per-header coercion and the carries-credential flag"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "header_map_from_object",
+     "line": 539,
+     "why": "One header per entry so an odd value never drops the rest"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_bash_action",
+     "line": 762,
+     "why": "Shell step with timeout and capture rules"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_search_action",
+     "line": 677,
+     "why": "Workspace search built as an escaped ripgrep command"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_duckdb_action",
+     "line": 1040,
+     "why": "Data query actions with validated identifiers and quoted paths"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "try_build_duckdb_attach_sql",
+     "line": 942,
+     "why": "Rejects alias names that are not letters, digits or underscore"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "param_or_placeholder",
+     "line": 294,
+     "why": "Missing required value becomes a marked placeholder instead of an error"
     }
    ],
    "configKeys": [],
@@ -7649,6 +7893,30 @@
      "line": 234,
      "title": "Lower the reply",
      "say": "Lowering validates the tool calls and turns them into typed decisions, with every work tool going down one shared path as a pack action."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_file_action",
+     "line": 431,
+     "title": "A step becomes one typed action",
+     "say": "A file step turns into exactly one action such as read, write, copy or list. A file action Magican does not know is refused, and a missing value becomes a marked blank instead of a crash."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_http_action",
+     "line": 556,
+     "title": "One odd header cannot sink a request",
+     "say": "When a web request is prepared, each header is read on its own. A header with a number for a value costs only itself, so a login header is never silently dropped by a neighbour."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/lowering.rs",
+     "type": null,
+     "fn": "lower_duckdb_action",
+     "line": 1040,
+     "title": "Data questions are built safely",
+     "say": "A data query step is turned into SQL with quotes escaped, export limited to csv, parquet or json, and table and database names limited to plain letters, digits and underscores, so a request cannot smuggle in other SQL."
     },
     {
      "file": "magician/src/magician_v2/execution/scoped_capability_resolver.rs",
@@ -7768,7 +8036,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "read_autonomous_tool_result",
-     "line": 56496,
+     "line": 56493,
      "why": "Serves read result calls"
     },
     {
@@ -8542,7 +8810,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "admit_live_agent_loop",
-     "line": 44419,
+     "line": 44416,
      "why": "Executor asks before running"
     },
     {
@@ -8636,7 +8904,7 @@
      "file": "magician/src/magician_v2/execution/agentic/executor.rs",
      "type": null,
      "fn": "admit_live_agent_loop",
-     "line": 44419,
+     "line": 44416,
      "title": "Ask to run",
      "say": "Every top-level agent run asks the governor for a slot before it starts. Nested work inside an admitted run does not count twice."
     },
@@ -10610,6 +10878,1013 @@
      "line": 49,
      "title": "Decks still ask first",
      "say": "Building, editing or exporting a deck with the deck skill pauses for your approval, so a PDF or a file never appears unasked."
+    }
+   ]
+  },
+  {
+   "id": "background-shell-jobs",
+   "name": "Long commands that outlive a restart",
+   "group": "Under the hood",
+   "oneLine": "An agent can start a long shell command as a background job that keeps running through a pause or a Magican restart, and is stopped when its run ends.",
+   "maturity": "shipped",
+   "maturityEvidence": "The shell tool routes background and status/cancel calls into shell_jobs (compiled_providers.rs:3709-3753) and the boot path re-adopts recorded jobs (magician-bin/src/main.rs:11986). Tests in shell_jobs.rs cover the pause versus terminal end (1433), re-adoption after a restart (1501), a recycled pid never being signalled (1541) and the wrapper-enforced deadline (1601). Listed under [Unreleased] in magician/CHANGELOG.md:155; the job uses POSIX process groups and is Unix only (shell_jobs.rs:436-446).",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/execution/compiled_providers.rs",
+     "type": "ShellCapabilityProvider",
+     "fn": null,
+     "line": 3655,
+     "why": "The shell tool that launches, checks and cancels jobs"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "start",
+     "line": 586,
+     "why": "Starts a job under a detached wrapper"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "spawn_wrapper",
+     "line": 378,
+     "why": "Spawns the wrapper in its own process group"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "supervise",
+     "line": 816,
+     "why": "Watches one job until it ends"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "identity",
+     "line": 542,
+     "why": "Proves a recorded group is still this job before any signal"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "adopt_recorded",
+     "line": 1059,
+     "why": "Boot sweep that re-adopts jobs left running"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "inspect",
+     "line": 1099,
+     "why": "Status and cancel for a job"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "settle",
+     "line": 944,
+     "why": "Writes the final receipt from what the wrapper left"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/compiled_providers.rs",
+     "type": null,
+     "fn": "start_shell_job_runtime",
+     "line": 3648,
+     "why": "Boot hook that installs the owner lookup and re-adopts jobs"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "terminal_success_rejection_inner",
+     "line": 26727,
+     "why": "A run cannot finish while its shell jobs still run"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": null,
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/execution/compiled_providers.rs",
+     "type": "ShellCapabilityProvider",
+     "fn": null,
+     "line": 3655,
+     "title": "Jobs belong to a task",
+     "say": "A long command only becomes a background job when it runs inside a tracked task run. Chat cannot detach workers, so every job has an owner that can be asked about later."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "spawn_wrapper",
+     "line": 378,
+     "title": "A wrapper outside Magican",
+     "say": "The command starts under a small shell wrapper in its own process group, with its output going to files. The wrapper records the exit status and enforces the deadline itself, so the job does not depend on Magican staying up."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "supervise",
+     "line": 816,
+     "title": "A pause keeps it, an end stops it",
+     "say": "While the run is active or paused the job keeps going. When the run reaches a finished, failed or cancelled state, the job is stopped."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "identity",
+     "line": 542,
+     "title": "Check before killing",
+     "say": "After a restart, a saved process number could belong to something else. Magican checks the boot, start time and a job marker before it signals anything."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/shell_jobs.rs",
+     "type": null,
+     "fn": "adopt_recorded",
+     "line": 1059,
+     "title": "Pick them up at boot",
+     "say": "When Magican starts, it scans every workspace for jobs left running and watches them again. Ones that already finished are settled from the exit status they left behind."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "terminal_success_rejection_inner",
+     "line": 26727,
+     "title": "No finishing with jobs running",
+     "say": "A run that claims to be done while its jobs still run is told to check or cancel them first. That keeps a finished answer from hiding unfinished work."
+    }
+   ]
+  },
+  {
+   "id": "evidence-gated-task-checklist",
+   "name": "Task checklist that needs proof",
+   "group": "Under the hood",
+   "oneLine": "A running task keeps a small checklist of goals that the agent updates as it works, and a goal can only be marked done with evidence of something that actually happened.",
+   "maturity": "shipped",
+   "maturityEvidence": "Run-loop code applies and persists the model's task_state_action each turn and at run end (executor.rs:22793, 22935; imported in run_loop/phases/apply.rs:94,111), the decision prompt renders the contract (decision.rs:4065-4092), and later runs read the resolved goals (executor.rs:26460). The module's unit tests (durable_task_state.rs:1167-1596) cover evidence rules, forward-only transitions, normalization and compaction; the test module is built under cfg(any(test, feature test-fixtures)) at line 1162.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": "TaskStateActionEnvelope",
+     "fn": null,
+     "line": 43,
+     "why": "The create, patch or close request the model attaches to a decision"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "normalize_model_proposed_task_state",
+     "line": 684,
+     "why": "Lifts the model's plan into a valid task state"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "validate_durable_task_state",
+     "line": 424,
+     "why": "Rejects a malformed or dishonest task state"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "apply_durable_task_state_patch",
+     "line": 881,
+     "why": "Applies a patch with forward-only status moves"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "close_durable_task_state",
+     "line": 1088,
+     "why": "Closes the task, needing observed evidence to complete"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "compact_durable_task_state_for_storage",
+     "line": 219,
+     "why": "Shrinks long text but keeps the goal graph and evidence"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/decision.rs",
+     "type": null,
+     "fn": "build_task_state_section",
+     "line": 4065,
+     "why": "Shows the saved state and its contract to the model"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "apply_outer_task_state_action",
+     "line": 22793,
+     "why": "Applies the model's task-state action mid-run"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "prepare_terminal_task_state_transition",
+     "line": 22935,
+     "why": "Evidence-gated close at the end of a run"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/task_state_provider.rs",
+     "type": "TaskStateProvider",
+     "fn": null,
+     "line": 122,
+     "why": "Writes the state to the task's durable file"
+    }
+   ],
+   "configKeys": [
+    "task_state.policy"
+   ],
+   "routes": [],
+   "uiSurface": null,
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/execution/agentic/decision.rs",
+     "type": null,
+     "fn": "build_task_state_section",
+     "line": 4065,
+     "title": "The model is told how",
+     "say": "Each turn the agent sees its saved checklist and the exact way to create, update or close it. The runtime fills in ids and timestamps so the model only writes the goals."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": "TaskStateActionEnvelope",
+     "fn": null,
+     "line": 43,
+     "title": "One envelope, four choices",
+     "say": "An update is one of create, patch, close or do nothing, with a short reason. A request that does nothing may not carry any changes."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "normalize_model_proposed_task_state",
+     "line": 684,
+     "title": "Forgive the wording, keep the rules",
+     "say": "If the model calls its goals requirements or writes a bare list, the runtime lifts that into the proper shape and logs what it changed. A goal marked done without evidence is kept as in progress instead."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "apply_durable_task_state_patch",
+     "line": 881,
+     "title": "Goals only move forward",
+     "say": "A goal can go from pending to in progress to completed, never back, though it can be blocked at any time. Completing one needs evidence that is not a plan, a to-do or a promise."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "close_durable_task_state",
+     "line": 1088,
+     "title": "Closing needs observed evidence",
+     "say": "To close a task as completed, every open goal must be settled with evidence of what was actually seen. A blocked or abandoned close records the reason instead."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/durable_task_state.rs",
+     "type": null,
+     "fn": "compact_durable_task_state_for_storage",
+     "line": 219,
+     "title": "Small enough to reread",
+     "say": "The saved checklist is fed back to the model on later turns, so long text is trimmed from the middle. The goals, statuses and evidence are never dropped, and if it still does not fit the write is refused."
+    }
+   ]
+  },
+  {
+   "id": "bound-outward-sends",
+   "name": "Sends the agent cannot rewrite",
+   "group": "Under the hood",
+   "oneLine": "When an agent sends mail, a chat message or a calendar invite on its own, the send must fit a closed list of arguments, goes out under the runtime's chosen sender, and is refused otherwise.",
+   "maturity": "shipped",
+   "maturityEvidence": "execute_action_inner runs the restriction as gate 1 of the outward gate and dispatches the bound params (executor.rs:55167-55196, 55510-55527); the tool catalog applies the same narrowing (native_catalog.rs:1059 calling restricted_toolset.rs:108). restricted_action.rs has about thirty unit tests, including a drift test that checks every allowed argument against the shipped skill (line 1406). The idempotency key it derives (line 725) is not read by the gate, which keeps only the bound params.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": "RestrictedAction",
+     "fn": null,
+     "line": 117,
+     "why": "A closed list of arguments one outward tool may take"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "restrict_with_profiles",
+     "line": 322,
+     "why": "Reduces a send to its bound form or refuses"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "restricted_form_for",
+     "line": 455,
+     "why": "Finds a tool's restricted form; none means refuse"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": "SenderIdentity",
+     "fn": null,
+     "line": 142,
+     "why": "Who the send is from, set by the runtime"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": "RestrictionError",
+     "fn": null,
+     "line": 176,
+     "why": "Each way a send can be refused"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "guidance",
+     "line": 204,
+     "why": "Tells the model what it may supply instead"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "canonicalise_recipients",
+     "line": 694,
+     "why": "Lowercases recipient addresses before checks"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "every_allowed_parameter_exists_in_the_shipped_skill",
+     "line": 1406,
+     "why": "Test that every allowed argument exists in the shipped skill"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "outward_bound_dispatch",
+     "line": 52665,
+     "why": "Builds the sender and calls the restriction at the gate"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "execute_action_inner",
+     "line": 54974,
+     "why": "The one function every action passes, gate 1 is restriction"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_toolset.rs",
+     "type": null,
+     "fn": "project_capability_tool",
+     "line": 108,
+     "why": "Offers the model only the closed form in its tool list"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": null,
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/execution/agentic/executor.rs",
+     "type": null,
+     "fn": "execute_action_inner",
+     "line": 54974,
+     "title": "Restriction comes first",
+     "say": "Every action passes one function, and for an outward send the first question after the work check is whether the act can be reduced to a safe, checkable shape. Only then do the opt-out and recipient checks run."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": "RestrictedAction",
+     "fn": null,
+     "line": 117,
+     "title": "A closed list of arguments",
+     "say": "Each outward tool has an exact list of arguments the agent may use. Anything outside the list is refused, never quietly dropped, so a send is never different from what the agent wrote."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "restrict_with_profiles",
+     "line": 322,
+     "title": "Refuse the escape hatches",
+     "say": "A raw pass-through such as extra command-line arguments is refused, as are unknown or repeated arguments. The same name written twice in different cases is refused too."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": "SenderIdentity",
+     "fn": null,
+     "line": 142,
+     "title": "The sender is not the agent's choice",
+     "say": "For a send address, whatever the agent wrote is replaced by the identity Magican assigns, either the approved program on a first contact or the engagement's own channel. A mailbox choice such as work or personal is kept only if the owner approved it."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "canonicalise_recipients",
+     "line": 694,
+     "title": "One spelling per recipient",
+     "say": "Recipient addresses are lowercased before any opt-out or duplicate check, so the check sees the same address that will be used."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_action.rs",
+     "type": null,
+     "fn": "restricted_form_for",
+     "line": 455,
+     "title": "No form, no autonomous send",
+     "say": "A tool that reaches the world but has no restricted form cannot be sent through by an agent at all, and the refusal says to ask the owner to do it directly."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/restricted_toolset.rs",
+     "type": null,
+     "fn": "project_capability_tool",
+     "line": 108,
+     "title": "The menu matches the gate",
+     "say": "The tool list offered to the model is cut down to the same closed form, so the agent is not shown arguments the gate would refuse."
+    }
+   ]
+  },
+  {
+   "id": "comment-safe-settings-writes",
+   "name": "Settings saved without wiping your edits",
+   "group": "Under the hood",
+   "oneLine": "Every settings screen changes only the lines it edited in your config file, one writer at a time, keeping your comments and extra keys, and secret env files are written atomically and owner-only.",
+   "maturity": "shipped",
+   "maturityEvidence": "runtime_settings.rs is the sanctioned writer for media_seam/runtime_config.rs (persist_media_settings), workspace_storage_settings.rs, privacy_processing_settings.rs, critical_delivery_settings.rs, budgets_api.rs, owner_claim.rs (persist_env_identity) and runtime_env_api.rs (PUT /runtime/env). 7 unit tests in runtime_settings.rs and 15 in yaml_edit.rs, including byte-identical output when nothing changed.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": "RuntimeSettingsPaths",
+     "fn": null,
+     "line": 20,
+     "why": "Where the live config and the two env files are"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "runtime_settings_paths",
+     "line": 29,
+     "why": "Resolves config and env paths from the runtime root and mode"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "config_file_lock",
+     "line": 173,
+     "why": "One lock per config file so settings writers take turns"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "write_yaml_section",
+     "line": 192,
+     "why": "Writes only the changed lines of one config section"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "update_env_file",
+     "line": 74,
+     "why": "Per-key env update under the file lock, quoted and 0600"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "write_text_file_atomic",
+     "line": 302,
+     "why": "Temp file, fsync, rename; keeps file mode"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "yaml_value_changes",
+     "line": 47,
+     "why": "Lists the leaves that differ between before and after"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "apply_yaml_changes",
+     "line": 128,
+     "why": "Applies changes to the text and re-reads to verify"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "set_yaml_path",
+     "line": 195,
+     "why": "Sets or removes one key, keeping its comment and anchor"
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "verify_changes",
+     "line": 164,
+     "why": "Fails the write if an edit does not read back as written"
+    },
+    {
+     "file": "magician-api/src/runtime_env_api.rs",
+     "type": null,
+     "fn": "put_runtime_env_handler",
+     "line": 253,
+     "why": "Skills Environment tab write path, setup-token gated"
+    },
+    {
+     "file": "magician/src/magician_v2/media_seam/runtime_config.rs",
+     "type": null,
+     "fn": "persist_media_settings",
+     "line": 2097,
+     "why": "Example caller writing the media section"
+    }
+   ],
+   "configKeys": [
+    "MAGICIAN_ENV"
+   ],
+   "routes": [
+    "GET /api/magician/v2/runtime/env",
+    "PUT /api/magician/v2/runtime/env",
+    "GET /api/magician/v2/runtime/client-config"
+   ],
+   "uiSurface": {
+    "description": "The Skills page Environment tab sets or clears runtime env keys; values are write-only and never shown back.",
+    "path": "ui/unified-ui/src/routes/(app)/skills/SkillsEnvironmentPanel.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "config_file_lock",
+     "line": 173,
+     "title": "One writer at a time",
+     "say": "Many settings screens change the same config file. A single lock per file makes them take turns, so two changes to different sections can no longer undo each other."
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "yaml_value_changes",
+     "line": 47,
+     "title": "Find only what changed",
+     "say": "A screen compares the setting before and after and lists just the values that differ. Settings you did not touch are never rewritten."
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "set_yaml_path",
+     "line": 195,
+     "title": "Edit in place",
+     "say": "Each change is written on its own line. Your comments, unusual keys, ordering and the way you spelled a number all stay exactly as they were."
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings/yaml_edit.rs",
+     "type": null,
+     "fn": "verify_changes",
+     "line": 164,
+     "title": "Prove it before saving",
+     "say": "After editing, the result is read back and every changed value is checked. If a change would not read back the same, the save fails instead of writing a bad file."
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "write_text_file_atomic",
+     "line": 302,
+     "title": "Swap, never half-write",
+     "say": "The new file is written beside the old one, flushed to disk and then renamed over it, so a crash cannot leave half a file."
+    },
+    {
+     "file": "magician/src/magician_v2/runtime_settings.rs",
+     "type": null,
+     "fn": "update_env_file",
+     "line": 74,
+     "title": "Secret files, key by key",
+     "say": "Keys for the services Magican uses are updated one at a time, quoted safely and kept readable only by you. The Environment tab uses this and never shows saved values back."
+    }
+   ]
+  },
+  {
+   "id": "self-healing-skills-layer",
+   "name": "Skills that repair themselves",
+   "group": "Under the hood",
+   "oneLine": "Each workspace's skills folder is kept as live links to the skills hub and quietly repaired on first use, so a moved checkout or a cleaned build never leaves a skill or its tool missing.",
+   "maturity": "shipped",
+   "maturityEvidence": "CapabilityScopePaths and the artifact capabilities service run reconcile_scope_skills_layer once per scope per process (artifact_v2/capabilities.rs reconcile_scope_skill_layer_once), skills_api.rs install and uninstall and the install_skill tool (compiled_handlers/skillshub_skill.rs) call install_linked_skill and mark_skill_removed; 18 unit tests in scope_layer.rs. Unix only: on other platforms reconcile is a no-op.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "reconcile_scope_skills_layer",
+     "line": 141,
+     "why": "Repairs one workspace skills layer against the running skillshub"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": "ScopeLayerReport",
+     "fn": null,
+     "line": 105,
+     "why": "What was installed, relinked, added, stored, or left unresolved"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": "UnresolvedLink",
+     "fn": null,
+     "line": 96,
+     "why": "A link that cannot be repaired, with the expected target"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "install_linked_skill",
+     "line": 203,
+     "why": "Installs a skill as links, swapping the new tree in atomically"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "heal_dangling",
+     "line": 665,
+     "why": "Re-points links whose target vanished"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "add_missing",
+     "line": 710,
+     "why": "Adds links for files the skill gained since install"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "materialize",
+     "line": 896,
+     "why": "Copies a pinned native executable into the content-addressed store"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "mark_skill_removed",
+     "line": 163,
+     "why": "Records an uninstall so boot repair does not undo it"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "retire_rendered_manifest",
+     "line": 424,
+     "why": "Turns an untouched old per-scope manifest back into a link"
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "heal_scope_bot_bundle_links",
+     "line": 291,
+     "why": "Re-points dangling bot bundle links"
+    },
+    {
+     "file": "magician/src/magician_v2/artifact_v2/capabilities.rs",
+     "type": null,
+     "fn": "reconcile_scope_skill_layer_once",
+     "line": 913,
+     "why": "Runs the repair once per scope per process"
+    },
+    {
+     "file": "magician-api/src/skills_api.rs",
+     "type": null,
+     "fn": "install_skill_handler",
+     "line": 311,
+     "why": "POST skills/install uses the linked install for hub skills"
+    },
+    {
+     "file": "magician-api/src/skills_api.rs",
+     "type": null,
+     "fn": "uninstall_skill_handler",
+     "line": 3096,
+     "why": "Uninstall sets the removal mark"
+    }
+   ],
+   "configKeys": [],
+   "routes": [
+    "POST /api/magician/v2/skills/install",
+    "POST /api/magician/v2/skills/{name}/uninstall"
+   ],
+   "uiSurface": {
+    "description": "The Skills page installs and removes skills per workspace; the repair itself runs unseen.",
+    "path": "ui/unified-ui/src/routes/(app)/skills/+page.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "reconcile_scope_skills_layer",
+     "line": 141,
+     "title": "Checked for every workspace",
+     "say": "The first time a workspace is used, Magican compares its skills folder with the skills hub and fixes what is missing or broken. It works offline and is safe to run again."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "install_linked_skill",
+     "line": 203,
+     "title": "Installs are links",
+     "say": "Installing a skill makes links back to the hub, so edits to the skill show up at once. Saved logins and sessions go to a separate state folder and survive reinstalls."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "heal_dangling",
+     "line": 665,
+     "title": "Broken links are re-pointed",
+     "say": "If the folder the links pointed at has moved or been deleted, they are re-pointed at the hub that is running, and files the skill gained later are added."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "materialize",
+     "line": 896,
+     "title": "Tools kept in a safe store",
+     "say": "Command-line tools that setup built are copied once into a store named by their fingerprint, and each workspace links to that copy. Cleaning the build folder no longer breaks every workspace."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": null,
+     "fn": "mark_skill_removed",
+     "line": 163,
+     "title": "Your uninstall sticks",
+     "say": "When you remove a skill, a marker stops the repair from putting it back. Installing it again clears the marker."
+    },
+    {
+     "file": "magician/src/magician_v2/skills/scope_layer.rs",
+     "type": "UnresolvedLink",
+     "fn": null,
+     "line": 96,
+     "title": "Say what cannot be fixed",
+     "say": "If a needed file was never built, Magican does not run build tools by itself. It reports the missing item along with the setup command that rebuilds it."
+    }
+   ]
+  },
+  {
+   "id": "chat-recall-speed-gate",
+   "name": "Chat recall speed check",
+   "group": "Under the hood",
+   "oneLine": "A benchmark that times the memory and procedure lookup run before each chat reply and fails if it stops using the hybrid index, repeats embedding work, or slows down while background indexing runs.",
+   "maturity": "hardening",
+   "maturityEvidence": "Opt-in binary: magician-bin/Cargo.toml:15-21 requires the retrieval-eval feature, so it is not part of the server. The Makefile lane test-chat-context-retrieval-live-eval (Makefile:2712-2728, 500/800 ms p50/p95 defaults at lines 886-887) and the provider-free harness lane are annotated for the Evals page; the module carries 5 unit tests (chat_context_retrieval_eval.rs:1398-1515) on its contention bookkeeping. It needs a live Ollama embedder, so it is a developer gate rather than a user path.",
+   "locations": [
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": "Args",
+     "fn": null,
+     "line": 47,
+     "why": "Command-line options: runs, warmups and the required gates"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "main",
+     "line": 237,
+     "why": "Loads config, warms up, measures, writes the report, then validates"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "run_sample",
+     "line": 1044,
+     "why": "One timed sample: memory and procedure lookup run side by side"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "render_memory",
+     "line": 1068,
+     "why": "Memory lookup: one shared hybrid query, user and agent memory rendered concurrently"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "validate_report",
+     "line": 454,
+     "why": "Turns the report into pass or fail against the chosen gates"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "run_contention_lane",
+     "line": 692,
+     "why": "One contention lane: foreground retrieval while background embedding holds the embedder"
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "validate_contention_lane",
+     "line": 546,
+     "why": "Checks each contention lane for proven contention, one provider call per turn, hybrid coverage and p95"
+    },
+    {
+     "file": "magician/src/magician_v2/chat/retrieval_timing.rs",
+     "type": null,
+     "fn": "measure_chat_context_retrieval",
+     "line": 209,
+     "why": "The timing helper that runs memory and procedures concurrently and measures overlap"
+    },
+    {
+     "file": "magician/src/magician_v2/agents/memory_prompt_blocks.rs",
+     "type": null,
+     "fn": "score_hybrid_index_for_prompt",
+     "line": 686,
+     "why": "The production hybrid scoring call the benchmark exercises"
+    },
+    {
+     "file": "magician-vector-index/src/embedding_scheduler.rs",
+     "type": null,
+     "fn": "embedding_admission_stats",
+     "line": 378,
+     "why": "Admission counters that prove foreground work waited on background work"
+    }
+   ],
+   "configKeys": [
+    "runtime.ollama.embedding_base_url",
+    "runtime.ollama.embedding_model",
+    "runtime.ollama.embedding_num_parallel",
+    "runtime.ollama.embedding_context_tokens",
+    "runtime.ollama.embedding_batch_tokens",
+    "memory (prompt budgets)"
+   ],
+   "routes": [],
+   "uiSurface": {
+    "description": "The Evals page lists the live lane from its Makefile annotation (Gate live hybrid backends, embedding coalescing, and retrieval latency); the report is written under coverage/evals/chat-context-retrieval.",
+    "path": "ui/unified-ui/src/routes/(app)/evals/+page.svelte"
+   },
+   "tour": [
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": "Args",
+     "fn": null,
+     "line": 47,
+     "title": "A benchmark you can run",
+     "say": "A command measures how long Magican takes to gather memories and learned procedures before it answers, without calling a language model. You choose how many runs, and which limits must hold."
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "run_sample",
+     "line": 1044,
+     "title": "Two lookups at once",
+     "say": "Each sample looks up memories and procedures at the same time, and records how long each took and how much overlapping saved."
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "render_memory",
+     "line": 1068,
+     "title": "One search, two readers",
+     "say": "Your memories and the assistant's own memories come from a single search of the index, then are put together side by side. The report notes whether the fast index was used or a slower fallback."
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "validate_report",
+     "line": 454,
+     "title": "Pass or fail",
+     "say": "The run fails if the fast index was not used, if the same question was turned into numbers more than once per turn, or if the middle or slow end of the timings is over the limit."
+    },
+    {
+     "file": "magician-bin/src/chat_context_retrieval_eval.rs",
+     "type": null,
+     "fn": "run_contention_lane",
+     "line": 692,
+     "title": "Chat goes first under load",
+     "say": "The check keeps the embedding engine busy with background indexing work, then proves a chat lookup still gets through quickly and does not queue behind it."
+    }
+   ]
+  },
+  {
+   "id": "skill-call-scratch-lease",
+   "name": "Skill calls get a closed scratch folder",
+   "group": "Under the hood",
+   "oneLine": "Each governed skill or tool command runs in its own temporary folder, with engine roots and store credentials stripped from its environment, and the folder is deleted when the call ends.",
+   "maturity": "shipped",
+   "maturityEvidence": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs:1253, 1447 and 1646 call bind_subprocess_storage_envelope for every governed call, and CallLease::drop (line 660) scavenges the lease; pack_provider.rs:756 and cli_template/dispatcher.rs:465 remove the forbidden env names. Covered by subprocess_owners/characterization.rs, guard.rs source-guard tests and governed_runtime tests at line 4005. Remote adapter and migration handler are test-only (subprocess_owners/mod.rs:1-4), so only the local lease path is shipped.",
+   "locations": [
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/owners.rs",
+     "type": "SubprocessOwner",
+     "fn": null,
+     "line": 8,
+     "why": "The two classified scratch owners: tool workdirs and skill-working"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/owners.rs",
+     "type": null,
+     "fn": "allows",
+     "line": 30,
+     "why": "Rejects absolute, dot and parent-directory locators and other owner's folders"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": "SubprocessStorageEnvelope",
+     "fn": null,
+     "line": 103,
+     "why": "Versioned manifest written into the lease: size bound, outputs, closed flag"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": null,
+     "fn": "install_skill_working_envelope",
+     "line": 209,
+     "why": "Creates the per-call lease with inputs and outputs folders and writes the envelope"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": null,
+     "fn": "forbidden_child_env_names",
+     "line": 152,
+     "why": "Names the env vars a child may never inherit (engine root, storage path, cloud and database credentials)"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": null,
+     "fn": "scavenge_lease",
+     "line": 320,
+     "why": "Deletes the lease so unaccepted scratch never becomes truth"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/local.rs",
+     "type": null,
+     "fn": "persist_subprocess_file",
+     "line": 112,
+     "why": "Routes writes under the scratch owners through the checked store"
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/guard.rs",
+     "type": null,
+     "fn": "subprocess_owner_source_guard",
+     "line": 14,
+     "why": "Source guard: only the kit's own adapters may touch these folders"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs",
+     "type": null,
+     "fn": "bind_subprocess_storage_envelope",
+     "line": 632,
+     "why": "Installs the lease for an admitted call"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs",
+     "type": "CallLease",
+     "fn": null,
+     "line": 650,
+     "why": "Holds the lease and scavenges it on drop"
+    },
+    {
+     "file": "magician/src/magician_v2/execution/pack_provider.rs",
+     "type": null,
+     "fn": "execute_command",
+     "line": 526,
+     "why": "Runs the child in the lease and strips the forbidden env names"
+    }
+   ],
+   "configKeys": [],
+   "routes": [],
+   "uiSurface": null,
+   "tour": [
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/owners.rs",
+     "type": "SubprocessOwner",
+     "fn": null,
+     "line": 8,
+     "title": "Two kinds of scratch space",
+     "say": "Magican keeps two kinds of temporary working space for each person and workspace: general tool folders, and a separate area for skill calls."
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/owners.rs",
+     "type": null,
+     "fn": "allows",
+     "line": 30,
+     "title": "Paths cannot wander",
+     "say": "Every file path is checked against its area. A path that starts at the root, climbs out with dot-dot, or points into the other area is refused."
+    },
+    {
+     "file": "magician/src/magician_v2/execution/primitive_dispatch/governed_runtime.rs",
+     "type": null,
+     "fn": "bind_subprocess_storage_envelope",
+     "line": 632,
+     "title": "One folder per call",
+     "say": "Once a skill command is approved to run, it gets its own fresh folder to work in, instead of the whole workspace."
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": "SubprocessStorageEnvelope",
+     "fn": null,
+     "line": 103,
+     "title": "A note on the rules",
+     "say": "A small versioned file in that folder records the size limit, the output slot and that the child is closed off from the engine."
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": null,
+     "fn": "forbidden_child_env_names",
+     "line": 152,
+     "title": "Nothing to steal",
+     "say": "The command is started without the engine's root folder, storage path, cloud keys or database address, so a skill cannot use them even by accident."
+    },
+    {
+     "file": "magician/src/magician_v2/subprocess_owners/envelope.rs",
+     "type": null,
+     "fn": "scavenge_lease",
+     "line": 320,
+     "title": "Gone when the call ends",
+     "say": "When the call finishes, succeeds or fails, the folder is deleted. Leftover scratch never turns into saved data unless it was explicitly accepted."
     }
    ]
   }

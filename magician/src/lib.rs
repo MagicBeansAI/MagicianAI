@@ -34,18 +34,32 @@
 /// awaiting function's poll frame, and a debug build gives every temporary
 /// its own slot: a 22-arm match held all 22 futures at once (426 KiB), and a
 /// 1,616-line resume function reserved 1 MiB of a 2 MiB worker (2026-10-12
-/// crashes). Here the caller builds only an `async` block that borrows what
-/// `$e` needs and boxes it; the callee's future is built inside that block's
-/// own poll, one at a time. `.heap_boxed()` on a built future does not help:
-/// the future is already on the stack when it is boxed.
+/// crashes). Here the caller holds only a closure of borrows and the box
+/// pointer: the `async` block — as large as the callee's future, since it
+/// holds it — is built and boxed in [`box_off_frame`]'s own frame, which is
+/// gone before the block is polled. Boxed in the caller instead
+/// (`Box::pin(async { $e })`, or `.heap_boxed()`), it took a slot of its full
+/// size there per site: 36 KiB, 31 KiB, … in one run loop (2026-11-03).
 ///
 /// `$e` must be a plain awaited expression: `?` and `return` inside it apply
 /// to the block, so put `?` outside — `off_frame!(self.load().await)?`.
 #[macro_export]
 macro_rules! off_frame {
     ($e:expr) => {
-        ::std::boxed::Box::pin(async { $e }).await
+        $crate::box_off_frame(|| async { $e }).await
     };
+}
+
+/// [`off_frame!`]'s boxing step, kept out of line so the future it builds
+/// never takes a slot in the awaiting function's frame.
+#[doc(hidden)]
+#[inline(never)]
+pub fn box_off_frame<F, Fut>(build: F) -> std::pin::Pin<Box<Fut>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future,
+{
+    Box::pin(build())
 }
 
 /// The Magician core version (this crate's) — what people mean by "the

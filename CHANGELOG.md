@@ -15,6 +15,12 @@ dated, version-stamped heading when a release is published.
 
 ## [Unreleased]
 
+## [0.7.152] - 2026-11-03
+
+- **Delegation no longer crashes Magician:** Handing work to another agent crashed the server every time since 0.7.151. Delegated agents start normally again.
+- **Gmail sign-in loop fixed:** A Gmail account that kept asking you to authenticate, even right after you did, now repairs itself. It only asks you to sign in when Google actually rejects your account.
+- **Gmail watch cleanup:** Restarting a Gmail connection no longer leaves an unused Google Pub/Sub subscription behind each time.
+
 ## [0.7.151] - 2026-11-02
 
 - **Approvals inside delegated work:** When an agent you delegated to hits an approval gate, you now get the approval card and the work waits for you, instead of being cancelled within a second and retried in a loop.

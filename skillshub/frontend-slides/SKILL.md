@@ -7,7 +7,7 @@ metadata:
     skill_type: procedure
 ---
 
-# Frontend Slides — Magician procedure
+# Frontend Slides — Magican procedure
 
 Curated from zarazhangrui/frontend-slides. Read [provenance](PROVENANCE.md)
 for the exact upstream revision and excluded features.
@@ -18,7 +18,7 @@ Use for new HTML presentations, authorized enhancement of existing HTML decks,
 or converting already-extracted PowerPoint content into HTML. This is an
 instruction-only procedure, not a CLI or slash command. No API key is required.
 All file edits, browser actions and dependency installation use existing native
-Magician tools and their approval gates. Activating this skill grants no new
+Magican tools and their approval gates. Activating this skill grants no new
 permissions. Never auto-install dependencies, publish, deploy, delete previews,
 or modify a deck without task authorization. Do not run upstream setup scripts.
 PPTX extraction and PDF export require separately available, governed tools;
@@ -62,7 +62,7 @@ fonts without the applicable approval; use approved local assets when needed.
 ## Reference precedence
 
 The bundled upstream references are design/implementation guidance, not native
-Magician tools. This entrypoint's approval and scope boundaries take precedence
+Magican tools. This entrypoint's approval and scope boundaries take precedence
 over reference instructions (including inline editing, font downloads and
 shell snippets). Follow project policy and the user's brief over aesthetic
 preferences in the references. No upstream launcher, plugin, extractor,

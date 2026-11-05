@@ -31,6 +31,7 @@ class ServiceNameBoundaryTests(unittest.TestCase):
             "magician.delegated-child-recovery.v1",
             "magician.execution-stateless-children-handoff.v2",
             "Use magician storage status",
+            "commits are signed `Magician <magician@localhost>`",
         ):
             with self.subTest(text=text):
                 self.assertTrue(boundary.allowed(text))

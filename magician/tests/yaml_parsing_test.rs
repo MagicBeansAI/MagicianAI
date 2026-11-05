@@ -227,12 +227,14 @@ fn officecli_agent_templates_keep_domain_ownership_and_delegation() {
 
 #[test]
 fn tabular_tool_selector_ranks_artifact_specific_packs() {
+    // Metabase left this set when its skill became `metabase-mcp` (2026-10-25):
+    // its tools come from the workspace's own Metabase MCP server at run time,
+    // so its SKILL.md declares no actions for a static index to rank.
     let selected = [
         "csvkit",
         "sheets",
         "presto-sheets",
         "marimo",
-        "metabase",
         "office-excel",
     ];
     let governed_packs = load_pack_defs_from_skills_dir(&repo_path("skillshub"));
@@ -260,7 +262,6 @@ fn tabular_tool_selector_ranks_artifact_specific_packs() {
             "presto-sheets",
         ),
         ("build reproducible python analysis notebook", "marimo"),
-        ("query existing metabase dashboard", "metabase"),
     ] {
         let matches = index.search(query, 5);
         let ranked = matches

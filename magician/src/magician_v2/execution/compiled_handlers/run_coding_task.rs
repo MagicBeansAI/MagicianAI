@@ -4356,7 +4356,7 @@ enum SetupFault {
 }
 
 const PI_SETUP_FIX: &str =
-    "Run `make setup-pi-coding-agent` to install the Pi coding agent version Magician needs.";
+    "Run `make setup-pi-coding-agent` to install the Pi coding agent version Magican needs.";
 
 const PROJECT_REPO_FIX: &str = "Open the project's folder: it must be the root of a git \
                                 repository and its base branch must exist (VibeDev project \

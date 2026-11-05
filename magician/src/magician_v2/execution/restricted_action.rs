@@ -588,7 +588,9 @@ const RESTRICTED_ACTIONS: &[RestrictedAction] = &[
         // `--to` after the bound ones, which is the whole shape §4A.1 exists to
         // strip. Dropping it costs attachments on an autonomous send and keeps
         // the act bindable; an owner-approved send still reaches the full skill.
-        allowed_parameters: &["to", "cc", "bcc", "subject", "body", "reply_to_message_id"],
+        // `reply_to_message_id` left `send` with the skill (2026-10-25): an
+        // existing thread is answered through `reply`, not `send`.
+        allowed_parameters: &["to", "cc", "bcc", "subject", "body"],
         // Nothing to bind, and this is the strongest case of it in the table:
         // the skill is *"hard-pinned to the gws-presto profile; NO account
         // parameter"*, so the sender is fixed before an argument is composed.

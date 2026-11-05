@@ -108,11 +108,11 @@
    "file": "magician/src/magician_v2/artifact_v2/service.rs",
    "type": "ArtifactV2Service",
    "fn": "start_execution_with_launch_options_internal",
-   "line": 23448,
+   "line": 23457,
    "carries": "V3ExecutionBinding",
    "title": "Execution launched",
    "say": "The service saves a new execution record and hands the run to a separate execution runtime, so the HTTP worker never runs it.",
-   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:22562; magician/src/magician_v2/artifact_v2/service.rs:28537; magician/src/magician_v2/artifact_v2/service.rs:28588; branch at magician/src/magician_v2/artifact_v2/service.rs:22496; branch at magician/src/magician_v2/artifact_v2/service.rs:22514; branch at magician/src/magician_v2/artifact_v2/service.rs:22626; branch at magician/src/magician_v2/artifact_v2/service.rs:22902; branch at magician/src/magician_v2/artifact_v2/service.rs:22907; branch at magician/src/magician_v2/artifact_v2/service.rs:23228; branch at magician/src/magician_v2/artifact_v2/service.rs:23229; branch at magician/src/magician_v2/artifact_v2/service.rs:23271; branch at magician/src/magician_v2/artifact_v2/service.rs:23270",
+   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:22562; magician/src/magician_v2/artifact_v2/service.rs:28537; magician/src/magician_v2/artifact_v2/service.rs:28588; branch at magician/src/magician_v2/artifact_v2/service.rs:22496; branch at magician/src/magician_v2/artifact_v2/service.rs:22514; branch at magician/src/magician_v2/artifact_v2/service.rs:22626; branch at magician/src/magician_v2/artifact_v2/service.rs:22902; branch at magician/src/magician_v2/artifact_v2/service.rs:22907; branch at magician/src/magician_v2/artifact_v2/service.rs:23228; branch at magician/src/magician_v2/artifact_v2/service.rs:23229; branch at magician/src/magician_v2/artifact_v2/service.rs:23271; branch at magician/src/magician_v2/artifact_v2/service.rs:23270; branch at magician/src/magician_v2/artifact_v2/service.rs:23448",
    "next": "task.executor"
   },
   {
@@ -336,11 +336,11 @@
    "file": "magician-api/src/web_api.rs",
    "type": "RespondHitlRequest",
    "fn": "respond_hitl_handler",
-   "line": 27958,
+   "line": 27961,
    "carries": "RespondHitlRequest",
    "title": "Owner answers, run resumes",
    "say": "The owner's answer posts to the single HITL respond route; an agentic approval resumes the paused execution with the confirmed action carried in.",
-   "evidence": "magician-bin/src/main.rs:13460; magician-api/src/web_api.rs:28185; magician-api/src/web_api.rs:28321; magician-api/src/web_api.rs:21870; branch at magician-api/src/web_api.rs:26388; branch at magician-api/src/web_api.rs:26456; branch at magician-api/src/web_api.rs:26470; branch at magician-api/src/web_api.rs:26684; branch at magician-api/src/web_api.rs:27222; branch at magician-api/src/web_api.rs:27713; branch at magician-api/src/web_api.rs:27691; branch at magician-api/src/web_api.rs:27747",
+   "evidence": "magician-bin/src/main.rs:13460; magician-api/src/web_api.rs:28185; magician-api/src/web_api.rs:28321; magician-api/src/web_api.rs:21870; branch at magician-api/src/web_api.rs:26388; branch at magician-api/src/web_api.rs:26456; branch at magician-api/src/web_api.rs:26470; branch at magician-api/src/web_api.rs:26684; branch at magician-api/src/web_api.rs:27222; branch at magician-api/src/web_api.rs:27713; branch at magician-api/src/web_api.rs:27691; branch at magician-api/src/web_api.rs:27747; branch at magician-api/src/web_api.rs:27958",
    "next": "task.dispatch"
   },
   {
@@ -523,11 +523,11 @@
    "file": "magician/src/magician_v2/artifact_v2/service.rs",
    "type": "ArtifactV2Service",
    "fn": "persist_execution_outcome",
-   "line": 34442,
+   "line": 34499,
    "carries": "AgenticOutcome",
    "title": "Outcome published",
    "say": "The service saves the final execution outcome, marks synthesis as pending, and spawns the synthesis pipeline that publishes the task's outputs.",
-   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:28596; magician/src/magician_v2/artifact_v2/service.rs:33778; magician/src/magician_v2/artifact_v2/service.rs:16956; branch at magician/src/magician_v2/artifact_v2/service.rs:33144; branch at magician/src/magician_v2/artifact_v2/service.rs:33162; branch at magician/src/magician_v2/artifact_v2/service.rs:33283; branch at magician/src/magician_v2/artifact_v2/service.rs:33281; branch at magician/src/magician_v2/artifact_v2/service.rs:33663; branch at magician/src/magician_v2/artifact_v2/service.rs:33668; branch at magician/src/magician_v2/artifact_v2/service.rs:33989; branch at magician/src/magician_v2/artifact_v2/service.rs:33990; branch at magician/src/magician_v2/artifact_v2/service.rs:34032; branch at magician/src/magician_v2/artifact_v2/service.rs:34036",
+   "evidence": "magician/src/magician_v2/artifact_v2/service.rs:28596; magician/src/magician_v2/artifact_v2/service.rs:33778; magician/src/magician_v2/artifact_v2/service.rs:16956; branch at magician/src/magician_v2/artifact_v2/service.rs:33144; branch at magician/src/magician_v2/artifact_v2/service.rs:33162; branch at magician/src/magician_v2/artifact_v2/service.rs:33283; branch at magician/src/magician_v2/artifact_v2/service.rs:33281; branch at magician/src/magician_v2/artifact_v2/service.rs:33663; branch at magician/src/magician_v2/artifact_v2/service.rs:33668; branch at magician/src/magician_v2/artifact_v2/service.rs:33989; branch at magician/src/magician_v2/artifact_v2/service.rs:33990; branch at magician/src/magician_v2/artifact_v2/service.rs:34032; branch at magician/src/magician_v2/artifact_v2/service.rs:34036; branch at magician/src/magician_v2/artifact_v2/service.rs:34442",
    "next": "task.done"
   },
   {

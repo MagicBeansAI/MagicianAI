@@ -429,7 +429,7 @@
      "file": "magician-api/src/web_api.rs",
      "type": null,
      "fn": "search_owner_memory_handler",
-     "line": 27344,
+     "line": 27347,
      "why": "POST /memory/search handler"
     },
     {
@@ -522,6 +522,55 @@
      "type": null,
      "line": 377,
      "why": "Refresh only changed content"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": "EpisodeCandidateProjectionV1",
+     "fn": null,
+     "line": 67,
+     "why": "Read-only view of a saved episode file; tolerant of older and newer shapes"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "compose_episode_search_text",
+     "line": 624,
+     "why": "Builds the one text the index and the recall path both use; drops system text and bounds length"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "episode_task_intent",
+     "line": 246,
+     "why": "Keeps what the run was asked, without server-injected policy text"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "episode_candidate_document",
+     "line": 855,
+     "why": "One episode becomes one indexed candidate with a stable content hash"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "load_episode_candidate_documents",
+     "line": 891,
+     "why": "Loads every episode of one agent, refusing foreign or keyless files"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "episode_candidate_metadata",
+     "line": 738,
+     "why": "Metadata including the meeting label that confines a room's episodes to that room"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "episode_context_neighbors",
+     "line": 804,
+     "why": "Picks at most one earlier and one later turn of the same chat as context"
     }
    ],
    "configKeys": [
@@ -566,6 +615,30 @@
      "title": "Conversations become episodes",
      "say": "Each admitted chat turn is kept as an episode with its full source text, and the write is journaled so the search index catches up.",
      "evidence": "memory.rs:1668; memory-index.md 'Episode writes are incremental'; memory-recall.md"
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "load_episode_candidate_documents",
+     "line": 891,
+     "title": "Episodes join the search index",
+     "say": "Every saved episode is read into the memory index, so past conversations and runs are found by meaning as well as by keyword. A file that belongs to a different assistant, or has no identity, is refused rather than indexed."
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "compose_episode_search_text",
+     "line": 624,
+     "title": "Index the story, not the plumbing",
+     "say": "Before an episode is indexed, system text, repeated task instructions and internal ids are cut away and the rest is size-limited. What Magican later recalls is what happened and how it ended, in plain words."
+    },
+    {
+     "file": "magician-vector-index/src/episode_candidates.rs",
+     "type": null,
+     "fn": "episode_context_neighbors",
+     "line": 804,
+     "title": "Neighbouring turns come along",
+     "say": "When a past chat turn matches, Magican can also bring the turn just before and just after it from the same conversation, so a short reply is not recalled without its context."
     },
     {
      "file": "magician/src/magician_v2/analytics/memory_index_maintainer.rs",

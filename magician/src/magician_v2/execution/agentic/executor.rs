@@ -35382,9 +35382,7 @@ async fn execute_agentically_run(
             },
             super::run_loop::ExecutionDriver::Stateless => {
                 let mut arm = StatelessArm::new(ctx, executors)?;
-                arm.precompose_exact_continuation_context(ctx)
-                    .heap_boxed()
-                    .await?;
+                crate::off_frame!(arm.precompose_exact_continuation_context(ctx).await)?;
                 Some(arm)
             },
         }
@@ -35423,16 +35421,17 @@ async fn execute_agentically_run(
         mut approved_confirmation_actions,
         execution_driver,
         mut stateless_arm,
-    } = match build_run_setup(
-        ctx,
-        executors,
-        initial_state,
-        cancellation_token,
-        execution_driver,
-        prebuilt_stateless_arm,
-    )
-    .heap_boxed()
-    .await?
+    } = match crate::off_frame!(
+        build_run_setup(
+            ctx,
+            executors,
+            initial_state,
+            cancellation_token,
+            execution_driver,
+            prebuilt_stateless_arm,
+        )
+        .await
+    )?
     {
         RunSetup::Ready(bindings) => *bindings,
         // The `SleepUntil` short-circuit. Setup already persisted the paused
@@ -35447,19 +35446,20 @@ async fn execute_agentically_run(
     // baseline is derived. Ordinary and newly-addressed segments remain at one.
     let mut resume_iteration = 1;
     if let Some(arm) = stateless_arm.as_mut() {
-        arm.seed_declared_successor_before_restore(
-            ctx,
-            executors,
-            &current_state,
-            &history,
-            &loop_protective,
-            &approved_confirmation_actions,
-            resume_iteration,
-        )
-        .heap_boxed()
-        .await?;
-        if let Some((committed_iteration, authoritative_deadline_at)) = arm
-            .restore_exact_continuation_if_needed(
+        crate::off_frame!(
+            arm.seed_declared_successor_before_restore(
+                ctx,
+                executors,
+                &current_state,
+                &history,
+                &loop_protective,
+                &approved_confirmation_actions,
+                resume_iteration,
+            )
+            .await
+        )?;
+        if let Some((committed_iteration, authoritative_deadline_at)) = crate::off_frame!(
+            arm.restore_exact_continuation_if_needed(
                 ctx,
                 executors,
                 &mut history,
@@ -35467,9 +35467,8 @@ async fn execute_agentically_run(
                 &mut approved_confirmation_actions,
                 &mut current_state,
             )
-            .heap_boxed()
-            .await?
-        {
+            .await
+        )? {
             resume_iteration = committed_iteration;
             deadline_at = authoritative_deadline_at;
             let remaining = deadline_at.map(|deadline_at| {
@@ -35517,23 +35516,24 @@ async fn execute_agentically_run(
         if execution_driver == super::run_loop::ExecutionDriver::Inprocess {
             if let Some(ref token) = cancellation_token {
                 if token.is_cancelled() {
-                    return Ok(finish_cancelled_agentic_execution(
-                        ctx,
-                        executors,
-                        // `None`: the driver's own pre-phase cancellation guard runs
-                        // outside every phase body, and returns. See `PhaseAddress`.
-                        None,
-                        current_state,
-                        &history,
-                        &execution_start,
-                        iteration.saturating_sub(1),
-                        iteration,
-                        executors.manual_pause_requested(),
-                        &loop_protective,
-                        &approved_confirmation_actions,
-                    )
-                    .heap_boxed()
-                    .await);
+                    return Ok(crate::off_frame!(
+                        finish_cancelled_agentic_execution(
+                            ctx,
+                            executors,
+                            // `None`: the driver's own pre-phase cancellation guard runs
+                            // outside every phase body, and returns. See `PhaseAddress`.
+                            None,
+                            current_state,
+                            &history,
+                            &execution_start,
+                            iteration.saturating_sub(1),
+                            iteration,
+                            executors.manual_pause_requested(),
+                            &loop_protective,
+                            &approved_confirmation_actions,
+                        )
+                        .await
+                    ));
                 }
             }
         }
@@ -35549,18 +35549,19 @@ async fn execute_agentically_run(
                 elapsed_ms,
                 "[AGENTIC-WORK-BUDGET] boundary reached before a new decision; finalizing completed work"
             );
-            return Ok(conclude_work_budget_reached(
-                ctx,
-                executors,
-                // `None`: the driver's own pre-phase work-budget guard runs
-                // outside every phase body, and returns. See `PhaseAddress`.
-                None,
-                &history,
-                current_state,
-                iteration.saturating_sub(1),
-            )
-            .heap_boxed()
-            .await);
+            return Ok(crate::off_frame!(
+                conclude_work_budget_reached(
+                    ctx,
+                    executors,
+                    // `None`: the driver's own pre-phase work-budget guard runs
+                    // outside every phase body, and returns. See `PhaseAddress`.
+                    None,
+                    &history,
+                    current_state,
+                    iteration.saturating_sub(1),
+                )
+                .await
+            ));
         }
         // The resident loop has no claimed durable boundary, so its authority
         // refresh stays here. The stateless arm performs this same pre-provider
@@ -35574,9 +35575,10 @@ async fn execute_agentically_run(
                 .map(|guard| serde_json::to_vec(guard.enforcer.policies()))
                 .transpose()
                 .map_err(|error| anyhow!("trust_policy_digest_failed:{error}"))?;
-            let owner_policy_changed = refresh_owner_profile_for_decision(ctx, executors)
-                .heap_boxed()
-                .await?;
+            let owner_policy_changed = crate::off_frame!(
+                refresh_owner_profile_for_decision(ctx, executors)
+                    .await
+            )?;
             // Trust policy is hot-reloadable operator authority. Re-resolve it at
             // every provider decision boundary so a tightened policy takes effect
             // before the next catalog/dispatch instead of remaining stale for the
@@ -35611,22 +35613,23 @@ async fn execute_agentically_run(
                     // `ExecutionFailed`.
                     // Checked before this iteration does any work, so the pause
                     // records the completed iterations and Continue re-runs this one.
-                    return Ok(conclude_budget_exhausted_before_iteration(
-                        ctx,
-                        executors,
-                        // `None`: the driver's own pre-phase token-ceiling check runs
-                        // outside every phase body, and returns. See `PhaseAddress`.
-                        None,
-                        &history,
-                        current_state,
-                        BudgetDimension::Tokens { used, limit },
-                        iteration,
-                        &execution_start,
-                        &loop_protective,
-                        &approved_confirmation_actions,
-                    )
-                    .heap_boxed()
-                    .await);
+                    return Ok(crate::off_frame!(
+                        conclude_budget_exhausted_before_iteration(
+                            ctx,
+                            executors,
+                            // `None`: the driver's own pre-phase token-ceiling check runs
+                            // outside every phase body, and returns. See `PhaseAddress`.
+                            None,
+                            &history,
+                            current_state,
+                            BudgetDimension::Tokens { used, limit },
+                            iteration,
+                            &execution_start,
+                            &loop_protective,
+                            &approved_confirmation_actions,
+                        )
+                        .await
+                    ));
                 }
             }
         }
@@ -35644,25 +35647,26 @@ async fn execute_agentically_run(
             if let Some(cap) = iteration_cost_cap {
                 if loop_protective.cumulative_run_cost_usd >= cap {
                     // Before any work, like the token check above.
-                    return Ok(conclude_budget_exhausted_before_iteration(
-                        ctx,
-                        executors,
-                        // `None`: the driver's own pre-phase cost-ceiling check runs
-                        // outside every phase body, and returns. See `PhaseAddress`.
-                        None,
-                        &history,
-                        current_state,
-                        BudgetDimension::Cost {
-                            used_dollars: loop_protective.cumulative_run_cost_usd,
-                            limit_dollars: cap,
-                        },
-                        iteration,
-                        &execution_start,
-                        &loop_protective,
-                        &approved_confirmation_actions,
-                    )
-                    .heap_boxed()
-                    .await);
+                    return Ok(crate::off_frame!(
+                        conclude_budget_exhausted_before_iteration(
+                            ctx,
+                            executors,
+                            // `None`: the driver's own pre-phase cost-ceiling check runs
+                            // outside every phase body, and returns. See `PhaseAddress`.
+                            None,
+                            &history,
+                            current_state,
+                            BudgetDimension::Cost {
+                                used_dollars: loop_protective.cumulative_run_cost_usd,
+                                limit_dollars: cap,
+                            },
+                            iteration,
+                            &execution_start,
+                            &loop_protective,
+                            &approved_confirmation_actions,
+                        )
+                        .await
+                    ));
                 }
             }
         }
@@ -35676,9 +35680,7 @@ async fn execute_agentically_run(
         // surfaces once a racing terminal-outcome persist runs.
         if execution_driver == super::run_loop::ExecutionDriver::Inprocess
             && iteration > 1
-            && runtime_execution_scope_lost(executors, ctx)
-                .heap_boxed()
-                .await
+            && crate::off_frame!(runtime_execution_scope_lost(executors, ctx).await)
         {
             return Ok(finish_scope_lost_agentic_execution(
                 ctx,
@@ -35704,26 +35706,27 @@ async fn execute_agentically_run(
                 elapsed_s = execution_start.elapsed().as_secs(),
                 "[AGENTIC-DEADLINE] wall-clock max_duration exceeded; concluding"
             );
-            return Ok(finish_deadline_agentic_execution(
-                ctx,
-                executors,
-                // `None`: the driver's own pre-phase wall-clock deadline check
-                // runs outside every phase body, and returns. See `PhaseAddress`.
-                None,
-                current_state,
-                &history,
-                &execution_start,
-                iteration.saturating_sub(1),
-                iteration,
-                deadline_at
-                    .map(|deadline| deadline.timestamp_millis())
-                    .unwrap_or_else(|| Utc::now().timestamp_millis()),
-                deadline,
-                &loop_protective,
-                &approved_confirmation_actions,
-            )
-            .heap_boxed()
-            .await);
+            return Ok(crate::off_frame!(
+                finish_deadline_agentic_execution(
+                    ctx,
+                    executors,
+                    // `None`: the driver's own pre-phase wall-clock deadline check
+                    // runs outside every phase body, and returns. See `PhaseAddress`.
+                    None,
+                    current_state,
+                    &history,
+                    &execution_start,
+                    iteration.saturating_sub(1),
+                    iteration,
+                    deadline_at
+                        .map(|deadline| deadline.timestamp_millis())
+                        .unwrap_or_else(|| Utc::now().timestamp_millis()),
+                    deadline,
+                    &loop_protective,
+                    &approved_confirmation_actions,
+                )
+                .await
+            ));
         }
 
         // Record history length at iteration start for the stuck-iteration
@@ -35806,9 +35809,7 @@ async fn execute_agentically_run(
         // not a phase, and handing it to one driver and not the other would be
         // a difference between the two arms by construction — one a phase
         // differential would attribute to the arm under test.
-        refresh_active_procedure_skill_from_tier(executors, ctx)
-            .heap_boxed()
-            .await;
+        crate::off_frame!(refresh_active_procedure_skill_from_tier(executors, ctx).await);
 
         // THE STRANGLER SEAM. One iteration, advanced by whichever driver
         // `MAGICIAN_EXECUTION_DRIVER` named — see `run_loop::ExecutionDriver`.
@@ -35820,27 +35821,28 @@ async fn execute_agentically_run(
         // survive a handoff is the stateless arm's whole job.
         let step = match execution_driver {
             super::run_loop::ExecutionDriver::Inprocess => {
-                super::run_loop::driver_inproc::run_iteration(
-                    ctx,
-                    executors,
-                    &mut history,
-                    &mut loop_protective,
-                    &mut trust_dispatch_guard,
-                    &mut approved_confirmation_actions,
-                    &mut pending_agentic_tool_lineages,
-                    &mut pending_operator_steer,
-                    &mut previous_merkle_tree,
-                    &mut current_state,
-                    &semantic_checkpoint_hints,
-                    &cancellation_token,
-                    &execution_start,
-                    &ephemeral_scope_id,
-                    history_iterations_len_at_iter_start,
-                    &iteration_started_at,
-                    iteration,
-                )
-                .heap_boxed()
-                .await?
+                crate::off_frame!(
+                    super::run_loop::driver_inproc::run_iteration(
+                        ctx,
+                        executors,
+                        &mut history,
+                        &mut loop_protective,
+                        &mut trust_dispatch_guard,
+                        &mut approved_confirmation_actions,
+                        &mut pending_agentic_tool_lineages,
+                        &mut pending_operator_steer,
+                        &mut previous_merkle_tree,
+                        &mut current_state,
+                        &semantic_checkpoint_hints,
+                        &cancellation_token,
+                        &execution_start,
+                        &ephemeral_scope_id,
+                        history_iterations_len_at_iter_start,
+                        &iteration_started_at,
+                        iteration,
+                    )
+                    .await
+                )?
             },
             // The worker arm. NOT the same call shape as the one above, and the
             // difference is the entire product of this refactor.
@@ -35901,9 +35903,7 @@ async fn execute_agentically_run(
                 // walk historical state before its own first seed. The exact
                 // key is loaded directly by `seed_if_absent` below; an exact-id
                 // re-entry therefore still resumes without a global scan.
-                arm.advance_iteration(&mut host, iteration)
-                    .heap_boxed()
-                    .await?
+                crate::off_frame!(arm.advance_iteration(&mut host, iteration).await)?
             },
         };
         match step {
@@ -36047,15 +36047,16 @@ async fn execute_agentically_run(
         ),
     );
     let partial_findings = with_checkpoint_findings(ctx, partial_findings);
-    persist_paused_execution_summary_with_partial(
-        ctx,
-        executors,
-        &outcome,
-        duration_ms,
-        partial_findings.as_deref(),
-    )
-    .heap_boxed()
-    .await;
+    crate::off_frame!(
+        persist_paused_execution_summary_with_partial(
+            ctx,
+            executors,
+            &outcome,
+            duration_ms,
+            partial_findings.as_deref(),
+        )
+        .await
+    );
     Ok(outcome)
 }
 
@@ -38505,21 +38506,20 @@ impl StatelessArm {
         use super::run_loop::IterationStep;
 
         let remaining_max_duration_ms = host.loop_protective.remaining_max_duration_ms;
-        self.seed_if_absent(host, iteration, remaining_max_duration_ms)
-            .heap_boxed()
-            .await?;
+        crate::off_frame!(self.seed_if_absent(host, iteration, remaining_max_duration_ms).await)?;
 
         loop {
-            let advanced = super::run_loop::driver_worker::advance_in_session(
-                &*self.store,
-                host,
-                &self.key,
-                &self.worker,
-                &self.config,
-                session,
-            )
-            .heap_boxed()
-            .await;
+            let advanced = crate::off_frame!(
+                super::run_loop::driver_worker::advance_in_session(
+                    &*self.store,
+                    host,
+                    &self.key,
+                    &self.worker,
+                    &self.config,
+                    session,
+                )
+                .await
+            );
 
             match advanced {
                 // ── The two outcomes this loop exists to produce ─────────────
@@ -38732,10 +38732,8 @@ impl StatelessArm {
                         let wake_at = chrono::DateTime::<Utc>::from_timestamp_millis(until_ms)
                             .filter(|deadline| *deadline > now)
                             .unwrap_or_else(|| now + chrono::Duration::seconds(1));
-                        let continuation = self
-                            .placement_continuation(host, wake_at)
-                            .heap_boxed()
-                            .await?;
+                        let continuation =
+                            crate::off_frame!(self.placement_continuation(host, wake_at).await)?;
                         return Ok(IterationStep::RunEnded(Box::new(
                             AgenticOutcome::Sleeping {
                                 wake_at,
@@ -38783,10 +38781,8 @@ impl StatelessArm {
                         %wake_at,
                         "[LOOP_WORKER] foreign placement pin remains live; scheduling exact-key retry"
                     );
-                    let continuation = self
-                        .placement_continuation(host, wake_at)
-                        .heap_boxed()
-                        .await?;
+                    let continuation =
+                        crate::off_frame!(self.placement_continuation(host, wake_at).await)?;
                     return Ok(IterationStep::RunEnded(Box::new(
                         AgenticOutcome::Sleeping {
                             wake_at,
@@ -38856,10 +38852,10 @@ impl StatelessArm {
                     ));
                 },
                 Advanced::EffectIndeterminate { effect_id, reason } => {
-                    return self
-                        .conclude_effect_indeterminate(host, iteration, effect_id, reason)
-                        .heap_boxed()
-                        .await;
+                    return crate::off_frame!(
+                        self.conclude_effect_indeterminate(host, iteration, effect_id, reason)
+                            .await
+                    );
                 },
                 Advanced::ExecutionFailed { reason } => {
                     return Err(anyhow!(
@@ -39109,14 +39105,15 @@ impl StatelessArm {
             resolved_inputs: host.ctx.resolved_inputs.clone(),
             escalation_trigger: Some("effect_indeterminate".to_string()),
         };
-        persist_paused_execution_summary(
-            host.ctx,
-            host.executors,
-            &outcome,
-            host.execution_start.elapsed().as_millis() as u64,
-        )
-        .heap_boxed()
-        .await;
+        crate::off_frame!(
+            persist_paused_execution_summary(
+                host.ctx,
+                host.executors,
+                &outcome,
+                host.execution_start.elapsed().as_millis() as u64,
+            )
+            .await
+        );
         host.finish_iteration();
         return Ok(IterationStep::RunEnded(Box::new(outcome)));
     }

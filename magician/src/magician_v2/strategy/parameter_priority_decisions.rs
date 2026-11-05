@@ -346,10 +346,12 @@ async fn llm_classify(
         .map(|id: String| {
             Box::pin(async move {
                 let result = match id.parse::<usize>().ok().and_then(|i| cases.get(i)) {
+                    // Mapped inside the box, so this frame holds one result.
                     Some(case) => crate::off_frame!(
-                        llm_one(router, prompt_manager, context, user_request, case).await
-                    )
-                    .map_err(|e| e.to_string()),
+                        llm_one(router, prompt_manager, context, user_request, case)
+                            .await
+                            .map_err(|e| e.to_string())
+                    ),
                     None => Err("unknown item".to_owned()),
                 };
                 (id, result)

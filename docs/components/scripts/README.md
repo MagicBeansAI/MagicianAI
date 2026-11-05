@@ -551,6 +551,11 @@ renders normally with every attributed result absent.
   dispatch entry points, and the god-mode task-local wrappers
   (`with_run_trust`, `with_session_and_trust`). Each must wrap a boxed future:
   unboxed, `scope` reached 1,419 KiB and overflowed every VibeDev engineer run.
+  - The delegated-child launch is capped (2026-11-03): the job block in
+    `spawn_delegated_children_from_runtime_inner` (420 KiB measured, budget
+    440) and the child's `execute_agentic_direct_with_outcome_inner` (559,
+    budget 570). At 755 KiB the job block put the child's agentic loop at
+    2,063 of the worker's 2,080 KiB and every delegation overflowed.
   - The durable task-planning recovery chain is capped (2026-10-25): the
     recovery monitor, its spawner, `run_task_planning` and the planner's
     per-parameter classification items. Unboxed they filled the 2 MiB worker

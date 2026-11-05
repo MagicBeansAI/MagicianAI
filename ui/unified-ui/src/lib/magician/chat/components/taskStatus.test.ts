@@ -13,7 +13,8 @@ import {
 	taskExecutionLabel,
 	taskRunCollapsedLine,
 	taskStatusReason,
-	taskStatusVisual
+	taskStatusVisual,
+	type TaskRecordTimes
 } from './taskStatus';
 
 function message(content: Partial<ChatMessageContent> = {}): ChatMessage {
@@ -192,7 +193,9 @@ describe('taskCardTimes', () => {
 		);
 		// updatedAt moves on heartbeats and local edits (and is "now" when the
 		// wire had none): an idle task must not read "Updated now".
-		const record = { updatedAt: new Date(T0 + 3_600_000).toISOString() };
+		const record: TaskRecordTimes & { updatedAt: string } = {
+			updatedAt: new Date(T0 + 3_600_000).toISOString()
+		};
 		expect(taskCardTimes(at(T0), [], record).updatedAt).toBe(T0);
 	});
 
